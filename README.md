@@ -6,7 +6,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.1.0) 下载适合你的 v0.1.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.2.0) 下载适合你的 v0.2.0 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -23,6 +23,18 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 - 点「合并分栏」会回到单栏，并保留两边的标签页。
 
 右键单击文件、文件夹或文件列表的空白处，可以复制完整路径、在 Finder 或资源管理器中显示，或打开命令行。macOS 使用终端，Windows 使用 PowerShell。右键单击文件时，命令行会在文件所在目录启动。
+
+## 存储概览
+
+- 点击窗口顶部的「存储概览」查看已挂载卷的容量、可用空间和使用比例。可以从卷卡片进入对应目录或选择扫描范围。
+- 选择当前目录、常用位置或一个卷，点击「开始扫描」。扫描统计文件逻辑大小与数量，列出文件分类、最大的文件和占用最多的子目录。扫描中可停止，点击分类可筛选大文件列表。
+- 点击结果可回到文件所在目录，也可以把一个子目录设为下一次扫描的范围。扫描在本机读取文件元数据，跳过链接和无法访问的项目。
+
+## 查看与系统操作
+
+文件列表和图标视图区分 Word、Excel、PowerPoint、PDF、图片及其他常见类型。工具栏可切换列表和小、中、大、超大图标。拖动时会显示文件图标、名称和多选数量。
+
+右键「打开方式」可选用系统提供的应用。右键「属性」或按 macOS 的 **⌘I**、Windows 的 **Alt+Enter**，可查看选中项目的系统简介或属性。系统窗口无法打开时会显示基本信息。「复制名称」可复制所选项目的名称，存储概览可直达 macOS 磁盘工具或 Windows 存储设置。
 
 ## 文件操作
 
@@ -66,5 +78,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_x64-setup.exe

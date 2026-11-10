@@ -15,9 +15,16 @@
 
 - Frontend TypeScript and production asset build.
 - Rust compile and filesystem unit tests cover copying and moving actual files, cancellation preserving the source, conflict handling, invalid names, preview size limits, and refusal to read or transfer named pipes.
-- Browser interaction tests cover browsing, tab recovery, right-click actions, independent pane navigation, move and modifier-copy gestures, drag cancellation, and merging panes.
+- Browser interaction tests cover browsing, tab recovery, right-click actions and the properties fallback, file type icons, four icon sizes, and independent pane settings. Drag tests check the moving preview, selection count, move and modifier-copy gestures, cancellation, and the PNG handed off to the native drag command.
 - Installed macOS app testing covered real file moves in both directions between panes, including a drop into a subfolder. The red close button closed an extra window and the final idle window. A pending conflict blocked closing the last window until the test task was cancelled.
-- The Windows GNU target passed a Rust compilation check.
+- The current macOS build showed the Finder Get Info window for both a file and a folder. A move from the extra-large icon view into a folder in the other pane and a copy into a folder in a single pane preserved the test file contents.
+- The Windows GNU target passed a Rust compilation check, including the Shell properties command.
+
+## Storage overview
+
+- Capacity comes from mounted-volume information on macOS and Windows. APFS volumes may share free space. Network drive capacity on Windows is left blank so opening the overview does not wait for a remote drive.
+- Scans run on request and report logical sizes per file path. They skip symbolic links, Windows reparse points, and unreadable items. Traversal stays on the selected file system. The overview ranks the largest items in each category and direct subfolders.
+- Rust tests check volume capacities, category totals, ranking, cancellation, and symlink handling. Browser tests cover scan controls, classification filters, and navigating from results.
 
 ## v0.1.0 installer preview
 
@@ -29,7 +36,7 @@
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
-- Test native drags across separate windows, Option and Ctrl during real desktop drags, and Explorer/Finder interoperability. Test cut clipboard feedback with external applications.
+- Verify native drags across separate windows and Explorer/Finder interoperability. A macOS UI automation attempt at a separate-window drop did not transfer the test file. Verify the copy modifier in native drags and the properties dialog on Windows. Test cut clipboard feedback with external applications.
 - Complete session geometry, per-history scroll/selection restoration, tab overflow menu, name disambiguation and focus restoration.
 - Enrich conflicts with both source and destination metadata; add task completion notifications, clear task history and open-location actions.
 - Harden races and failure recovery, filesystem metadata fidelity, special files, symlinks, restricted folders and unavailable network/removable volumes.

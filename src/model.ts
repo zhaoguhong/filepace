@@ -8,6 +8,7 @@ export type Entry = {
   hidden: boolean;
 };
 export type Listing = { path: string; parent: string | null; entries: Entry[] };
+export type GridSize = "small" | "medium" | "large" | "extra-large";
 export type Tab = {
   id: string;
   path: string;
@@ -15,6 +16,7 @@ export type Tab = {
   index: number;
   query: string;
   view: "list" | "grid";
+  gridSize?: GridSize;
   sort: "name" | "modified" | "size";
   descending: boolean;
   selected: string[];
@@ -81,28 +83,6 @@ export function formatSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`;
   if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
-  return `${(size / 1024 ** 3).toFixed(1)} GB`;
-}
-export function typeOf(entry: Entry) {
-  if (entry.isLink) return "符号链接";
-  if (entry.isDir) return "文件夹";
-  const ext = entry.name.split(".").pop()?.toLowerCase();
-  return (
-    (
-      {
-        pdf: "PDF 文档",
-        png: "PNG 图像",
-        jpg: "JPEG 图像",
-        jpeg: "JPEG 图像",
-        webp: "WebP 图像",
-        md: "Markdown 文档",
-        txt: "文本文档",
-        zip: "ZIP 压缩包",
-        mp4: "MP4 视频",
-        ts: "TypeScript",
-        tsx: "React 组件",
-        json: "JSON 文档",
-      } as Record<string, string>
-    )[ext || ""] || "文件"
-  );
+  if (size < 1024 ** 4) return `${(size / 1024 ** 3).toFixed(1)} GB`;
+  return `${(size / 1024 ** 4).toFixed(1)} TB`;
 }

@@ -1,9 +1,12 @@
-import Thumbnail from "./Thumbnail";
+import FileIcon from "./FileIcon";
+import StorageDashboard from "./StorageDashboard";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  BarChart3,
+  ChevronDown,
   ChevronRight,
   Plus,
   X,
@@ -12,7 +15,6 @@ import {
   FolderPlus,
   FileText,
   Image as ImageIcon,
-  File,
   HardDrive,
   Home,
   Download,
@@ -44,43 +46,37 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { call, desktop } from "./bridge";
 import { useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
+import { describeFile } from "./fileTypes";
 import {
   basename,
   makeTab,
   navigate,
   formatSize,
-  typeOf,
   type Entry,
+  type GridSize,
   type Tab,
   type Task,
   type Place,
 } from "./model";
 type Session = PaneSession & { right?: PaneSession; focused?: PaneSide };
-type Menu = { x: number; y: number; entry?: Entry; tab?: Tab };
+type Menu = {
+  x: number;
+  y: number;
+  entry?: Entry;
+  tab?: Tab;
+  viewPane?: PaneSide;
+};
+type OpenWithApp = { name: string; path: string; default: boolean };
 const iconSize = 17;
+const gridSizes: { value: GridSize; label: string }[] = [
+  { value: "small", label: "小图标" },
+  { value: "medium", label: "中图标" },
+  { value: "large", label: "大图标" },
+  { value: "extra-large", label: "超大图标" },
+];
 
 function cleanPane({ tabs, active }: PaneSession): PaneSession {
   return { tabs: tabs.map((tab) => ({ ...tab, selected: [] })), active };
-}
-function FileIcon({ entry, large = false }: { entry: Entry; large?: boolean }) {
-  const size = large ? 42 : 21;
-  return entry.isDir ? (
-    <Folder
-      size={size}
-      className="folder-icon"
-      fill="currentColor"
-      strokeWidth={1.1}
-    />
-  ) : /\.(png|jpe?g|webp|gif)$/i.test(entry.name) ? (
-    <Thumbnail
-      entry={entry}
-      fallback={<ImageIcon size={size} className="image-icon" />}
-    />
-  ) : /\.(md|txt|pdf|json|tsx?)$/i.test(entry.name) ? (
-    <FileText size={size} className="document-icon" />
-  ) : (
-    <File size={size} className="generic-icon" />
-  );
 }
 function Tool({
   label,
@@ -88,18 +84,21 @@ function Tool({
   onClick,
   disabled = false,
   active = false,
+  expanded,
 }: {
   label: string;
   children: React.ReactNode;
   onClick: React.MouseEventHandler<HTMLButtonElement>;
   disabled?: boolean;
   active?: boolean;
+  expanded?: boolean;
 }) {
   return (
     <button
       className={`tool ${active ? "active" : ""}`}
       title={label}
       aria-label={label}
+      aria-expanded={expanded}
       onClick={onClick}
       disabled={disabled}
     >
@@ -120,6 +119,13 @@ export default function App() {
     [tasks, setTasks] = useState<Task[]>([]),
     [taskPanel, setTaskPanel] = useState(false),
     [preview, setPreview] = useState<Entry | null>(null),
+    [properties, setProperties] = useState<Entry | null>(null),
+    [openWith, setOpenWith] = useState<{
+      entry: Entry;
+      apps: OpenWithApp[];
+    } | null>(null),
+    [storageVisible, setStorageVisible] = useState(false),
+    [storageScope, setStorageScope] = useState(""),
     [previewContent, setPreviewContent] = useState(""),
     [imageUrl, setImageUrl] = useState(""),
     [rename, setRename] = useState<{ pane: PaneSide; path: string } | null>(
@@ -210,13 +216,19 @@ export default function App() {
       ),
     }));
   }
-  function go(path: string, side = focused) {
+  function go(path: string, side = focused, selectedPath?: string) {
     updatePane(side, (group) => ({
       ...group,
       tabs: group.tabs.map((t) =>
-        t.id === group.active ? navigate(t, path) : t,
+        t.id === group.active
+          ? {
+              ...navigate(t, path),
+              selected: selectedPath ? [selectedPath] : [],
+            }
+          : t,
       ),
     }));
+    setStorageVisible(false);
     setMenu(null);
     setEditingPath(null);
     setRename(null);
@@ -475,6 +487,25 @@ export default function App() {
       setNotice(String(e));
     }
   }
+  async function openProperties(entry: Entry) {
+    setMenu(null);
+    if (desktop) {
+      try {
+        await call("open_properties", { path: entry.path });
+        return;
+      } catch {
+        // Display the available metadata if the system dialog cannot open.
+      }
+    }
+    setProperties(entry);
+  }
+  async function chooseOpenWith(entry: Entry) {
+    await runMenuAction(async () => {
+      const apps = await call<OpenWithApp[]>("open_with", { path: entry.path });
+      if (apps.length) setOpenWith({ entry, apps });
+      else if (isMac) setNotice("系统没有为此文件找到可用的应用。");
+    });
+  }
   async function paste(destination = tab?.path) {
     try {
       const [paths, cut] = await call<[string[], boolean]>("clipboard_get");
@@ -586,13 +617,21 @@ export default function App() {
   }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!tab) return;
+      if (!tab || fileDrag.preview) return;
       const typing = (e.target as HTMLElement).closest(
-        'input,textarea,[contenteditable="true"]',
+        'input,textarea,select,[contenteditable="true"]',
       );
       if (typing) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (openWith) {
+        if (key === "escape") setOpenWith(null);
+        return;
+      }
+      if (properties) {
+        if (key === "escape") setProperties(null);
+        return;
+      }
       if (preview) {
         if (key === "escape") setPreview(null);
         if (["arrowleft", "arrowright"].includes(key)) {
@@ -600,6 +639,21 @@ export default function App() {
           const i = files.findIndex((x) => x.path === preview.path);
           const next = files[i + (key === "arrowleft" ? -1 : 1)];
           if (next) setPreview(next);
+        }
+        return;
+      }
+      if (storageVisible) {
+        if (key === "escape") setStorageVisible(false);
+        return;
+      }
+      if (
+        (isMac && e.metaKey && key === "i") ||
+        (!isMac && e.altKey && key === "enter")
+      ) {
+        const entry = entries.find((item) => item.path === selected[0]);
+        if (entry) {
+          e.preventDefault();
+          void openProperties(entry);
         }
         return;
       }
@@ -693,6 +747,9 @@ export default function App() {
       </div>
     );
   const menuPath = menu?.entry?.path ?? tab.path;
+  const viewPane = menu?.viewPane;
+  const viewTab = viewPane === "left" ? left.tab : right.tab;
+  const dragPreview = fileDrag.preview;
 
   function renderPane(side: PaneSide) {
     const { tab, listing, entries, loading, error, listRef } =
@@ -703,8 +760,10 @@ export default function App() {
     const selected = tab.selected;
     const dropHint = fileDrag.hint?.pane === side ? fileDrag.hint : null;
     const patchPane = (value: Partial<Tab>) => patch(value, side);
-    const dragPaths = (path: string) =>
-      selected.includes(path) ? selected : [path];
+    const dragSelection = (entry: Entry) => ({
+      entry,
+      paths: selected.includes(entry.path) ? selected : [entry.path],
+    });
     const startIndex =
       tab.view === "list"
         ? Math.max(
@@ -734,7 +793,6 @@ export default function App() {
         onPointerDownCapture={() => focusPane(side)}
         onFocusCapture={() => focusPane(side)}
       >
-        {split && <div className="pane-label">{label}</div>}
         <nav className="tabs" aria-label="文件标签">
           {tabs.map((t) => (
             <div
@@ -950,16 +1008,39 @@ export default function App() {
             <Tool
               label="列表视图"
               active={tab.view === "list"}
-              onClick={() => patchPane({ view: "list" })}
+              onClick={() =>
+                tab.view !== "list" && patchPane({ view: "list", scroll: 0 })
+              }
             >
               <List size={16} />
             </Tool>
             <Tool
               label="图标视图"
               active={tab.view === "grid"}
-              onClick={() => patchPane({ view: "grid" })}
+              onClick={() =>
+                tab.view !== "grid" && patchPane({ view: "grid", scroll: 0 })
+              }
             >
               <LayoutGrid size={16} />
+            </Tool>
+            <Tool
+              label="图标大小"
+              expanded={viewPane === side}
+              onClick={(event) => {
+                event.stopPropagation();
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setMenu(
+                  viewPane === side
+                    ? null
+                    : {
+                        x: bounds.right - 140,
+                        y: bounds.bottom + 6,
+                        viewPane: side,
+                      },
+                );
+              }}
+            >
+              <ChevronDown size={13} />
             </Tool>
           </div>
           <Tool
@@ -1015,6 +1096,9 @@ export default function App() {
           tabIndex={0}
           aria-label="文件列表"
           data-pane={side}
+          data-grid-size={
+            tab.view === "grid" ? (tab.gridSize ?? "medium") : undefined
+          }
           data-drop-path={listing?.path}
           onScroll={(e) => patchPane({ scroll: e.currentTarget.scrollTop })}
           onClick={(e) => {
@@ -1062,87 +1146,89 @@ export default function App() {
               {tab.view === "list" && (
                 <div style={{ height: startIndex * 44 }} />
               )}
-              {shown.map((entry) => (
-                <div
-                  key={entry.path}
-                  data-path={entry.path}
-                  data-directory={entry.isDir ? entry.path : undefined}
-                  draggable={desktop && !split}
-                  onPointerDown={(event) =>
-                    fileDrag.begin(event, {
-                      pane: side,
-                      directory: listing?.path ?? tab.path,
-                      paths: dragPaths(entry.path),
-                    })
-                  }
-                  onDragStart={(e) => {
-                    e.preventDefault();
-                    if (desktop && !split)
-                      fileDrag.nativeDrag(dragPaths(entry.path));
-                  }}
-                  role="option"
-                  aria-selected={selected.includes(entry.path)}
-                  className={`file-row ${selected.includes(entry.path) ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    select(entry, e, side);
-                  }}
-                  onDoubleClick={() => open(entry, side)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    focusPane(side);
-                    if (!selected.includes(entry.path))
-                      patchPane({ selected: [entry.path] });
-                    setMenu({ x: e.clientX, y: e.clientY, entry });
-                  }}
-                >
-                  <div className="file-name">
-                    <FileIcon entry={entry} large={tab.view === "grid"} />
-                    {rename?.pane === side && rename.path === entry.path ? (
-                      <input
-                        autoFocus
-                        value={editName}
-                        onFocus={(e) =>
-                          e.target.setSelectionRange(
-                            0,
-                            entry.isDir
-                              ? entry.name.length
-                              : Math.max(0, entry.name.lastIndexOf(".")) ||
-                                  entry.name.length,
-                          )
-                        }
-                        onChange={(e) => setEditName(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") submitRename();
-                          if (e.key === "Escape") setRename(null);
-                        }}
-                      />
-                    ) : (
-                      <span>{entry.name}</span>
+              {shown.map((entry) => {
+                const type = describeFile(entry);
+                const dragSource =
+                  dragPreview?.pane === side &&
+                  dragPreview.paths.has(entry.path);
+                return (
+                  <div
+                    key={entry.path}
+                    data-path={entry.path}
+                    data-directory={entry.isDir ? entry.path : undefined}
+                    onPointerDown={(event) =>
+                      fileDrag.begin(event, {
+                        ...dragSelection(entry),
+                        pane: side,
+                        directory: listing?.path ?? tab.path,
+                      })
+                    }
+                    role="option"
+                    aria-selected={selected.includes(entry.path)}
+                    className={`file-row ${selected.includes(entry.path) ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dragSource ? " drag-source" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      select(entry, e, side);
+                    }}
+                    onDoubleClick={() => open(entry, side)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      focusPane(side);
+                      if (!selected.includes(entry.path))
+                        patchPane({ selected: [entry.path] });
+                      setMenu({ x: e.clientX, y: e.clientY, entry });
+                    }}
+                  >
+                    <div className="file-name">
+                      <FileIcon entry={entry} type={type} />
+                      {rename?.pane === side && rename.path === entry.path ? (
+                        <input
+                          autoFocus
+                          value={editName}
+                          onFocus={(e) =>
+                            e.target.setSelectionRange(
+                              0,
+                              entry.isDir
+                                ? entry.name.length
+                                : Math.max(0, entry.name.lastIndexOf(".")) ||
+                                    entry.name.length,
+                            )
+                          }
+                          onChange={(e) => setEditName(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") submitRename();
+                            if (e.key === "Escape") setRename(null);
+                          }}
+                        />
+                      ) : (
+                        <span className="file-label">{entry.name}</span>
+                      )}
+                    </div>
+                    {tab.view === "list" && (
+                      <>
+                        <span className="file-date">
+                          {new Date(entry.modified * 1000).toLocaleDateString(
+                            "zh-CN",
+                            {
+                              year: "numeric",
+                              month: "2-digit",
+                              day: "2-digit",
+                            },
+                          )}
+                        </span>
+                        <span className="file-type" title={type.label}>
+                          {type.label}
+                        </span>
+                        <span className="file-size">
+                          {entry.isDir ? "—" : formatSize(entry.size)}
+                        </span>
+                      </>
                     )}
                   </div>
-                  {tab.view === "list" && (
-                    <>
-                      <span className="file-date">
-                        {new Date(entry.modified * 1000).toLocaleDateString(
-                          "zh-CN",
-                          {
-                            year: "numeric",
-                            month: "2-digit",
-                            day: "2-digit",
-                          },
-                        )}
-                      </span>
-                      <span className="file-type">{typeOf(entry)}</span>
-                      <span className="file-size">
-                        {entry.isDir ? "—" : formatSize(entry.size)}
-                      </span>
-                    </>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               {tab.view === "list" && (
                 <div
                   style={{
@@ -1177,7 +1263,7 @@ export default function App() {
   }
   return (
     <div
-      className={`app${fileDrag.dragging ? " dragging-files" : ""}`}
+      className={`app${dragPreview ? " dragging-files" : ""}`}
       onPointerDownCapture={() => {
         fileDrag.suppressClick.current = false;
       }}
@@ -1197,8 +1283,22 @@ export default function App() {
           <b>Filepace</b>
           <span className="version">PREVIEW</span>
         </div>
-        <span className="window-location">{basename(tab.path)}</span>
+        <span className="window-location">
+          {storageVisible ? "存储概览" : basename(tab.path)}
+        </span>
         <div className="title-actions">
+          <button
+            className="window-action"
+            aria-label="存储概览"
+            aria-pressed={storageVisible}
+            onClick={() => {
+              setMenu(null);
+              setTaskPanel(false);
+              setStorageVisible(!storageVisible);
+            }}
+          >
+            <BarChart3 size={16} /> 存储概览
+          </button>
           <button
             className="window-action"
             aria-pressed={split}
@@ -1316,16 +1416,35 @@ export default function App() {
           </aside>
         )}
         <main>
-          <div className={`pane-stack${split ? " split" : ""}`}>
+          <div
+            className={`pane-stack${split ? " split" : ""}`}
+            hidden={storageVisible}
+          >
             {renderPane("left")}
             {split && renderPane("right")}
           </div>
+          <StorageDashboard
+            visible={storageVisible}
+            currentPath={listing?.path ?? tab.path}
+            scope={storageScope}
+            places={[
+              ...places,
+              ...favorites.map((path) => ({
+                name: basename(path),
+                path,
+                kind: "favorite",
+              })),
+            ]}
+            onChoose={setStorageScope}
+            onBrowse={(path, selectedPath) => go(path, focused, selectedPath)}
+            onClose={() => setStorageVisible(false)}
+          />
         </main>
       </div>
       <footer className="statusbar">
         <span>
-          {entries.length} 个项目
-          {selected.length > 0 && (
+          {storageVisible ? "本地存储概览" : `${entries.length} 个项目`}
+          {!storageVisible && selected.length > 0 && (
             <>
               {" "}
               <span className="status-dot">·</span> 已选择 {selected.length} 项{" "}
@@ -1351,6 +1470,26 @@ export default function App() {
           <ChevronRight size={13} />
         </button>
       </footer>
+      {dragPreview && (
+        <div
+          className="drag-preview"
+          ref={fileDrag.previewRef}
+          aria-hidden="true"
+        >
+          <FileIcon entry={dragPreview.entry} showThumbnail={false} />
+          <span className="drag-preview-name">{dragPreview.entry.name}</span>
+          {dragPreview.paths.size > 1 && (
+            <span className="drag-preview-count">
+              {dragPreview.paths.size} 项
+            </span>
+          )}
+          {fileDrag.hint && (
+            <span className="drag-preview-operation">
+              {fileDrag.hint.kind === "copy" ? "复制" : "移动"}
+            </span>
+          )}
+        </div>
+      )}
       {notice && (
         <div className="toast" role="status">
           {notice}
@@ -1361,11 +1500,39 @@ export default function App() {
       )}
       {menu && (
         <div
-          className="context-menu"
+          className={`context-menu${viewPane ? " size-menu" : ""}`}
           ref={menuRef}
+          aria-label={viewPane ? "选择图标大小" : undefined}
+          role={viewPane ? "group" : undefined}
           onClick={(e) => e.stopPropagation()}
         >
-          {menu.tab ? (
+          {viewPane ? (
+            gridSizes.map(({ value, label }) => {
+              const current =
+                viewTab?.view === "grid" &&
+                (viewTab.gridSize ?? "medium") === value;
+              return (
+                <button
+                  key={value}
+                  aria-pressed={current}
+                  onClick={() => {
+                    if (!current)
+                      patch(
+                        { view: "grid", gridSize: value, scroll: 0 },
+                        viewPane,
+                      );
+                    setMenu(null);
+                  }}
+                >
+                  <Check
+                    size={15}
+                    className={current ? "" : "size-menu-placeholder"}
+                  />
+                  {label}
+                </button>
+              );
+            })
+          ) : menu.tab ? (
             <>
               <button onClick={() => newTab(menu.tab!.path)}>新建标签</button>
               <button onClick={() => windowFor(menu.tab!, true)}>
@@ -1425,14 +1592,19 @@ export default function App() {
                 </>
               )}
               {menu.entry && !menu.entry.isDir && (
-                <button
-                  onClick={() => {
-                    setPreview(menu.entry!);
-                    setMenu(null);
-                  }}
-                >
-                  快速预览
-                </button>
+                <>
+                  <button onClick={() => chooseOpenWith(menu.entry!)}>
+                    打开方式
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPreview(menu.entry!);
+                      setMenu(null);
+                    }}
+                  >
+                    快速预览
+                  </button>
+                </>
               )}
               <hr />
               <button
@@ -1450,6 +1622,25 @@ export default function App() {
               >
                 复制路径
               </button>
+              {menu.entry && (
+                <button
+                  onClick={() =>
+                    runMenuAction(async () => {
+                      const paths = selected.includes(menuPath)
+                        ? selected
+                        : [menuPath];
+                      await call("clipboard_copy_paths", {
+                        paths,
+                        namesOnly: true,
+                      });
+                      setCutPaths([]);
+                      setNotice("已复制名称");
+                    })
+                  }
+                >
+                  复制名称
+                </button>
+              )}
               <button
                 onClick={() =>
                   runMenuAction(() =>
@@ -1495,6 +1686,20 @@ export default function App() {
                   <button onClick={() => renameSelected(menu.entry)}>
                     重命名
                   </button>
+                  <button onClick={() => openProperties(menu.entry!)}>
+                    属性
+                  </button>
+                  {menu.entry.isDir && (
+                    <button
+                      onClick={() => {
+                        setStorageScope(menuPath);
+                        setMenu(null);
+                        setStorageVisible(true);
+                      }}
+                    >
+                      分析占用空间
+                    </button>
+                  )}
                   <hr />
                   <button
                     className="danger-text"
@@ -1611,6 +1816,87 @@ export default function App() {
             ))
           )}
         </section>
+      )}
+      {openWith && (
+        <div className="overlay" onClick={() => setOpenWith(null)}>
+          <section
+            className="modal properties-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="打开方式"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-title">
+              <h3>
+                <FileIcon entry={openWith.entry} showThumbnail={false} />{" "}
+                打开方式
+              </h3>
+              <Tool label="关闭打开方式" onClick={() => setOpenWith(null)}>
+                <X size={19} />
+              </Tool>
+            </div>
+            <div className="open-with-options">
+              <p>{openWith.entry.name}</p>
+              {openWith.apps.map((app) => (
+                <button
+                  key={app.path}
+                  title={app.path}
+                  onClick={() => {
+                    void runMenuAction(async () => {
+                      await call("open_with", {
+                        path: openWith.entry.path,
+                        application: app.path,
+                      });
+                      setOpenWith(null);
+                    });
+                  }}
+                >
+                  {app.name}
+                  {app.default && <small>默认</small>}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+      {properties && (
+        <div className="overlay" onClick={() => setProperties(null)}>
+          <section
+            className="modal properties-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="属性"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-title">
+              <h3>
+                <FileIcon entry={properties} showThumbnail={false} />
+                属性
+              </h3>
+              <Tool label="关闭属性" onClick={() => setProperties(null)}>
+                <X size={19} />
+              </Tool>
+            </div>
+            <dl>
+              <dt>名称</dt>
+              <dd>{properties.name}</dd>
+              <dt>类型</dt>
+              <dd>{describeFile(properties).label}</dd>
+              {!properties.isDir && (
+                <>
+                  <dt>大小</dt>
+                  <dd>{formatSize(properties.size)}</dd>
+                </>
+              )}
+              <dt>修改日期</dt>
+              <dd>
+                {new Date(properties.modified * 1000).toLocaleString("zh-CN")}
+              </dd>
+              <dt>路径</dt>
+              <dd>{properties.path}</dd>
+            </dl>
+          </section>
+        </div>
       )}
       {preview && (
         <div className="overlay" onClick={() => setPreview(null)}>

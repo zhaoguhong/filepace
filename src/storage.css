@@ -1,0 +1,342 @@
+.pane-stack[hidden] {
+  display: none;
+}
+.storage-dashboard {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #f6f8fc;
+  padding: 26px clamp(16px, 3vw, 38px) 34px;
+  color: #26384f;
+}
+.storage-dashboard h1,
+.storage-dashboard h2,
+.storage-dashboard h3 {
+  margin: 0;
+}
+.storage-heading,
+.storage-section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.storage-heading {
+  gap: 14px;
+  padding: 2px 0 22px;
+}
+.storage-heading-mark {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  color: #2e5ca7;
+  background: #e5efff;
+}
+.storage-heading h1 {
+  font-size: 24px;
+  line-height: 1.3;
+  letter-spacing: -0.4px;
+}
+.storage-heading p,
+.storage-section-heading p {
+  margin: 4px 0 0;
+  color: #66768c;
+  font-size: 12px;
+}
+.storage-heading > div:nth-child(2),
+.storage-section-heading > div:first-child {
+  flex: 1;
+}
+.storage-section {
+  margin: 0 0 22px;
+}
+.storage-section-heading {
+  margin-bottom: 10px;
+}
+.storage-section-heading h2 {
+  font-size: 15px;
+}
+.storage-secondary,
+.storage-primary {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.storage-secondary {
+  border: 1px solid #d7e0ef;
+  background: white;
+  color: #3c577c;
+}
+.storage-secondary:hover:not(:disabled) {
+  background: #eef4ff;
+}
+.storage-primary {
+  background: #3565b9;
+  color: #fff;
+}
+.storage-primary:hover:not(:disabled) {
+  background: #2b559d;
+}
+.storage-demo {
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  background: #faf2df;
+  color: #7d6025;
+  border-radius: 7px;
+}
+.storage-card {
+  min-width: 0;
+  background: white;
+  border: 1px solid #e1e7f0;
+  border-radius: 10px;
+  padding: 13px 14px;
+}
+.storage-card h3 {
+  font-size: 13px;
+}
+.storage-volumes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+}
+.storage-volume-name {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+.storage-volume-name > svg {
+  color: #6281aa;
+}
+.storage-volume-name > div {
+  flex: 1;
+  min-width: 0;
+}
+.storage-volume-name b,
+.storage-volume-name small,
+.storage-item b,
+.storage-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-volume-name small,
+.storage-item small {
+  color: #687a92;
+  margin-top: 2px;
+  font-size: 10px;
+}
+.storage-volume-name > span {
+  flex-shrink: 0;
+  background: #eaf1fd;
+  color: #305c9c;
+  border-radius: 5px;
+  padding: 3px 6px;
+  font-size: 10px;
+}
+.storage-volume-name .storage-high {
+  background: #fceee9;
+  color: #9b4933;
+}
+.storage-meter {
+  height: 7px;
+  background: #e9eef7;
+  border-radius: 5px;
+  margin: 13px 0 7px;
+  overflow: hidden;
+}
+.storage-meter > span {
+  display: block;
+  height: 100%;
+  background: #567fc5;
+  border-radius: inherit;
+}
+.storage-volume-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: #64778e;
+  font-size: 11px;
+}
+.storage-volume-values b {
+  color: #26384f;
+}
+.storage-volume-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 11px;
+}
+.storage-volume-actions button,
+.storage-scan-folder {
+  color: #3560a0;
+  padding: 3px 0;
+  font-size: 11px;
+}
+.storage-volume-actions button:hover {
+  text-decoration: underline;
+}
+.storage-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.storage-controls > svg {
+  color: #5c7aa1;
+}
+.storage-controls > div {
+  flex: 1;
+  min-width: 0;
+}
+.storage-controls label {
+  font-size: 11px;
+  color: #60728a;
+  margin-right: 7px;
+}
+.storage-controls select {
+  font: inherit;
+  max-width: min(400px, 100%);
+  color: #26384f;
+  background: #f7f9fc;
+  border: 1px solid #dbe4f0;
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+.storage-controls p {
+  margin: 5px 0 0;
+  color: #66768c;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.storage-muted,
+.storage-error {
+  color: #65758c;
+  font-size: 12px;
+  margin: 11px 0 2px;
+}
+.storage-error {
+  color: #a44239;
+  overflow-wrap: anywhere;
+}
+.storage-start-note {
+  padding: 9px 0;
+}
+.storage-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
+  gap: 9px;
+  margin: 10px 0;
+}
+.storage-counts div {
+  background: #edf3fc;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.storage-counts dt {
+  color: #64758c;
+  font-size: 11px;
+}
+.storage-counts dd {
+  margin: 3px 0 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+.storage-distribution {
+  display: flex;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 5px;
+  margin: 10px 0;
+}
+.storage-distribution > span {
+  flex-basis: 0;
+}
+.storage-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.storage-category {
+  padding: 5px 7px;
+  gap: 5px;
+  border: 1px solid #e1e7f0;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.storage-category::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--category-color, #6b85a5);
+}
+.storage-category small {
+  font-size: 10px;
+  color: #63768d;
+}
+.storage-category[aria-pressed="true"] {
+  background: #eaf1ff;
+  border-color: #b6cbeb;
+}
+.storage-rankings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.storage-items {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.storage-items li {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid #eef2f7;
+}
+.storage-item {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  border-radius: 5px;
+  gap: 8px;
+  text-align: left;
+}
+.storage-item:hover,
+.storage-scan-folder:hover {
+  background: #eef4ff;
+}
+.storage-item > span:not(.entry-icon) {
+  flex: 1;
+  min-width: 0;
+}
+.storage-item b {
+  font-size: 12px;
+  font-weight: 550;
+}
+.storage-item strong {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.storage-item > svg {
+  color: #7a91b4;
+}
+.storage-scan-folder {
+  padding: 5px;
+  border-radius: 5px;
+}
+@media (max-width: 850px) {
+  .storage-dashboard {
+    padding: 16px;
+  }
+  .storage-heading {
+    padding-bottom: 15px;
+  }
+}

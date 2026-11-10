@@ -47,7 +47,7 @@ export default function Thumbnail({
   }, [entry.path, entry.modified, entry.size]);
   return (
     <span ref={ref} className="thumbnail">
-      {url ? <img src={url} alt="" /> : fallback}
+      {url ? <img src={url} alt="" draggable={false} /> : fallback}
     </span>
   );
 }

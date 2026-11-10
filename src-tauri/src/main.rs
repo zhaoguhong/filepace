@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod native_drag;
+mod storage;
+mod system_actions;
 
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
 use native_drag::start_file_drag;
@@ -14,6 +16,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, UNIX_EPOCH},
 };
+use storage::{cancel_storage_scan, scan_storage, storage_volumes};
+use system_actions::{open_properties, open_system_storage, open_with};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
@@ -222,34 +226,7 @@ fn places() -> Vec<Place> {
             }
         }
     }
-    #[cfg(target_os = "windows")]
-    for letter in b'A'..=b'Z' {
-        let p = format!("{}:\\", letter as char);
-        if Path::new(&p).exists() {
-            out.push(Place {
-                name: format!("本地磁盘 ({}:)", letter as char),
-                path: p,
-                kind: "disk".into(),
-            });
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        out.push(Place {
-            name: "系统磁盘".into(),
-            path: "/".into(),
-            kind: "disk".into(),
-        });
-        if let Ok(volumes) = fs::read_dir("/Volumes") {
-            for v in volumes.flatten() {
-                out.push(Place {
-                    name: v.file_name().to_string_lossy().into_owned(),
-                    path: strpath(&v.path()),
-                    kind: "disk".into(),
-                });
-            }
-        }
-    }
+    out.extend(storage::disk_places());
     out
 }
 #[tauri::command]
@@ -387,10 +364,19 @@ fn clipboard_get() -> Result<(Vec<String>, bool), String> {
     Ok((paths, cut))
 }
 #[tauri::command]
-fn clipboard_copy_paths(paths: Vec<String>) -> Result<(), String> {
+fn clipboard_copy_paths(paths: Vec<String>, names_only: Option<bool>) -> Result<(), String> {
     let paths = paths
         .into_iter()
-        .map(|path| std::path::absolute(path).map(|path| strpath(&path)))
+        .map(|path| {
+            if names_only.unwrap_or(false) {
+                Ok(Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or(path))
+            } else {
+                std::path::absolute(path).map(|path| strpath(&path))
+            }
+        })
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     let separator = if cfg!(windows) { "\r\n" } else { "\n" };
@@ -874,10 +860,16 @@ fn main() {
     tauri::Builder::default()
         .manage(shared)
         .manage(native_drag::DragState::default())
+        .manage(storage::ScanState::default())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             handle_window_close(window, event);
             native_drag::handle_window_event(window, event);
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window
+                    .state::<storage::ScanState>()
+                    .stop_window(window.label());
+            }
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -930,6 +922,12 @@ fn main() {
             list_directory,
             places,
             open_entry,
+            open_properties,
+            open_with,
+            open_system_storage,
+            storage_volumes,
+            scan_storage,
+            cancel_storage_scan,
             open_terminal,
             make_directory,
             rename_entry,

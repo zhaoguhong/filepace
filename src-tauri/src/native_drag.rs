@@ -144,16 +144,36 @@ fn finish_drag(app: &AppHandle, id: Uuid) {
     });
 }
 
+fn drag_image(preview: Option<Vec<u8>>) -> drag::Image {
+    // Validate the bounded PNG before passing it to the platform drag image decoder.
+    let preview = preview.filter(|bytes| {
+        if bytes.len() > 128 * 1024 {
+            return false;
+        }
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(256);
+        limits.max_image_height = Some(64);
+        limits.max_alloc = Some(512 * 1024);
+        reader.limits(limits);
+        reader.decode().is_ok()
+    });
+    drag::Image::Raw(preview.unwrap_or_else(|| include_bytes!("../icons/32x32.png").to_vec()))
+}
+
 #[tauri::command]
 pub async fn start_file_drag(
     window: Window,
     paths: Vec<PathBuf>,
     source_pane: Option<PaneSide>,
+    preview_image: Option<Vec<u8>>,
 ) -> Result<(), String> {
     if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
         return Err("请选择有效的文件或文件夹".into());
     }
 
+    let image = drag_image(preview_image);
     let app = window.app_handle().clone();
     let (send, mut receive) = tauri::async_runtime::channel(1);
     window
@@ -194,7 +214,7 @@ pub async fn start_file_drag(
                     drag::start_drag(
                         &handle,
                         drag::DragItem::Files(paths),
-                        drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()),
+                        image,
                         move |_, _| finish_drag(&source, id),
                         // External apps receive a native copy drag. Filepace runs its
                         // own move task after a drop into a different Filepace window.
@@ -253,6 +273,27 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uses_only_bounded_pngs_as_drag_images() {
+        let png = |width| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(width, 46)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let preview = png(180);
+        assert!(
+            matches!(drag_image(Some(preview.clone())), drag::Image::Raw(bytes) if bytes == preview)
+        );
+        for invalid in [b"not a PNG".to_vec(), png(300), vec![0; 128 * 1024 + 1]] {
+            assert!(matches!(
+                drag_image(Some(invalid)),
+                drag::Image::Raw(bytes) if bytes.as_slice() == include_bytes!("../icons/32x32.png")
+            ));
+        }
+    }
 
     #[test]
     fn moves_only_a_matching_drag_from_another_window_without_the_copy_key() {

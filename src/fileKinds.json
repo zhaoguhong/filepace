@@ -1,0 +1,34 @@
+{
+  "folder": ["文件夹", "", "other"],
+  "word": ["Word 文档", "doc docx docm dot dotx dotm", "documents"],
+  "excel": ["Excel 工作簿", "xls xlsx xlsm xlsb xlt xltx xltm", "documents"],
+  "powerpoint": [
+    "PowerPoint 演示文稿",
+    "ppt pptx pptm pps ppsx ppsm pot potx potm",
+    "documents"
+  ],
+  "pdf": ["PDF 文档", "pdf", "documents"],
+  "document": ["文档", "txt md markdown rtf log pages odt", "documents"],
+  "table": ["表格", "csv tsv ods numbers", "documents"],
+  "slides": ["演示文稿", "key odp", "documents"],
+  "image": [
+    "图像",
+    "png jpg jpeg webp gif bmp heic heif avif svg tif tiff ico",
+    "images"
+  ],
+  "video": ["视频", "mp4 mov m4v mkv avi wmv webm mpeg mpg", "videos"],
+  "audio": ["音频", "mp3 wav flac aac m4a ogg opus aiff wma", "audio"],
+  "archive": ["压缩包", "zip rar 7z tar gz bz2 xz tgz tbz2", "archives"],
+  "code": [
+    "代码",
+    "js jsx ts tsx json html css scss py rs c cpp h go java swift sh yaml yml toml xml",
+    "code"
+  ],
+  "installer": [
+    "应用程序或安装包",
+    "exe msi msix appx dmg pkg apk deb rpm iso",
+    "apps"
+  ],
+  "shortcut": ["快捷方式", "lnk url webloc", "other"],
+  "generic": ["文件", "", "other"]
+}

@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.1.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.1.0).
+Download the v0.2.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.2.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -23,6 +23,18 @@ The installers are a preview. The macOS app is ad-hoc signed and has no notariza
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
 
 Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
+
+## Storage overview
+
+- Open **Storage Overview (存储概览)** in the window toolbar to see mounted volumes, their capacity, available space, and usage. Use a volume card to browse it or choose it as the scan scope.
+- Choose the current directory, a favorite, or a volume and start a scan. The report shows logical file sizes and counts by category, the largest files, and the largest subfolders. You can stop a scan or select a category to filter the largest files.
+- Click a result to locate it in Filepace or set a subfolder as the next scan scope. Scanning reads file metadata locally and skips links and inaccessible entries.
+
+## Views and system actions
+
+List and icon views distinguish Word, Excel, PowerPoint, PDF, images, and other common file types. The toolbar offers list view and four icon sizes. The drag preview shows the item icon, name, and selection count.
+
+Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
 
 ## File operations
 
@@ -66,5 +78,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_x64-setup.exe

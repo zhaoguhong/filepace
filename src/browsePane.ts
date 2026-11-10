@@ -51,7 +51,7 @@ export function useBrowsePane(
 
   useLayoutEffect(() => {
     if (listRef.current && tab) listRef.current.scrollTop = tab.scroll;
-  }, [tab?.id, path, listing]);
+  }, [tab?.id, tab?.view, tab?.gridSize, path, listing]);
 
   return {
     tab,

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -7,6 +8,7 @@ import {
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
 import type { PaneSide } from "./browsePane";
+import type { Entry } from "./model";
 
 export const isMac = navigator.platform.includes("Mac");
 type FileTransfer = "copy" | "move";
@@ -30,7 +32,9 @@ type NativeDrag =
     }
   | { type: "leave" };
 
-type Source = { pane: PaneSide; directory: string; paths: string[] };
+type DragSelection = { entry: Entry; paths: string[] };
+type Source = DragSelection & { pane: PaneSide; directory: string };
+type Preview = { entry: Entry; pane: PaneSide; paths: Set<string> };
 type Gesture = Source & {
   pointerId: number;
   row: HTMLElement;
@@ -67,6 +71,68 @@ function pointerTarget(
   return { ...target, kind: copy ? "copy" : "move" };
 }
 
+function positionPreview(element: HTMLElement, { x, y }: Position) {
+  const offset = 14;
+  const left =
+    x + offset + element.offsetWidth <= window.innerWidth - 8
+      ? x + offset
+      : Math.max(8, x - offset - element.offsetWidth);
+  const top =
+    y + offset + element.offsetHeight <= window.innerHeight - 8
+      ? y + offset
+      : Math.max(8, y - offset - element.offsetHeight);
+  element.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+}
+
+function nativePreview(row: HTMLElement, { entry, paths }: DragSelection) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 240;
+  canvas.height = 46;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  context.font = "600 13px system-ui, sans-serif";
+  const suffix = paths.length > 1 ? ` · ${paths.length} 项` : "";
+  const characters = Array.from(entry.name);
+  let label = entry.name + suffix;
+  while (characters.length && context.measureText(label).width > 190) {
+    characters.pop();
+    label = characters.join("") + "…" + suffix;
+  }
+  canvas.width = Math.ceil(49 + context.measureText(label).width);
+  context.beginPath();
+  if (context.roundRect)
+    context.roundRect(1, 1, canvas.width - 2, canvas.height - 2, 8);
+  else context.rect(1, 1, canvas.width - 2, canvas.height - 2);
+  context.fillStyle = "#f7faff";
+  context.fill();
+  context.strokeStyle = "#b8cce7";
+  context.stroke();
+
+  const icon = row.querySelector<HTMLImageElement>(".entry-icon img");
+  if (icon?.complete && icon.naturalWidth && icon.naturalHeight) {
+    const scale = 29 / Math.max(icon.naturalWidth, icon.naturalHeight);
+    const width = icon.naturalWidth * scale;
+    const height = icon.naturalHeight * scale;
+    context.drawImage(
+      icon,
+      8 + (29 - width) / 2,
+      (46 - height) / 2,
+      width,
+      height,
+    );
+  } else {
+    context.fillStyle = "#cdddf4";
+    context.fillRect(14, 11, 18, 24);
+  }
+  context.font = "600 13px system-ui, sans-serif";
+  context.fillStyle = "#26384f";
+  context.textBaseline = "middle";
+  context.fillText(label, 40, 23);
+  const png = canvas.toDataURL("image/png").split(",")[1];
+  return Array.from(atob(png), (byte) => byte.charCodeAt(0));
+}
+
 export function useFileDrag(options: {
   split: boolean;
   focusedPath?: string;
@@ -84,14 +150,32 @@ export function useFileDrag(options: {
   const pointer = useRef<Gesture | null>(null);
   const suppressClick = useRef(false);
   const [hint, setHint] = useState<DropHint | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
 
-  function nativeDrag(paths: string[], sourcePane?: PaneSide) {
+  function nativeDrag(
+    selection: DragSelection,
+    row: HTMLElement,
+    sourcePane?: PaneSide,
+  ) {
     latest.current.onStart();
-    call("start_file_drag", { paths, sourcePane }).catch((error) =>
-      latest.current.onError(String(error)),
-    );
+    let previewImage: number[] | undefined;
+    try {
+      previewImage = nativePreview(row, selection);
+    } catch {
+      // The native command has a bundled fallback if the image cannot be captured.
+    }
+    call("start_file_drag", {
+      paths: selection.paths,
+      sourcePane,
+      previewImage,
+    }).catch((error) => latest.current.onError(String(error)));
   }
+
+  useLayoutEffect(() => {
+    if (preview && previewRef.current && pointer.current)
+      positionPreview(previewRef.current, pointer.current.position);
+  }, [preview]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -125,22 +209,18 @@ export function useFileDrag(options: {
   }, []);
 
   useEffect(() => {
-    // Captured pointer events keep the two panes independent of the OS file-drag loop.
+    // Keep local drops in the webview and hand off to the OS at the window edge.
     function clear() {
       const gesture = pointer.current;
       pointer.current = null;
       if (gesture?.row.hasPointerCapture(gesture.pointerId))
         gesture.row.releasePointerCapture(gesture.pointerId);
       setHint(null);
-      setDragging(false);
+      setPreview(null);
     }
     function move(event: PointerEvent) {
       const gesture = pointer.current;
       if (!gesture || event.pointerId !== gesture.pointerId) return;
-      if (!latest.current.split) {
-        clear();
-        return;
-      }
       gesture.position = { x: event.clientX, y: event.clientY };
       if (!gesture.started) {
         const distance = Math.hypot(
@@ -151,7 +231,11 @@ export function useFileDrag(options: {
         gesture.started = true;
         suppressClick.current = true;
         latest.current.onStart();
-        setDragging(true);
+        setPreview({
+          entry: gesture.entry,
+          pane: gesture.pane,
+          paths: new Set(gesture.paths),
+        });
       }
       event.preventDefault();
       if (
@@ -162,9 +246,15 @@ export function useFileDrag(options: {
           event.clientY >= window.innerHeight)
       ) {
         clear();
-        nativeDrag(gesture.paths, gesture.pane);
+        nativeDrag(
+          gesture,
+          gesture.row,
+          latest.current.split ? gesture.pane : undefined,
+        );
         return;
       }
+      if (previewRef.current)
+        positionPreview(previewRef.current, gesture.position);
       const next = pointerTarget(gesture, event);
       setHint((previous) =>
         previous?.pane === next?.pane &&
@@ -178,13 +268,15 @@ export function useFileDrag(options: {
       const gesture = pointer.current;
       if (!gesture || event.pointerId !== gesture.pointerId) return;
       gesture.position = { x: event.clientX, y: event.clientY };
-      const target =
-        gesture.started && latest.current.split
-          ? pointerTarget(gesture, event)
-          : null;
+      const target = gesture.started ? pointerTarget(gesture, event) : null;
       clear();
       if (target)
-        latest.current.transfer(target.kind, gesture.paths, target.path, false);
+        latest.current.transfer(
+          target.kind,
+          gesture.paths,
+          target.path,
+          !latest.current.split,
+        );
     }
     function cancel(event: PointerEvent) {
       if (pointer.current?.pointerId === event.pointerId) clear();
@@ -216,7 +308,6 @@ export function useFileDrag(options: {
 
   function begin(event: ReactPointerEvent<HTMLElement>, source: Source) {
     if (
-      !latest.current.split ||
       !event.isPrimary ||
       event.button !== 0 ||
       event.pointerType === "touch" ||
@@ -235,5 +326,5 @@ export function useFileDrag(options: {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  return { hint, dragging, suppressClick, begin, nativeDrag };
+  return { hint, preview, previewRef, suppressClick, begin };
 }
