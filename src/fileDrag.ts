@@ -80,6 +80,34 @@ function pointerTarget(
   return { ...target, kind: dropKind(target, gesture, copy ? "copy" : "move") };
 }
 
+function scrollColumnEdge(position: Position, elapsed: number) {
+  const strip = document
+    .elementFromPoint(position.x, position.y)
+    ?.closest<HTMLElement>(".column-browser");
+  if (!strip || !strip.clientWidth || strip.scrollWidth <= strip.clientWidth)
+    return false;
+  const x = Math.max(
+    0,
+    Math.min(
+      strip.clientWidth,
+      position.x - strip.getBoundingClientRect().left,
+    ),
+  );
+  const edge = Math.min(48, strip.clientWidth / 4);
+  const fromLeft = Math.max(0, edge - x);
+  const fromRight = Math.max(0, edge - (strip.clientWidth - x));
+  const proximity = (fromRight - fromLeft) / edge;
+  if (!proximity) return false;
+  const before = strip.scrollLeft;
+  const delta =
+    Math.sign(proximity) * Math.max(1, Math.abs(proximity) * elapsed * 0.75);
+  strip.scrollLeft = Math.max(
+    0,
+    Math.min(strip.scrollWidth - strip.clientWidth, before + delta),
+  );
+  return strip.scrollLeft !== before;
+}
+
 function positionPreview(element: HTMLElement, { x, y }: Position) {
   const offset = 14;
   const left =
@@ -183,51 +211,78 @@ export function useFileDrag(options: {
   }, [preview]);
 
   useEffect(() => {
-    if (!desktop) return;
-    const stop = getCurrentWebview().listen<NativeDrag>(
-      "filepace-file-drag",
-      ({ payload: event }) => {
-        if (event.type === "leave") {
-          setHint(null);
-          return;
-        }
-        const target = targetAt(event.position);
-        const kind = target
-          ? dropKind(target, event.source, event.kind)
-          : event.kind;
-        if (event.type === "hover") {
-          setHint(
-            target && target.path !== event.source?.directory
-              ? { ...target, kind }
-              : null,
-          );
-          return;
-        }
-        setHint(null);
-        const internal = event.betweenWindows || Boolean(event.source);
-        const path =
-          target?.path ?? (!internal ? latest.current.focusedPath : undefined);
-        if (
-          path &&
-          path !== event.source?.directory &&
-          !event.paths.includes(path)
-        )
-          latest.current.transfer(
-            kind,
-            event.paths,
-            path,
-            !event.source || !latest.current.split,
-          );
-      },
-    );
-    return () => {
-      stop.then((unlisten) => unlisten());
-    };
-  }, []);
+    let edge: { position: Position; target: () => DropHint | null } | null =
+      null;
+    let animation = 0;
+    let lastFrame = 0;
+    let disposed = false;
 
-  useEffect(() => {
+    function updateHint(next: DropHint | null) {
+      setHint((previous) =>
+        previous?.pane === next?.pane &&
+        previous?.path === next?.path &&
+        previous?.folder === next?.folder &&
+        previous?.kind === next?.kind
+          ? previous
+          : next,
+      );
+    }
+    function stopEdgeScroll() {
+      cancelAnimationFrame(animation);
+      animation = 0;
+      lastFrame = 0;
+      edge = null;
+    }
+    function scrollFrame(now: number) {
+      animation = 0;
+      const elapsed = lastFrame ? Math.min(now - lastFrame, 32) : 16;
+      if (!edge || !scrollColumnEdge(edge.position, elapsed)) {
+        lastFrame = 0;
+        return;
+      }
+      lastFrame = now;
+      updateHint(edge.target());
+      animation = requestAnimationFrame(scrollFrame);
+    }
+    function track(position: Position, target: () => DropHint | null) {
+      updateHint(target());
+      edge = { position, target };
+      if (!animation) animation = requestAnimationFrame(scrollFrame);
+    }
+
+    function handleNative(event: NativeDrag) {
+      if (event.type === "hover") {
+        track(event.position, () => {
+          const target = targetAt(event.position);
+          return target && target.path !== event.source?.directory
+            ? { ...target, kind: dropKind(target, event.source, event.kind) }
+            : null;
+        });
+        return;
+      }
+      stopEdgeScroll();
+      setHint(null);
+      if (event.type === "leave") return;
+      const target = targetAt(event.position);
+      const internal = event.betweenWindows || Boolean(event.source);
+      const path =
+        target?.path ?? (!internal ? latest.current.focusedPath : undefined);
+      if (
+        path &&
+        path !== event.source?.directory &&
+        !event.paths.includes(path)
+      )
+        latest.current.transfer(
+          target ? dropKind(target, event.source, event.kind) : event.kind,
+          event.paths,
+          path,
+          !event.source || !latest.current.split,
+        );
+    }
+
     // Keep local drops in the webview and hand off to the OS at the window edge.
     function clear() {
+      stopEdgeScroll();
       const gesture = pointer.current;
       pointer.current = null;
       if (gesture?.row.hasPointerCapture(gesture.pointerId))
@@ -268,14 +323,7 @@ export function useFileDrag(options: {
       }
       if (previewRef.current)
         positionPreview(previewRef.current, gesture.position);
-      const next = pointerTarget(gesture, event);
-      setHint((previous) =>
-        previous?.pane === next?.pane &&
-        previous?.path === next?.path &&
-        previous?.kind === next?.kind
-          ? previous
-          : next,
-      );
+      track(gesture.position, () => pointerTarget(gesture, event));
     }
     function end(event: PointerEvent) {
       const gesture = pointer.current;
@@ -299,8 +347,16 @@ export function useFileDrag(options: {
       if (!gesture?.started) return;
       if (event.key === "Escape") clear();
       else if (event.key === "Alt" || event.key === "Control")
-        setHint(pointerTarget(gesture, event));
+        track(gesture.position, () => pointerTarget(gesture, event));
     }
+    const native = desktop
+      ? getCurrentWebview().listen<NativeDrag>(
+          "filepace-file-drag",
+          ({ payload }) => {
+            if (!disposed) handleNative(payload);
+          },
+        )
+      : undefined;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", cancel);
@@ -309,6 +365,9 @@ export function useFileDrag(options: {
     window.addEventListener("keydown", key);
     window.addEventListener("keyup", key);
     return () => {
+      disposed = true;
+      stopEdgeScroll();
+      void native?.then((unlisten) => unlisten()).catch(() => {});
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", cancel);

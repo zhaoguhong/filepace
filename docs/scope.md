@@ -16,6 +16,8 @@
 - Frontend TypeScript and production asset build.
 - Rust compile and filesystem unit tests cover copying and moving actual files, cancellation preserving the source, conflict handling, invalid names, preview size limits, and refusal to read or transfer named pipes.
 - Browser interaction tests cover browsing, tab recovery, right-click actions and the properties fallback, file type icons, four icon sizes, and independent pane settings. Drag tests check the moving preview, selection count, move and modifier-copy gestures, cancellation, and the PNG handed off to the native drag command.
+- Column-view tests confirm that file lists start at the top of their columns and that returning through the path bar keeps earlier columns with Windows paths.
+- Browser tests keep the Settings button visible while a long sidebar list scrolls and verify that the apply-all choice in a conflict dialog applies to the current file task only.
 - Installed macOS app testing covered real file moves in both directions between panes, including a drop into a subfolder. The red close button closed an extra window and the final idle window. A pending conflict blocked closing the last window until the test task was cancelled.
 - The current macOS build showed the Finder Get Info window for both a file and a folder. A move from the extra-large icon view into a folder in the other pane and a copy into a folder in a single pane preserved the test file contents.
 - The Windows GNU target passed a Rust compilation check, including the Shell properties command.

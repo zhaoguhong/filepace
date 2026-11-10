@@ -6,7 +6,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.1) 下载适合你的 v0.4.1 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.2) 下载适合你的 v0.4.2 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 - 按 macOS 的 **⌘N** 或 Windows 的 **Ctrl+N**，在当前位置打开独立窗口。也可通过标签页右键菜单将标签移到新窗口。
 - 点「左右分栏」会在当前窗口内打开右侧窗格。两侧各有独立的标签页、选区和浏览历史。侧栏导航和键盘快捷键作用于当前窗格。
 - 把文件或文件夹拖到另一列、另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入该处显示的目录。
+- 拖动文件时，把鼠标停在列视图的左侧或右侧边缘，列表会横向滚动，露出其他列。
 - 点「合并分栏」会回到单栏，并保留两边的标签页。
 
 右键单击文件、文件夹或文件列表的空白处，可以复制完整路径、在 Finder 或资源管理器中显示，或打开命令行。macOS 使用终端，Windows 使用 PowerShell。右键单击文件时，命令行会在文件所在目录启动。
@@ -54,7 +55,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 ## 文件操作
 
-文件任务会显示进度，遇到同名文件时会询问如何处理。移动时先在目标位置写入文件，再移除源文件。删除和替换的文件会进入系统废纸篓或回收站。关闭最后一个窗口时，如果还有文件任务在运行，Filepace 会询问是继续任务，还是取消任务并关闭窗口。
+文件任务会显示进度。遇到同名项目时，可以对照源和目标的完整路径、文件大小和修改时间，再选择跳过、替换或保留两者。移动时先在目标位置写入文件，再移除源文件。删除和替换的文件会进入系统废纸篓或回收站。关闭最后一个窗口时，如果还有文件任务在运行，Filepace 会询问是继续任务，还是取消任务并关闭窗口。
 
 - 从状态栏的「撤销」或按 **⌘Z** / **Ctrl+Z**，撤销本次会话最近一次移动或改名。原位置被占用或文件已被替换时会停下来。被替换的旧项目可从系统废纸篓或回收站恢复。
 - 右键「压缩为 ZIP」会把选中的项目归档到当前目录，优先使用系统工具。右键 ZIP 可「解压到同名文件夹」。解压会检查包内路径，验证完成后才提交目标文件夹。
@@ -97,5 +98,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_x64-setup.exe

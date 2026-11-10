@@ -55,6 +55,38 @@ struct Place {
     path: String,
     kind: String,
 }
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ConflictItem {
+    path: String,
+    is_dir: bool,
+    size: Option<u64>,
+    modified: Option<i64>,
+}
+
+impl ConflictItem {
+    fn at(path: &Path) -> Self {
+        let metadata = path.symlink_metadata().ok();
+        let regular = metadata.as_ref().filter(|meta| !is_link(meta));
+        Self {
+            path: strpath(path),
+            is_dir: regular.is_some_and(fs::Metadata::is_dir),
+            size: regular.filter(|meta| meta.is_file()).map(fs::Metadata::len),
+            modified: metadata.as_ref().and_then(|meta| {
+                meta.modified()
+                    .ok()
+                    .map(|_| filetime::FileTime::from_last_modification_time(meta).unix_seconds())
+            }),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Conflict {
+    source: Option<ConflictItem>,
+    destination: ConflictItem,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct Task {
@@ -67,7 +99,7 @@ struct Task {
     completed: u64,
     bytes: u64,
     errors: Vec<String>,
-    conflict: Option<String>,
+    conflict: Option<Conflict>,
     decision: Option<String>,
     policy: Option<String>,
     cancelled: bool,
@@ -459,7 +491,7 @@ fn unique_target(path: &Path) -> Result<PathBuf, String> {
     }
     unreachable!()
 }
-fn choose(shared: &Shared, id: &str, dst: &Path) -> Result<String, String> {
+fn choose(shared: &Shared, id: &str, source: Option<&Path>, dst: &Path) -> Result<String, String> {
     if let Some(policy) = shared
         .tasks
         .lock()
@@ -469,8 +501,12 @@ fn choose(shared: &Shared, id: &str, dst: &Path) -> Result<String, String> {
     {
         return Ok(policy);
     }
+    let conflict = Conflict {
+        source: source.map(ConflictItem::at),
+        destination: ConflictItem::at(dst),
+    };
     update(shared, id, |t| {
-        t.conflict = Some(strpath(dst));
+        t.conflict = Some(conflict);
         t.status = "conflict".into();
         t.decision = None;
     });
@@ -500,13 +536,14 @@ fn choose(shared: &Shared, id: &str, dst: &Path) -> Result<String, String> {
 fn resolve_conflict(
     shared: &Shared,
     id: &str,
+    source: Option<&Path>,
     dst: PathBuf,
 ) -> Result<Option<(PathBuf, Option<Identity>)>, String> {
     if missing(&dst).map_err(|error| error.to_string())? {
         return Ok(Some((dst, None)));
     }
     let before = Identity::at(&dst);
-    match choose(shared, id, &dst)?.as_str() {
+    match choose(shared, id, source, &dst)?.as_str() {
         "skip" => Ok(None),
         "keep" => Ok(Some((unique_target(&dst)?, None))),
         "replace" => {
@@ -550,7 +587,7 @@ fn copy_entry(
     let Some((dst, replace)) = (if merge {
         Some((dest.to_path_buf(), None))
     } else {
-        resolve_conflict(shared, id, dest.to_path_buf())?
+        resolve_conflict(shared, id, Some(src), dest.to_path_buf())?
     }) else {
         return Ok(false);
     };
@@ -1207,6 +1244,30 @@ mod tests {
         assert!(pipe.exists());
         assert!(!destination.exists());
     }
+    #[test]
+    fn conflict_snapshot_reports_file_metadata_and_labels_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.txt");
+        fs::write(&path, b"example").unwrap();
+        let time = 1_700_000_000;
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(time, 0)).unwrap();
+
+        let item = ConflictItem::at(&path);
+        assert_eq!(item.path, strpath(&path));
+        assert_eq!(item.size, Some(7));
+        assert_eq!(item.modified, Some(time));
+        assert!(!item.is_dir);
+
+        let folder = ConflictItem::at(dir.path());
+        assert!(folder.is_dir);
+        assert!(folder.modified.is_some());
+        assert_eq!(folder.size, None);
+
+        let missing = ConflictItem::at(&dir.path().join("missing.txt"));
+        assert_eq!(missing.size, None);
+        assert_eq!(missing.modified, None);
+    }
+
     #[test]
     fn copy_and_move_preserve_bytes() {
         let dir = tempfile::tempdir().unwrap();

@@ -244,7 +244,11 @@ fn compress(
     state: &Shared,
     id: &str,
 ) -> Result<(), String> {
-    let Some((target, replace)) = resolve_conflict(state, id, target)? else {
+    let source = match paths {
+        [path] => Some(path.as_path()),
+        _ => None,
+    };
+    let Some((target, replace)) = resolve_conflict(state, id, source, target)? else {
         return Ok(());
     };
     check_ancestors(&target).map_err(|error| error.to_string())?;
@@ -341,7 +345,7 @@ fn compress(
 }
 
 fn extract(src: &Path, target: PathBuf, state: &Shared, id: &str) -> Result<(), String> {
-    let Some((target, replace)) = resolve_conflict(state, id, target)? else {
+    let Some((target, replace)) = resolve_conflict(state, id, Some(src), target)? else {
         return Ok(());
     };
     check_ancestors(&target).map_err(|error| error.to_string())?;

@@ -6,7 +6,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from "react";
-import { Folder, LoaderCircle } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import FileIcon from "./FileIcon";
 import { useDirectoryListing, type PaneSide } from "./browsePane";
 import { useFilePreview } from "./filePreview";
@@ -95,14 +95,6 @@ function Ancestor({
       className="directory-column"
       aria-label={`目录列 · ${basename(path)}`}
     >
-      <button
-        className="column-heading"
-        title={path}
-        onClick={() => onChoose(columns)}
-      >
-        <Folder size={14} />
-        <span>{basename(path)}</span>
-      </button>
       <div
         className={`file-area column-list${dropPath && dropPath === listing?.path ? " drop-target" : ""}`}
         aria-label={`文件夹 · ${basename(path)}`}
@@ -158,7 +150,7 @@ function PreviewColumn({
       className="directory-column file-preview-column"
       aria-label="文件预览"
     >
-      <div className="column-heading">预览</div>
+      <div className="column-preview-heading">预览</div>
       <div className="column-preview-body">
         {result?.image ? (
           <img src={result.image} alt={entry.name} />
@@ -206,10 +198,6 @@ export default function ColumnBrowser(props: Props) {
         className="directory-column active-column"
         aria-label={`当前目录列 · ${basename(tab.path)}`}
       >
-        <div className="column-heading" title={tab.path}>
-          <Folder size={14} />
-          <span>{basename(tab.path)}</span>
-        </div>
         {active}
       </section>
       {preview && (

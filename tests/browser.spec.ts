@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import type { Task } from "../src/model";
 test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
   await page.goto("/");
@@ -129,11 +130,17 @@ test("opens new tabs in columns and follows a branch until the file preview", as
   await current.getByRole("option", { name: /项目/ }).click();
   const ancestor = page.getByLabel("文件夹 · demo", { exact: true });
   await expect(ancestor.getByRole("option", { name: /项目/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "当前目录列 · 项目" })).toBeVisible();
+  const project = page.getByRole("region", { name: "当前目录列 · 项目" });
+  await expect(project).toBeVisible();
+  expect((await current.boundingBox())!.y).toBeCloseTo((await project.boundingBox())!.y, 0);
+  await expect(page.getByRole("region", { name: "目录列 · demo", exact: true }).getByRole("button", { name: "demo", exact: true })).toHaveCount(0);
   await ancestor.getByRole("option", { name: /设计素材/ }).click();
   await expect(page.getByRole("region", { name: "当前目录列 · 设计素材" })).toBeVisible();
   await ancestor.getByRole("option", { name: /产品需求\.md/ }).click();
   await expect(page.getByRole("region", { name: "文件预览" })).toContainText("产品需求.md");
+  await current.getByRole("option", { name: "项目" }).click();
+  await page.locator(".address").getByRole("button", { name: "demo", exact: true }).click();
+  await expect(page.getByRole("region", { name: "当前目录列 · demo" })).toBeVisible();
 
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const view = page.getByRole("combobox", { name: "默认视图" });
@@ -208,14 +215,21 @@ test("shows path and system actions for a file, a folder and an empty list", asy
 
 const home = "/Users/demo";
 
-async function mockDesktop(page: Page, defaultView: "list" | "columns") {
+async function mockDesktop(page: Page, defaultView: "list" | "columns", root = home) {
   await page.addInitScript(({ home, defaultView }) => {
     localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView }));
     const writes: { command: string; args: Record<string, unknown> }[] = [];
+    const separator = home.includes("\\") ? "\\" : "/";
     const listings: Record<string, [string, boolean][]> = {
       [home]: [["项目", true], ["左栏文件.txt", false], ["补充文档.DOCX", false]],
-      [`${home}/项目`]: [["归档", true], ["右栏文件.txt", false]],
+      [`${home}${separator}项目`]: [["归档", true], ["右栏文件.txt", false]],
     };
+    let branch = [home, "项目", "归档"].join(separator);
+    for (const folder of ["第三级", "第四级", "第五级", "第六级"]) {
+      listings[branch] = [[folder, true]];
+      branch += separator + folder;
+    }
+    listings[branch] = [["深层文件.txt", false]];
     let callback = 0;
     Object.assign(window, {
       isTauri: true,
@@ -226,26 +240,127 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns") {
         transformCallback: () => ++callback,
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
-          if (command === "tasks") return { tasks: [], undo: null };
-          if (command === "update_status") return { current: "0.4.1", phase: "current" };
+          if (command === "tasks") return { tasks: (window as Window & { filepaceTasks?: Task[] }).filepaceTasks ?? [], undo: null };
+          if (command === "update_status") return { current: "0.4.2", phase: "current" };
           if (command === "list_directory") {
-            const path = String(args.path);
+            const requested = String(args.path);
+            const path = separator === "\\" && requested.length > 3 && requested.endsWith(separator)
+              ? requested.slice(0, -1)
+              : requested;
             return {
               path,
-              parent: path.slice(0, path.lastIndexOf("/")),
+              parent: path.slice(0, path.lastIndexOf(separator)),
               entries: (listings[path] ?? []).map(([name, isDir]) => ({
-                name, isDir, path: `${path}/${name}`, isLink: false, size: 10, modified: 0, hidden: false,
+                name, isDir, path: `${path}${separator}${name}`, isLink: false, size: 10, modified: 0, hidden: false,
               })),
             };
           }
-          if (["start_task", "new_window", "start_file_drag", "clipboard_set"].includes(command)) writes.push({ command, args });
+          if (["start_task", "new_window", "start_file_drag", "clipboard_set", "task_action"].includes(command)) writes.push({ command, args });
           if (command === "plugin:event|listen") return ++callback;
           return null;
         },
       },
     });
-  }, { home, defaultView });
+  }, { home: root, defaultView });
 }
+
+test("keeps earlier columns when using Windows breadcrumbs", async ({ page }) => {
+  await mockDesktop(page, "columns", "C:\\Filepace Fixture");
+  await page.goto("/");
+  const current = page.getByLabel("文件列表", { exact: true });
+  await current.getByRole("option", { name: "项目", exact: true }).click();
+  await current.getByRole("option", { name: "归档", exact: true }).click();
+  await page.locator(".address").getByRole("button", { name: "项目", exact: true }).click();
+  await expect(page.getByRole("region", { name: "当前目录列 · 项目", exact: true })).toBeVisible();
+  const earlier = page.getByRole("region", { name: "目录列 · Filepace Fixture", exact: true });
+  await expect(earlier.getByRole("option", { name: "项目", exact: true, selected: true })).toBeVisible();
+});
+
+test("compares conflict metadata and scopes apply-all to the current file task", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  const dialog = page.getByRole("dialog", { name: "目标位置已有同名项目" });
+  const sourceTime = 1_700_000_000;
+  const targetTime = 1_800_000_000;
+  async function showConflict(id: string) {
+    const path = `${home}/项目/${id}.txt`;
+    const source = `${home}/${id}.txt`;
+    await page.evaluate((task) => {
+      (window as Window & { filepaceTasks: Task[] }).filepaceTasks = [task];
+    }, {
+      id, kind: "copy", sources: [source], destination: `${home}/项目`, status: "conflict",
+      current: source, completed: 0, bytes: 0, errors: [],
+      conflict: {
+        source: { path: source, isDir: false, size: 12, modified: sourceTime },
+        destination: { path, isDir: false, size: 1024, modified: targetTime },
+      },
+    });
+    await expect(dialog.getByText(path, { exact: true })).toBeVisible();
+  }
+
+  await showConflict("first");
+  const source = dialog.getByRole("region", { name: "源项目" });
+  const target = dialog.getByRole("region", { name: "目标项目" });
+  const dates = await page.evaluate((times) => times.map((time) => new Date(time * 1000).toLocaleString("zh-CN")), [sourceTime, targetTime]);
+  await expect(source.getByText(`${home}/first.txt`, { exact: true })).toBeVisible();
+  await expect(source).toContainText("12 B");
+  await expect(source).toContainText(dates[0]);
+  await expect(target).toContainText("1.0 KB");
+  await expect(target).toContainText(dates[1]);
+  const apply = dialog.getByRole("checkbox", { name: "应用到本次任务的后续冲突" });
+  const skip = dialog.getByRole("button", { name: "跳过", exact: true });
+  await apply.check();
+  await skip.click();
+  await showConflict("second");
+  await expect(apply).not.toBeChecked();
+  await skip.click();
+  const writes = await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites);
+  expect(writes).toEqual([
+    { command: "task_action", args: { id: "first", decision: "skip", applyAll: true } },
+    { command: "task_action", args: { id: "second", decision: "skip", applyAll: false } },
+  ]);
+});
+
+test("scrolls to hidden columns while dragging and drops on the visible destination", async ({ page }) => {
+  await mockDesktop(page, "columns");
+  await page.goto("/");
+  const current = page.getByLabel("文件列表", { exact: true });
+  const folders = ["项目", "归档", "第三级", "第四级", "第五级", "第六级"];
+  for (const folder of folders) {
+    await current.getByRole("option", { name: folder, exact: true }).click();
+  }
+  const strip = page.getByLabel("列视图目录", { exact: true });
+  const view = (await strip.boundingBox())!;
+  const deep = current.getByRole("option", { name: "深层文件.txt" });
+  await expect(deep).toBeInViewport();
+  const from = (await deep.boundingBox())!;
+  expect(await strip.evaluate((el) => el.scrollLeft)).toBeGreaterThan(200);
+  await page.mouse.move(from.x + 25, from.y + 14);
+  await page.mouse.down();
+  await page.mouse.move(view.x + 8, view.y + 150, { steps: 10 });
+  await expect.poll(() => strip.evaluate((el) => el.scrollLeft)).toBe(0);
+  await expect(page.getByRole("status").filter({ hasText: "移动到 demo" })).toBeVisible();
+  await page.mouse.up();
+
+  const rootFile = page.getByRole("region", { name: "目录列 · demo", exact: true })
+    .getByRole("option", { name: "左栏文件.txt" });
+  const root = (await rootFile.boundingBox())!;
+  await page.mouse.move(root.x + 25, root.y + 14);
+  await page.mouse.down();
+  await page.mouse.move(view.x + view.width - 8, view.y + 150, { steps: 10 });
+  await expect.poll(() => strip.evaluate((el) => el.scrollWidth - el.clientWidth - el.scrollLeft)).toBeLessThan(2);
+  const copyKey = await page.evaluate(() => navigator.platform.includes("Mac")) ? "Alt" : "Control";
+  await page.keyboard.down(copyKey);
+  await expect(page.getByRole("status").filter({ hasText: "复制到 第六级" })).toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up(copyKey);
+
+  const deepPath = [home, ...folders].join("/");
+  expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toEqual([
+    { command: "start_task", args: { kind: "move", sources: [`${deepPath}/深层文件.txt`], destination: home } },
+    { command: "start_task", args: { kind: "copy", sources: [`${home}/左栏文件.txt`], destination: deepPath } },
+  ]);
+});
 
 test("moves and copies files between panes and keeps both tabs when merging", async ({ page }) => {
   await mockDesktop(page, "list");
@@ -473,5 +588,15 @@ test("remembers sidebar groups and edits common locations while retaining saved 
   await expect(common.getByRole("button", { name: "下载", exact: true })).toHaveCount(0);
   await favoritesToggle.click();
   await expect(favorites.getByRole("button", { name: "设计素材" })).toBeVisible();
+  await secondWindow.evaluate(() => {
+    localStorage.setItem("filepace-favorites", JSON.stringify(
+      Array.from({ length: 30 }, (_, index) => `/Users/demo/目录 ${index + 1}`),
+    ));
+  });
+  await expect(favorites.getByRole("button", { name: "目录 30", exact: true })).toHaveCount(1);
+  const settings = page.getByRole("complementary", { name: "位置侧栏" }).getByRole("button", { name: "设置", exact: true });
+  await expect(settings).toBeInViewport({ ratio: 1 });
+  await settings.click();
+  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
   await secondWindow.close();
 });

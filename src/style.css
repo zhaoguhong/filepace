@@ -133,14 +133,19 @@ hr {
   min-width: 165px;
   max-width: 320px;
   resize: horizontal;
-  overflow: auto;
+  overflow: hidden;
   flex-shrink: 0;
   background: var(--subtle);
   border-right: 1px solid var(--border);
-  padding: 23px 12px 0;
   display: flex;
   flex-direction: column;
   user-select: none;
+}
+.sidebar-locations {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 23px 12px 0;
 }
 .section-label {
   font-size: 10px;
@@ -225,25 +230,8 @@ hr {
   padding: 7px 12px;
 }
 .sidebar-bottom {
-  margin-top: auto;
-  color: var(--muted);
-  padding: 26px 10px 22px;
-  font-size: 11px;
-  line-height: 20px;
-}
-.sidebar-bottom small {
-  display: block;
-  font-size: 10px;
-  color: var(--muted);
-  margin-left: 12px;
-}
-.green-dot {
-  display: inline-block;
-  background: var(--success);
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  margin-right: 7px;
+  flex-shrink: 0;
+  padding: 7px 12px 12px;
 }
 main {
   flex: 1;
@@ -984,6 +972,48 @@ main {
   color: var(--muted);
   line-height: 1.7;
   font-size: 12px;
+}
+.conflict-modal {
+  width: 620px;
+  max-height: calc(100vh - 70px);
+  overflow: auto;
+}
+.conflict-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.conflict-item {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--subtle);
+  overflow-wrap: anywhere;
+}
+.conflict-item h4 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.conflict-item .conflict-path {
+  margin: 4px 0 12px;
+  max-height: 3.4em;
+  overflow: auto;
+  user-select: text;
+}
+.conflict-item dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.conflict-item dt {
+  color: var(--muted);
+}
+.conflict-item dd {
+  margin: 0;
 }
 .wrap {
   overflow-wrap: anywhere;

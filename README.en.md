@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.4.1 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.1).
+Download the v0.4.2 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.2).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a
 - Press **Command+N** on macOS or **Ctrl+N** on Windows to open a separate window at the current location. Use the tab context menu to move a tab to a new window.
 - **Split View (左右分栏)** opens a right pane in the current window. Each pane has its own tabs, selection, and navigation history. Sidebar navigation and keyboard shortcuts apply to the active pane.
 - Drag a file or folder to another directory column, pane, or Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the directory displayed there.
+- Hold a dragged file near the left or right edge of Column View to scroll to other columns.
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
 
 Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
@@ -54,7 +55,7 @@ Use **Search (搜索)**, **Command+F** on macOS, or **Ctrl+F** on Windows to loo
 
 ## File operations
 
-File tasks show progress and ask how to handle name conflicts. A move completes the destination copy before removing the source. Deletions and replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue the task or cancel it and close the window.
+File tasks show progress. When names conflict, compare the source and destination paths, file sizes, and modification times before choosing to skip, replace, or keep both. A move completes the destination copy before removing the source. Deletions and replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue the task or cancel it and close the window.
 
 - Use **Undo (撤销)** in the status bar or press **Command+Z** / **Ctrl+Z** to undo the most recent move or rename in the current session. Filepace stops if the original location is occupied or the item has been replaced. Replaced items can be recovered through the system trash.
 - Use **Compress to ZIP (压缩为 ZIP)** in the context menu to archive selected items with the system tool where available. **Extract to matching folder (解压到同名文件夹)** validates entry paths and prepares the contents in a temporary folder before committing the result.
@@ -97,5 +98,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_x64-setup.exe

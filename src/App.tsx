@@ -214,7 +214,7 @@ export default function App() {
     [newFolder, setNewFolder] = useState<string | null>(null),
     [revision, setRevision] = useState(0),
     [closePrompt, setClosePrompt] = useState(false),
-    [applyAll, setApplyAll] = useState(false);
+    [applyAllTask, setApplyAllTask] = useState<string | null>(null);
   const [favorites, setFavorites] = useState(readFavorites);
   const [cutPaths, setCutPaths] = useState<string[]>([]);
   const closed = useRef<Record<PaneSide, Tab[]>>({ left: [], right: [] }),
@@ -249,6 +249,7 @@ export default function App() {
     ["running", "conflict"].includes(t.status),
   );
   const conflict = tasks.find((t) => t.status === "conflict" && t.conflict);
+  const applyAll = conflict?.id === applyAllTask;
   function updatePane(
     side: PaneSide,
     update: (pane: PaneSession) => PaneSession,
@@ -1065,12 +1066,16 @@ export default function App() {
     const path = tab.path;
     const crumbs = path.split(/[\\/]/).filter(Boolean);
     const isWindows = path.includes("\\");
+    const trail = columnPaths(tab);
     function crumbPath(i: number) {
-      return isWindows
-        ? (path.startsWith("\\\\") ? "\\\\" : "") +
-            crumbs.slice(0, i + 1).join("\\") +
-            "\\"
-        : "/" + crumbs.slice(0, i + 1).join("/");
+      const parts = crumbs.slice(0, i + 1);
+      if (!isWindows) return "/" + parts.join("/");
+      const prefix = path.startsWith("\\\\") ? "\\\\" : "";
+      const target = prefix + parts.join("\\");
+      return (
+        trail.find((column) => column.replace(/\\+$/, "") === target) ??
+        (i === 0 ? target + "\\" : target)
+      );
     }
     const label = side === "left" ? "左栏" : "右栏";
     function renderFileRow(
@@ -1259,7 +1264,7 @@ export default function App() {
               renderFileRow(
                 entry,
                 listing?.path ?? tab.path,
-                tab.view === "columns" ? columnPaths(tab) : undefined,
+                tab.view === "columns" ? trail : undefined,
               ),
             )}
             {tab.view !== "grid" && (
@@ -1722,84 +1727,84 @@ export default function App() {
       <div className="workspace">
         {sidebar && (
           <aside className="sidebar" aria-label="位置侧栏">
-            <SidebarGroup
-              label="常用位置"
-              collapsed={preferences.collapsedSidebar.includes("common")}
-              onToggle={() => toggleSidebarGroup("common")}
-              action={
-                <button
-                  aria-label="添加当前目录到常用位置"
-                  title="添加当前目录到常用位置"
-                  disabled={
-                    !listing ||
-                    commonPlaces.some((place) => place.path === currentPath)
-                  }
-                  onClick={() => addCommonPlace(currentPath)}
-                >
-                  <Plus size={14} />
-                </button>
-              }
-            >
-              {commonPlaces.length ? (
-                commonPlaces.map((place) => {
-                  const system = systemPlaces.find(
-                    (item) => item.path === place.path,
-                  );
-                  return renderShortcut(
-                    place,
-                    placeIcons[system?.name ?? ""] ?? Folder,
-                    "common",
-                  );
-                })
-              ) : (
-                <div className="sidebar-hint">用加号添加当前文件夹</div>
-              )}
-            </SidebarGroup>
-            <SidebarGroup
-              label="收藏目录"
-              collapsed={preferences.collapsedSidebar.includes("favorites")}
-              onToggle={() => toggleSidebarGroup("favorites")}
-              action={
-                <button
-                  aria-label="收藏当前目录"
-                  title="收藏当前目录"
-                  disabled={!listing || favorites.includes(currentPath)}
-                  onClick={() => favorite(currentPath)}
-                >
-                  <Plus size={14} />
-                </button>
-              }
-            >
-              {favorites.length ? (
-                favorites.map((path) =>
-                  renderShortcut(
-                    { name: basename(path), path },
-                    Star,
-                    "favorites",
-                  ),
-                )
-              ) : (
-                <div className="sidebar-hint">把常去的文件夹放在这里</div>
-              )}
-            </SidebarGroup>
-            <div className="section-label section-spaced">磁盘与位置</div>
-            {places
-              .filter((p) => p.kind === "disk")
-              .map((p) => (
-                <button
-                  className={`place ${p.path === tab.path ? "selected" : ""}`}
-                  key={p.path}
-                  onClick={() => go(p.path)}
-                >
-                  <HardDrive size={17} />
-                  <span>{p.name}</span>
-                </button>
-              ))}
+            <div className="sidebar-locations">
+              <SidebarGroup
+                label="常用位置"
+                collapsed={preferences.collapsedSidebar.includes("common")}
+                onToggle={() => toggleSidebarGroup("common")}
+                action={
+                  <button
+                    aria-label="添加当前目录到常用位置"
+                    title="添加当前目录到常用位置"
+                    disabled={
+                      !listing ||
+                      commonPlaces.some((place) => place.path === currentPath)
+                    }
+                    onClick={() => addCommonPlace(currentPath)}
+                  >
+                    <Plus size={14} />
+                  </button>
+                }
+              >
+                {commonPlaces.length ? (
+                  commonPlaces.map((place) => {
+                    const system = systemPlaces.find(
+                      (item) => item.path === place.path,
+                    );
+                    return renderShortcut(
+                      place,
+                      placeIcons[system?.name ?? ""] ?? Folder,
+                      "common",
+                    );
+                  })
+                ) : (
+                  <div className="sidebar-hint">用加号添加当前文件夹</div>
+                )}
+              </SidebarGroup>
+              <SidebarGroup
+                label="收藏目录"
+                collapsed={preferences.collapsedSidebar.includes("favorites")}
+                onToggle={() => toggleSidebarGroup("favorites")}
+                action={
+                  <button
+                    aria-label="收藏当前目录"
+                    title="收藏当前目录"
+                    disabled={!listing || favorites.includes(currentPath)}
+                    onClick={() => favorite(currentPath)}
+                  >
+                    <Plus size={14} />
+                  </button>
+                }
+              >
+                {favorites.length ? (
+                  favorites.map((path) =>
+                    renderShortcut(
+                      { name: basename(path), path },
+                      Star,
+                      "favorites",
+                    ),
+                  )
+                ) : (
+                  <div className="sidebar-hint">把常去的文件夹放在这里</div>
+                )}
+              </SidebarGroup>
+              <div className="section-label section-spaced">磁盘与位置</div>
+              {places
+                .filter((p) => p.kind === "disk")
+                .map((p) => (
+                  <button
+                    className={`place ${p.path === tab.path ? "selected" : ""}`}
+                    key={p.path}
+                    onClick={() => go(p.path)}
+                  >
+                    <HardDrive size={17} />
+                    <span>{p.name}</span>
+                  </button>
+                ))}
+            </div>
             <div className="sidebar-bottom">
-              <span className="green-dot" />
-              本地工作空间<small>文件始终保存在你的设备上</small>
               <button
-                className="place sidebar-settings"
+                className="place"
                 aria-pressed={Boolean(settingsSection)}
                 onClick={() => openSettings()}
               >
@@ -2501,17 +2506,73 @@ export default function App() {
           </form>
         </div>
       )}
-      {conflict && (
+      {conflict?.conflict && (
         <div className="overlay">
-          <section className="modal form-modal">
+          <section
+            className="modal form-modal conflict-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="目标位置已有同名项目"
+          >
             <h3>目标位置已有同名项目</h3>
-            <p className="wrap">{conflict.conflict}</p>
+            <div className="conflict-comparison">
+              {(
+                [
+                  ["源项目", conflict.conflict.source],
+                  ["目标项目", conflict.conflict.destination],
+                ] as const
+              ).map(([label, item]) => (
+                <section
+                  className="conflict-item"
+                  key={label}
+                  aria-label={label}
+                >
+                  <h4>{label}</h4>
+                  {item ? (
+                    <>
+                      <strong>{basename(item.path)}</strong>
+                      <p className="wrap conflict-path" title={item.path}>
+                        {item.path}
+                      </p>
+                      <dl>
+                        <dt>大小</dt>
+                        <dd
+                          title={
+                            item.size === null
+                              ? undefined
+                              : `${item.size.toLocaleString("zh-CN")} 字节`
+                          }
+                        >
+                          {item.size === null
+                            ? item.isDir
+                              ? "—（文件夹）"
+                              : "—"
+                            : formatSize(item.size)}
+                        </dd>
+                        <dt>修改时间</dt>
+                        <dd>
+                          {item.modified === null
+                            ? "—"
+                            : new Date(item.modified * 1000).toLocaleString(
+                                "zh-CN",
+                              )}
+                        </dd>
+                      </dl>
+                    </>
+                  ) : (
+                    <p>已选择 {conflict.sources.length} 个项目</p>
+                  )}
+                </section>
+              ))}
+            </div>
             <p>替换会先将目标项目移到回收站。</p>
             <label className="checkbox">
               <input
                 type="checkbox"
                 checked={applyAll}
-                onChange={(e) => setApplyAll(e.target.checked)}
+                onChange={(e) =>
+                  setApplyAllTask(e.target.checked ? conflict.id : null)
+                }
               />
               应用到本次任务的后续冲突
             </label>

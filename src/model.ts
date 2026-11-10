@@ -29,6 +29,12 @@ export type Tab = {
   selected: string[];
   scroll: number;
 };
+export type ConflictItem = {
+  path: string;
+  isDir: boolean;
+  size: number | null;
+  modified: number | null;
+};
 export type Task = {
   id: string;
   kind: string;
@@ -39,7 +45,7 @@ export type Task = {
   completed: number;
   bytes: number;
   errors: string[];
-  conflict: string | null;
+  conflict: { source: ConflictItem | null; destination: ConflictItem } | null;
 };
 export type FileActivity = { tasks: Task[]; undo: string | null };
 export type Place = { name: string; path: string; kind: string };

@@ -19,11 +19,9 @@
 .active-column:last-child {
   max-width: none;
 }
-.column-heading {
+.column-preview-heading {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 7px;
   height: 35px;
   padding: 0 10px;
   flex: 0 0 auto;
@@ -31,15 +29,6 @@
   font-size: 12px;
   border-bottom: 1px solid var(--border);
   background: var(--chrome);
-}
-.column-heading span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.active-column .column-heading {
-  color: var(--accent-text);
-  background: var(--accent-tint);
 }
 .column-list .file-row {
   height: 34px;
