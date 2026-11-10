@@ -1,0 +1,13 @@
+{
+  "identifier": "desktop",
+  "description": "Local trusted file manager windows",
+  "windows": ["main", "files-*"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:window:allow-set-focus",
+    "opener:default"
+  ]
+}
