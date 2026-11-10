@@ -227,21 +227,26 @@ try {
     Click-Element (Wait-ForElement $window '复制名称')
     $null = Wait-ForElement $window '已复制名称'
     if ((Get-Clipboard -Raw) -ne 'copy.txt') { throw 'Unexpected copied file name' }
+    if (-not [FilepaceSmokeMouse]::MoveWindow($app.MainWindowHandle, 8, 12, 1000, 680, $true)) {
+        throw 'Could not fit the app into the test desktop'
+    }
+    Start-Sleep -Milliseconds 350
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '打开方式')
     # The Shell chooser is hosted outside Filepace and may be absent from the UIA tree.
     Wait-ForForegroundProcess 'OpenWith'
+    $chooser = [FilepaceSmokeMouse]::GetForegroundWindow()
     [FilepaceSmokeMouse]::PressKey(27)
     Start-Sleep -Milliseconds 400
+    if ([FilepaceSmokeMouse]::GetForegroundWindow() -eq $chooser) {
+        [FilepaceSmokeMouse]::Close($chooser)
+        Start-Sleep -Milliseconds 350
+    }
     $windowBounds = $window.Current.BoundingRectangle
     [FilepaceSmokeMouse]::Click(($windowBounds.Left + 140), ($windowBounds.Top + 13), $false)
     Wait-ForForegroundProcess 'filepace'
     Write-Host 'Verified the native Open With chooser.'
 
-    if (-not [FilepaceSmokeMouse]::MoveWindow($app.MainWindowHandle, 8, 12, 1000, 680, $true)) {
-        throw 'Could not fit the app into the test desktop'
-    }
-    Start-Sleep -Milliseconds 350
     Click-Element (Wait-ForElement $window '撤销移动')
     Assert-Fixture (Join-Path $source 'move.docx')
     if (Test-Path (Join-Path $destination 'move.docx')) { throw 'Undo left the moved file behind' }

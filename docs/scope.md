@@ -57,6 +57,11 @@
 - Browser tests cover keeping older favorites, adding, removing and reordering common locations, and syncing group expansion between windows after reopening.
 - The installed macOS and Windows apps moved a real file between columns in one pane and copied another with Option or Ctrl. Marquee selection followed by system clipboard copy and paste preserved the bytes of the selected files and a folder's contents in both locations. [Installed desktop verification](https://github.com/zhaoguhong/filepace/actions/runs/42773449596)
 
+## v0.4.2 column scrolling and conflict details
+
+- Browser tests check scrolling toward hidden columns on both edges during a file drag and verify the destination and transfer mode at drop time.
+- On macOS and Windows, the installed app scrolled to a hidden ancestor and displayed the source and target file sizes and modification times. Choosing Keep Both preserved the existing target and moved the source bytes under a new name. [Installed desktop verification](https://github.com/zhaoguhong/filepace/actions/runs/42777121944)
+
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
