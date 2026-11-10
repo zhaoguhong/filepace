@@ -6,6 +6,7 @@ import {
   type RefObject,
 } from "react";
 import type { PaneSide } from "./browsePane";
+import type { FileLayout } from "./fileViewport";
 import type { Entry } from "./model";
 
 type Point = { x: number; y: number };
@@ -15,6 +16,7 @@ type Source = {
   directory: string;
   entries: Entry[];
   rowHeight?: number;
+  grid?: FileLayout;
   selected: string[];
   commit: (paths: string[]) => void;
 };
@@ -33,27 +35,16 @@ function scrollOrigin(list: HTMLDivElement) {
   return { x: rect.left - list.scrollLeft, y: rect.top - list.scrollTop };
 }
 
-function readRows(list: HTMLDivElement, rowHeight?: number) {
+function readRow(list: HTMLDivElement) {
   const { x, y } = scrollOrigin(list);
-  const rows = [
-    ...list.querySelectorAll<HTMLElement>("[role=option][data-path]"),
-  ];
-  return (rowHeight ? rows.slice(0, 1) : rows).map((row) => {
-    const { left, top, right, bottom } = row.getBoundingClientRect();
-    return {
-      path: row.dataset.path!,
-      bounds: {
-        left: left - x,
-        top: top - y,
-        right: right - x,
-        bottom: bottom - y,
-      },
-    };
-  });
+  const row = list.querySelector<HTMLElement>("[role=option][data-path]");
+  if (!row) return [];
+  const { left, top, right, bottom } = row.getBoundingClientRect();
+  return [{ path: row.dataset.path!, bounds: { left: left - x, top: top - y, right: right - x, bottom: bottom - y } }];
 }
 
 function selection(gesture: Gesture) {
-  const { list, origin, pointer, rowHeight, entries, rows } = gesture;
+  const { list, origin, pointer, rowHeight, grid, entries, rows } = gesture;
   const view = list.getBoundingClientRect();
   const { x, y } = scrollOrigin(list);
   const endX =
@@ -69,19 +60,23 @@ function selection(gesture: Gesture) {
     const row = rows?.[0]?.bounds;
     if (row && left < row.right && right > row.left) {
       hits = entries
-        .slice(Math.floor(top / rowHeight), Math.ceil(bottom / rowHeight))
+        .slice(Math.max(0, Math.floor(top / rowHeight)), Math.ceil(bottom / rowHeight))
         .map((entry) => entry.path);
     }
-  } else {
-    hits = (rows ?? [])
-      .filter(
-        ({ bounds }) =>
-          left < bounds.right &&
-          right > bounds.left &&
-          top < bounds.bottom &&
-          bottom > bounds.top,
-      )
-      .map(({ path }) => path);
+  } else if (grid) {
+    const columnStep = grid.width + grid.gap;
+    const firstRow = Math.max(0, Math.floor((top - grid.padding) / grid.step));
+    const lastRow = Math.min(Math.ceil(entries.length / grid.columns), Math.ceil((bottom - grid.padding) / grid.step));
+    const firstColumn = Math.max(0, Math.floor((left - grid.padding) / columnStep));
+    const lastColumn = Math.min(grid.columns, Math.ceil((right - grid.padding) / columnStep));
+    for (let row = firstRow; row < lastRow; row++) {
+      if (grid.padding + row * grid.step + grid.height <= top) continue;
+      for (let column = firstColumn; column < lastColumn; column++) {
+        if (grid.padding + column * columnStep + grid.width <= left) continue;
+        const entry = entries[row * grid.columns + column];
+        if (entry) hits.push(entry.path);
+      }
+    }
   }
   const paths = new Set(gesture.additive ? gesture.selected : []);
   for (const hit of hits) {
@@ -148,7 +143,7 @@ export function useMarquee(suppressClick: RefObject<boolean>) {
           ) < 5
         )
           return;
-        current.rows = readRows(current.list, current.rowHeight);
+        current.rows = current.grid ? [] : readRow(current.list);
         suppressClick.current = true;
         animation = requestAnimationFrame(autoscroll);
       }

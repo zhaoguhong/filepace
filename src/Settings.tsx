@@ -1,24 +1,113 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   Download,
+  FileWarning,
   LayoutList,
   Palette,
   RefreshCw,
   Settings as SettingsIcon,
 } from "lucide-react";
-import { desktop } from "./bridge";
+import { call, desktop } from "./bridge";
 import { viewLabels, type View } from "./model";
 import { modeLabels, themeLabels, type Preferences } from "./preferences";
 import type { UpdateStatus } from "./updates";
 import "./settings.css";
 
-export type SettingsSection = "browse" | "appearance" | "update";
+export type SettingsSection = "browse" | "appearance" | "update" | "errors";
 const sections = [
   { id: "browse", label: "浏览", icon: LayoutList },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "update", label: "更新", icon: Download },
+  { id: "errors", label: "错误日志", icon: FileWarning },
 ] as const;
+
+type ErrorRecord = {
+  time: number;
+  operation: string;
+  step: string;
+  path: string;
+  message: string;
+  osCode: number | null;
+};
+
+function ErrorLog() {
+  const [records, setRecords] = useState<ErrorRecord[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(desktop);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    call<ErrorRecord[]>("error_log").then(
+      (records) => {
+        if (disposed) return;
+        setRecords(records);
+        setLoading(false);
+      },
+      (error) => {
+        if (disposed) return;
+        setError(String(error));
+        setLoading(false);
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [revision]);
+  return (
+    <>
+      <div className="error-log-heading">
+        <h2>错误日志</h2>
+        <button
+          className="storage-secondary"
+          disabled={!desktop || loading}
+          onClick={() => {
+            setLoading(true);
+            setError("");
+            setRevision((value) => value + 1);
+          }}
+        >
+          <RefreshCw size={14} /> 刷新
+        </button>
+      </div>
+      <p className="setting-note">
+        最近 100 条错误保存在本机。记录可能包含文件路径。
+      </p>
+      {!desktop ? (
+        <p className="setting-note">在桌面应用中查看本机日志。</p>
+      ) : error ? (
+        <p role="alert" className="danger-text">
+          无法读取日志。{error}
+        </p>
+      ) : loading ? (
+        <p role="status" className="setting-note">
+          正在读取日志…
+        </p>
+      ) : records.length ? (
+        <ul className="error-log">
+          {records.map((record, index) => (
+            <li key={`${record.time}-${index}`}>
+              <b>
+                {record.operation} · {record.step}
+              </b>
+              <small>
+                {new Date(record.time * 1000).toLocaleString("zh-CN")}
+              </small>
+              {record.path && <p>{record.path}</p>}
+              <p>
+                {record.osCode !== null && <b>OS Error {record.osCode} · </b>}
+                {record.message}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="setting-note">还没有错误记录。</p>
+      )}
+    </>
+  );
+}
 
 export default function Settings({
   section,
@@ -61,7 +150,7 @@ export default function Settings({
         </span>
         <div>
           <h1>设置</h1>
-          <p>浏览、外观与应用更新</p>
+          <p>浏览、外观、更新与错误日志</p>
         </div>
         <button className="storage-secondary" onClick={onClose}>
           <ArrowLeft size={15} /> 返回文件
@@ -129,7 +218,7 @@ export default function Settings({
               <label className="setting-row">
                 <span>
                   <b>主题</b>
-                  <small>选择一套界面配色。</small>
+                  <small>默认主题在浅色模式下使用纯白背景。</small>
                 </span>
                 <select
                   aria-label="主题"
@@ -208,6 +297,7 @@ export default function Settings({
               </p>
             </>
           )}
+          {section === "errors" && <ErrorLog />}
         </div>
       </div>
     </section>

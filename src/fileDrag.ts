@@ -171,14 +171,8 @@ function nativePreview(row: HTMLElement, { entry, paths }: DragSelection) {
 }
 
 export function useFileDrag(options: {
-  split: boolean;
   focusedPath?: string;
-  transfer: (
-    kind: FileTransfer,
-    paths: string[],
-    path: string,
-    showTasks: boolean,
-  ) => void;
+  transfer: (kind: FileTransfer, paths: string[], path: string) => void;
   onError: (error: string) => void;
   onStart: () => void;
 }) {
@@ -276,7 +270,6 @@ export function useFileDrag(options: {
           target ? dropKind(target, event.source, event.kind) : event.kind,
           event.paths,
           path,
-          !event.source || !latest.current.split,
         );
     }
 
@@ -332,12 +325,7 @@ export function useFileDrag(options: {
       const target = gesture.started ? pointerTarget(gesture, event) : null;
       clear();
       if (target)
-        latest.current.transfer(
-          target.kind,
-          gesture.paths,
-          target.path,
-          !latest.current.split,
-        );
+        latest.current.transfer(target.kind, gesture.paths, target.path);
     }
     function cancel(event: PointerEvent) {
       if (pointer.current?.pointerId === event.pointerId) clear();

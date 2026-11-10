@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "filepace"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "clipboard-rs",
  "dirs 6.0.0",
@@ -1065,6 +1065,7 @@ dependencies = [
  "trash",
  "uuid",
  "walkdir",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "xattr",
  "zip",

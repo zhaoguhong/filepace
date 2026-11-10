@@ -2,8 +2,11 @@ import FileIcon from "./FileIcon";
 import StorageDashboard from "./StorageDashboard";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
+import BatchRename from "./BatchRename";
+import ComparePanel from "./ComparePanel";
+import ArchivePanel from "./ArchivePanel";
 import Settings, { type SettingsSection } from "./Settings";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -52,11 +55,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { call, desktop } from "./bridge";
-import { useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
+import { invalidateDirectories, useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
 import { useMarquee } from "./marquee";
+import { revealItem, visibleRange } from "./fileViewport";
 import { describeFile } from "./fileTypes";
 import { useFilePreview } from "./filePreview";
+import { useFileActivity } from "./fileActivity";
 import {
   usePreferences,
   type Shortcut,
@@ -67,16 +72,20 @@ import {
   basename,
   columnPaths,
   travelColumns,
+  travelTab,
   makeTab,
   navigate,
   formatSize,
+  entryGroup,
   type Entry,
   type GridSize,
   type Tab,
-  type FileActivity,
   type Place,
 } from "./model";
-type Session = PaneSession & { right?: PaneSession; focused?: PaneSide };
+type Session = PaneSession & { right?: PaneSession; focused?: PaneSide; splitRatio?: number };
+const PdfPreview = lazy(() => import("./PdfPreview"));
+const activeTask = (task: { status: string }) =>
+  ["queued", "running", "conflict"].includes(task.status);
 type Menu = {
   x: number;
   y: number;
@@ -86,6 +95,21 @@ type Menu = {
   shortcut?: SidebarSection;
 };
 type OpenWithApp = { name: string; path: string; default: boolean };
+const createOptions = {
+  folder: {
+    title: "新建文件夹",
+    label: "文件夹名称",
+    name: "新建文件夹",
+    command: "make_directory",
+  },
+  text: {
+    title: "新建文本文档",
+    label: "文档名称",
+    name: "新建文本文档.txt",
+    command: "make_text_file",
+  },
+} as const;
+type CreateKind = keyof typeof createOptions;
 const iconSize = 17;
 const placeIcons: Record<string, LucideIcon> = {
   个人目录: Home,
@@ -102,7 +126,25 @@ const gridSizes: { value: GridSize; label: string }[] = [
 ];
 
 function cleanPane({ tabs, active }: PaneSession): PaneSession {
-  return { tabs: tabs.map((tab) => ({ ...tab, selected: [] })), active };
+  return {
+    tabs: tabs.map((tab) => ({
+      ...tab,
+      selected: [],
+      locationState: tab.locationState && Object.fromEntries(
+        Object.entries(tab.locationState).map(([index, state]) => [index, { ...state, selected: [] }]),
+      ),
+    })),
+    active,
+  };
+}
+
+function readRecentDirectories(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem("filepace-recent-directories") ?? "[]");
+    return Array.isArray(value) ? value.filter((path): path is string => typeof path === "string").slice(0, 20) : [];
+  } catch {
+    return [];
+  }
 }
 
 function readFavorites(): string[] {
@@ -190,7 +232,6 @@ export default function App() {
     [editingPath, setEditingPath] = useState<PaneSide | null>(null),
     [address, setAddress] = useState(""),
     [menu, setMenu] = useState<Menu | null>(null),
-    [activity, setActivity] = useState<FileActivity>({ tasks: [], undo: null }),
     [taskPanel, setTaskPanel] = useState(false),
     [preview, setPreview] = useState<Entry | null>(null),
     [properties, setProperties] = useState<Entry | null>(null),
@@ -211,21 +252,33 @@ export default function App() {
       null,
     ),
     [editName, setEditName] = useState(""),
-    [newFolder, setNewFolder] = useState<string | null>(null),
-    [revision, setRevision] = useState(0),
+    [newEntry, setNewEntry] = useState<{
+      parent: string;
+      kind: CreateKind;
+    } | null>(null),
+    [creating, setCreating] = useState(false),
+    [createError, setCreateError] = useState(""),
     [closePrompt, setClosePrompt] = useState(false),
     [applyAllTask, setApplyAllTask] = useState<string | null>(null);
   const [favorites, setFavorites] = useState(readFavorites);
+  const [batchEntries, setBatchEntries] = useState<Entry[] | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [archive, setArchive] = useState<{ entry: Entry; parent: string } | null>(null);
+  const [recentDirectories, setRecentDirectories] = useState(readRecentDirectories);
+  const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
+  const addressSuggestions = useId();
   const [cutPaths, setCutPaths] = useState<string[]>([]);
   const closed = useRef<Record<PaneSide, Tab[]>>({ left: [], right: [] }),
     pathRef = useRef<HTMLInputElement>(null),
     menuRef = useRef<HTMLDivElement>(null),
+    submittedTasks = useRef(new Set<string>()),
     dragTab = useRef("");
   const split = Boolean(session.right);
   const focused = split ? (session.focused ?? "left") : "left";
-  const left = useBrowsePane(session, hidden, revision);
-  const right = useBrowsePane(session.right, hidden, revision);
+  const left = useBrowsePane(session, hidden);
+  const right = useBrowsePane(session.right, hidden);
   const pane = focused === "left" ? left : right;
+  const splitRatio = session.splitRatio ?? 0.5;
   const { tab, listing, entries, listRef } = pane;
   const systemPlaces = places.filter((place) => place.kind === "favorite");
   const commonPlaces = preferences.commonPlaces ?? systemPlaces;
@@ -235,19 +288,17 @@ export default function App() {
   stateRef.current = session;
   const selected = tab?.selected || [];
   const fileDrag = useFileDrag({
-    split,
     focusedPath: tab?.path,
     transfer: start,
     onStart: () => setMenu(null),
     onError: setNotice,
   });
   const marquee = useMarquee(fileDrag.suppressClick);
-  const { tasks, undo } = activity;
+  const { tasks, undo, refreshActivity } = useFileActivity();
+  const previewPdf = desktop && Boolean(preview?.name.match(/\.pdf$/i));
   const { text: previewContent, image: imageUrl } =
-    useFilePreview(preview) ?? {};
-  const running = tasks.filter((t) =>
-    ["running", "conflict"].includes(t.status),
-  );
+    useFilePreview(previewPdf ? null : preview) ?? {};
+  const running = tasks.filter(activeTask);
   const conflict = tasks.find((t) => t.status === "conflict" && t.conflict);
   const applyAll = conflict?.id === applyAllTask;
   function updatePane(
@@ -278,6 +329,7 @@ export default function App() {
       setSession({
         tabs: [...session.tabs, ...session.right.tabs],
         active: tab.id,
+        splitRatio: session.splitRatio,
       });
     } else {
       const next = makeTab(tab.path, preferences.defaultView);
@@ -341,24 +393,14 @@ export default function App() {
     setSettingsSection(section);
   }
   function travel(delta: number, side = focused) {
-    const current = (side === "left" ? left : right).tab;
+    const target = side === "left" ? left : right;
+    const current = target.tab;
     if (!current) return;
     const i = current.index + delta;
-    if (i >= 0 && i < current.history.length)
-      patch(
-        {
-          index: i,
-          path: current.history[i],
-          columns:
-            current.view === "columns"
-              ? travelColumns(current, current.history[i])
-              : undefined,
-          selected: [],
-          query: "",
-          scroll: 0,
-        },
-        side,
-      );
+    if (i >= 0 && i < current.history.length) {
+      patch(travelTab(current, i), side);
+      target.listRef.current?.focus({ preventScroll: true });
+    }
   }
   function activateTab(id: string, side = focused) {
     updatePane(side, (group) => ({ ...group, active: id }));
@@ -430,7 +472,7 @@ export default function App() {
     }
   }
   function refresh() {
-    setRevision((r) => r + 1);
+    if (tab) invalidateDirectories([listing?.path ?? tab.path]);
   }
   useEffect(() => {
     let disposed = false;
@@ -457,6 +499,7 @@ export default function App() {
               }
             : undefined,
           focused: saved?.focused === "right" ? "right" : "left",
+          splitRatio: typeof saved?.splitRatio === "number" && saved.splitRatio >= 0.25 && saved.splitRatio <= 0.75 ? saved.splitRatio : undefined,
         });
       } catch (e) {
         if (!disposed) setBootError(String(e));
@@ -474,6 +517,7 @@ export default function App() {
           ...cleanPane(session),
           right: session.right && cleanPane(session.right),
           focused,
+          splitRatio,
         },
       }).catch((e) => setNotice("会话保存失败：" + String(e)));
     }, 300);
@@ -485,15 +529,23 @@ export default function App() {
         ...cleanPane(session),
         right: session.right && cleanPane(session.right),
         focused,
+        splitRatio,
       },
     });
     await updates.install();
   }
   useEffect(() => {
-    void refreshActivity();
-    const timer = setInterval(refreshActivity, 650);
-    return () => clearInterval(timer);
-  }, []);
+    for (const task of tasks) {
+      if (activeTask(task)) continue;
+      if (
+        submittedTasks.current.delete(task.id) &&
+        task.status === "error" &&
+        !taskPanel
+      ) {
+        setNotice("文件任务遇到问题，可在「文件任务」查看详情。");
+      }
+    }
+  }, [tasks, taskPanel]);
   useEffect(() => {
     if (!desktop) return;
     const stop = listen("exit-blocked", () => {
@@ -506,16 +558,42 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!desktop) return;
-    let timer: ReturnType<typeof setTimeout>;
-    const unlisten = listen("directory-changed", () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => setRevision((r) => r + 1), 200);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let changed: Set<string> | null = new Set();
+    const unlisten = listen<string[] | null>("directory-changed", ({ payload }) => {
+      if (!payload) changed = null;
+      else if (changed) for (const path of payload) changed.add(path);
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        invalidateDirectories(changed ? [...changed] : null);
+        changed = new Set();
+      }, 120);
     });
     return () => {
       unlisten.then((f) => f());
       clearTimeout(timer);
     };
   }, []);
+  const watchGeneration = useRef(0);
+  const watchedPaths = JSON.stringify(
+    [left.tab, right.tab].flatMap((tab) => tab ? (tab.view === "columns" ? columnPaths(tab) : [tab.path]) : []),
+  );
+  useEffect(() => {
+    if (!desktop) return;
+    const paths = JSON.parse(watchedPaths) as string[];
+    const watch = () => void call("watch_directories", {
+      paths,
+      generation: ++watchGeneration.current,
+    }).catch(() => {});
+    watch();
+    const recheck = () => {
+      watch();
+      invalidateDirectories(paths);
+    };
+    window.addEventListener("focus", recheck);
+    return () => window.removeEventListener("focus", recheck);
+  }, [watchedPaths]);
   useLayoutEffect(() => {
     const element = menuRef.current;
     if (!element || !menu) return;
@@ -545,6 +623,34 @@ export default function App() {
       pathRef.current?.select();
     }
   }, [editingPath]);
+  useEffect(() => {
+    const paths = [left.listing?.path, right.listing?.path].filter((path): path is string => Boolean(path));
+    if (!paths.length) return;
+    const next = [...new Set([...paths, ...readRecentDirectories()])].slice(0, 20);
+    localStorage.setItem("filepace-recent-directories", JSON.stringify(next));
+    setRecentDirectories(next);
+  }, [left.listing?.path, right.listing?.path]);
+  useEffect(() => {
+    setPathSuggestions([]);
+    if (!desktop || !editingPath || address.length < 2) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      void call<string[]>("suggest_directories", { input: address }).then(
+        (paths) => { if (active && Array.isArray(paths)) setPathSuggestions(paths); },
+        () => {},
+      );
+    }, 180);
+    return () => { active = false; clearTimeout(timer); };
+  }, [editingPath, address]);
+  useEffect(() => {
+    for (const side of ["left", "right"] as const) {
+      const { tab, listing } = side === "left" ? left : right;
+      if (!listing || !tab?.selected.length) continue;
+      const present = new Set(listing.entries.map((entry) => entry.path));
+      const selected = tab.selected.filter((path) => present.has(path));
+      if (selected.length !== tab.selected.length) patch({ selected }, side);
+    }
+  }, [left.listing, right.listing]);
   function editPath(side: PaneSide) {
     const target = side === "left" ? left : right;
     if (!target.tab) return;
@@ -607,28 +713,30 @@ export default function App() {
     kind: string,
     paths = selected,
     destination = tab?.path,
-    showTasks = true,
+    within?: string,
   ) {
-    if (!paths.length || !destination) return;
+    if (!paths.length || !destination) return false;
     setMenu(null);
     try {
-      await call("start_task", { kind, sources: paths, destination });
-      if (showTasks) setTaskPanel(true);
+      const id = await call<string>("start_task", {
+        kind,
+        sources: paths,
+        destination,
+        ...(within ? { within } : {}),
+      });
+      submittedTasks.current.add(id);
       void refreshActivity();
+      return true;
     } catch (e) {
       setNotice(String(e));
+      return false;
     }
-  }
-  function refreshActivity() {
-    return call<FileActivity>("tasks")
-      .then(setActivity)
-      .catch(() => {});
   }
   async function undoLast() {
     if (!undo || running.length || conflict || !desktop) return;
     try {
-      await call("undo_last");
-      setTaskPanel(true);
+      const id = await call<string>("undo_last");
+      submittedTasks.current.add(id);
       await refreshActivity();
     } catch (error) {
       setNotice(String(error));
@@ -700,19 +808,48 @@ export default function App() {
     setEditName(entry.name);
     setMenu(null);
   }
+
+  function openBatchRename() {
+    if (!desktop || selected.length < 2) return;
+    const paths = new Set(selected);
+    const items = entries.filter((entry) => paths.has(entry.path));
+    if (items.length < 2) return;
+    setMenu(null);
+    setBatchEntries(items);
+  }
   async function submitRename() {
+    if (!rename) return;
     try {
-      if (newFolder) {
-        await call("make_directory", { parent: newFolder, name: editName });
-        setNewFolder(null);
-      } else if (rename) {
-        await call("rename_entry", { path: rename.path, name: editName });
-        setRename(null);
-        void refreshActivity();
-      }
+      await call("rename_entry", { path: rename.path, name: editName });
+      setRename(null);
+      void refreshActivity();
       refresh();
     } catch (e) {
       setNotice(String(e));
+    }
+  }
+  function promptCreate(kind: CreateKind, parent: string) {
+    setRename(null);
+    setNewEntry({ parent, kind });
+    setEditName(createOptions[kind].name);
+    setCreateError("");
+    setMenu(null);
+  }
+  async function submitCreate() {
+    if (!newEntry || creating) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      await call(createOptions[newEntry.kind].command, {
+        parent: newEntry.parent,
+        name: editName,
+      });
+      setNewEntry(null);
+      refresh();
+    } catch (error) {
+      setCreateError(String(error));
+    } finally {
+      setCreating(false);
     }
   }
   function favorite(path = tab?.path) {
@@ -768,6 +905,25 @@ export default function App() {
       if (!tab || fileDrag.preview || marquee.frame) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (batchEntries) {
+        if (key === "escape" && !e.isComposing) setBatchEntries(null);
+        return;
+      }
+      if (compareOpen) {
+        if (key === "escape") setCompareOpen(false);
+        return;
+      }
+      if (archive) {
+        if (key === "escape") setArchive(null);
+        return;
+      }
+      if (newEntry) {
+        if (key === "escape" && !creating && !e.isComposing) {
+          e.preventDefault();
+          setNewEntry(null);
+        }
+        return;
+      }
       if (mod && key === ",") {
         e.preventDefault();
         openSettings();
@@ -788,6 +944,23 @@ export default function App() {
         'input,textarea,select,[contenteditable="true"]',
       );
       if (typing) return;
+      if (conflict || closePrompt) return;
+      if (key === "contextmenu" || (key === "f10" && e.shiftKey)) {
+        const list = listRef.current;
+        if (!list) return;
+        e.preventDefault();
+        const entry = entries.find((entry) => entry.path === selected.at(-1));
+        const row = entry && list.querySelector(`[data-path="${CSS.escape(entry.path)}"]`);
+        const bounds = (row || list).getBoundingClientRect();
+        setMenu({ x: bounds.left + 16, y: bounds.top + 18, entry });
+        return;
+      }
+      if (desktop && split && mod && e.shiftKey && (key === "c" || key === "m")) {
+        e.preventDefault();
+        const other = focused === "left" ? right : left;
+        if (other.listing) void start(key === "c" ? "copy" : "move", selected, other.listing.path);
+        return;
+      }
       if (openWith) {
         if (key === "escape") setOpenWith(null);
         return;
@@ -822,7 +995,7 @@ export default function App() {
         openSearch();
         return;
       }
-      if (mod && !e.shiftKey && key === "z" && !closePrompt && !newFolder) {
+      if (mod && !e.shiftKey && key === "z" && !closePrompt) {
         e.preventDefault();
         void undoLast();
         return;
@@ -863,7 +1036,8 @@ export default function App() {
       }
       if (key === "f2" || (key === "enter" && isMac)) {
         e.preventDefault();
-        renameSelected();
+        if (selected.length > 1 && desktop) openBatchRename();
+        else renameSelected();
       } else if (key === "enter") {
         const entry = entries.find((x) => x.path === selected[0]);
         if (entry) open(entry);
@@ -933,12 +1107,7 @@ export default function App() {
             ? range.lead
             : selected.at(-1);
         const index = entries.findIndex((x) => x.path === lead);
-        const gridColumns =
-          tab.view === "grid" && listRef.current
-            ? getComputedStyle(listRef.current)
-                .gridTemplateColumns.trim()
-                .split(/\s+/).length
-            : 1;
+        const gridColumns = pane.layout.columns;
         const step =
           (horizontal ? 1 : gridColumns) *
           (key === "arrowdown" || key === "arrowright" ? 1 : -1);
@@ -956,21 +1125,7 @@ export default function App() {
             ctrlKey: false,
           });
           const i = entries.indexOf(next);
-          if (tab.view !== "grid") {
-            const height = tab.view === "columns" ? 34 : 44;
-            const list = listRef.current;
-            const top = i * height;
-            if (
-              list &&
-              (top < list.scrollTop ||
-                top + height > list.scrollTop + list.clientHeight)
-            )
-              list.scrollTo({ top: Math.max(0, top - 150) });
-          } else {
-            listRef.current
-              ?.querySelector(`[data-path="${CSS.escape(next.path)}"]`)
-              ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }
+          if (listRef.current) revealItem(listRef.current, i, pane.layout);
         }
       }
       if (key === "escape") {
@@ -994,6 +1149,7 @@ export default function App() {
     (place) => place.path === menuPath,
   );
   const currentPath = listing?.path ?? tab.path;
+  const createOption = newEntry && createOptions[newEntry.kind];
   const viewPane = menu?.viewPane;
   const viewTab = viewPane === "left" ? left.tab : right.tab;
   const dragPreview = fileDrag.preview;
@@ -1036,33 +1192,21 @@ export default function App() {
   }
 
   function renderPane(side: PaneSide) {
-    const { tab, listing, entries, loading, error, listRef } =
+    const { tab, listing, entries, loading, error, attachList, height, layout, selected: selection } =
       side === "left" ? left : right;
     const group = side === "left" ? session : session.right;
     if (!tab || !group) return null;
     const { tabs, active } = group;
     const selected = tab.selected;
     const dropHint = fileDrag.hint?.pane === side ? fileDrag.hint : null;
+    const otherFolder = (side === "left" ? right : left).listing?.path;
     const patchPane = (value: Partial<Tab>) => patch(value, side);
     const dragSelection = (entry: Entry) => ({
       entry,
-      paths: selected.includes(entry.path) ? selected : [entry.path],
+      paths: selection.has(entry.path) ? selected : [entry.path],
     });
-    const rowHeight = tab.view === "columns" ? 34 : 44;
-    const startIndex =
-      tab.view !== "grid"
-        ? Math.max(
-            0,
-            Math.min(
-              entries.length - 1,
-              Math.floor(tab.scroll / rowHeight) - 8,
-            ),
-          )
-        : 0;
-    const shown =
-      tab.view !== "grid"
-        ? entries.slice(startIndex, startIndex + 55)
-        : entries;
+    const range = visibleRange(entries.length, tab.scroll, height, layout);
+    const shown = entries.slice(range.start, range.end);
     const path = tab.path;
     const crumbs = path.split(/[\\/]/).filter(Boolean);
     const isWindows = path.includes("\\");
@@ -1083,6 +1227,7 @@ export default function App() {
       directory: string,
       columns?: string[],
       child?: string,
+      index?: number,
     ) {
       if (!tab) return null;
       const type = describeFile(entry);
@@ -1092,13 +1237,18 @@ export default function App() {
         frame?.pane === side && frame.directory === directory
           ? frame.paths.has(entry.path)
           : current
-            ? selected.includes(entry.path)
+            ? selection.has(entry.path)
             : child === entry.path;
       const dragSource =
         dragPreview?.pane === side && dragPreview.paths.has(entry.path);
+      const group = tab.view === "list" ? tab.group : undefined;
+      const groupLabel = group && index !== undefined ? entryGroup(entry, group) : undefined;
+      const previous = group && index ? entries[index - 1] : undefined;
+      const groupStart = group && groupLabel && (!previous || entryGroup(previous, group) !== groupLabel);
       return (
         <div
           key={entry.path}
+          id={index === undefined ? undefined : `entry-${tab.id}-${encodeURIComponent(entry.path)}`}
           data-path={entry.path}
           data-directory={entry.isDir ? entry.path : undefined}
           onPointerDown={(event) =>
@@ -1112,7 +1262,9 @@ export default function App() {
           }
           role="option"
           aria-selected={marked}
-          className={`file-row ${marked ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dragSource ? " drag-source" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}`}
+          aria-posinset={index === undefined ? undefined : index + 1}
+          aria-setsize={index === undefined ? undefined : entries.length}
+          className={`file-row ${marked ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dragSource ? " drag-source" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}${groupStart ? " group-start" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             if (
@@ -1145,6 +1297,7 @@ export default function App() {
           }}
         >
           <div className="file-name">
+            {groupStart && <span className="file-group-label" title={groupLabel}>{groupLabel}</span>}
             <FileIcon entry={entry} type={type} />
             {rename?.pane === side && rename.path === entry.path ? (
               <input
@@ -1197,8 +1350,11 @@ export default function App() {
     const fileArea = (
       <div
         className={`file-area ${tab.view === "columns" ? "column-list" : tab.view}${dropHint?.path === listing?.path && dropHint && !dropHint.folder ? " drop-target" : ""}`}
-        ref={listRef}
+        ref={attachList}
         tabIndex={0}
+        role="listbox"
+        aria-multiselectable="true"
+        aria-activedescendant={shown.some((entry) => entry.path === selected.at(-1)) ? `entry-${tab.id}-${encodeURIComponent(selected.at(-1)!)}` : undefined}
         aria-label="文件列表"
         data-pane={side}
         data-grid-size={
@@ -1211,7 +1367,8 @@ export default function App() {
               pane: side,
               directory: listing.path,
               entries,
-              rowHeight: tab.view === "grid" ? undefined : rowHeight,
+              rowHeight: tab.view === "grid" ? undefined : layout.height,
+              grid: tab.view === "grid" ? layout : undefined,
               selected,
               commit: (paths) => setSelection(paths, side),
             });
@@ -1241,6 +1398,11 @@ export default function App() {
             <button className="primary" onClick={refresh}>
               重新尝试
             </button>
+            {desktop && (
+              <button onClick={() => openSettings("errors")}>
+                查看错误日志
+              </button>
+            )}
           </div>
         ) : !entries.length ? (
           <div className="empty">
@@ -1257,25 +1419,23 @@ export default function App() {
           </div>
         ) : (
           <>
-            {tab.view !== "grid" && (
-              <div style={{ height: startIndex * rowHeight }} />
-            )}
-            {shown.map((entry) =>
-              renderFileRow(
-                entry,
-                listing?.path ?? tab.path,
-                tab.view === "columns" ? trail : undefined,
-              ),
-            )}
-            {tab.view !== "grid" && (
-              <div
-                style={{
-                  height:
-                    Math.max(0, entries.length - startIndex - shown.length) *
-                    rowHeight,
-                }}
-              />
-            )}
+            <div role="presentation" style={{ height: range.above }} />
+            <div
+              role="presentation"
+              className={tab.view === "grid" ? "grid-items" : undefined}
+              style={tab.view === "grid" ? { gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))` } : undefined}
+            >
+              {shown.map((entry, index) =>
+                renderFileRow(
+                  entry,
+                  listing?.path ?? tab.path,
+                  tab.view === "columns" ? trail : undefined,
+                  undefined,
+                  range.start + index,
+                ),
+              )}
+            </div>
+            <div role="presentation" style={{ height: range.below }} />
           </>
         )}
       </div>
@@ -1392,6 +1552,7 @@ export default function App() {
             {editingPath === side ? (
               <input
                 ref={pathRef}
+                list={addressSuggestions}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 onBlur={() => setEditingPath(null)}
@@ -1451,10 +1612,7 @@ export default function App() {
             className="text-tool"
             aria-label="新建文件夹"
             title="新建文件夹"
-            onClick={() => {
-              setNewFolder(tab.path);
-              setEditName("新建文件夹");
-            }}
+            onClick={() => promptCreate("folder", listing?.path ?? tab.path)}
           >
             <FolderPlus size={17} />
             <span>新建文件夹</span>
@@ -1477,6 +1635,16 @@ export default function App() {
           <Tool label="粘贴" onClick={() => paste(tab.path)}>
             <Clipboard size={16} />
           </Tool>
+          {desktop && split && (
+            <>
+              <Tool label="复制到另一栏" disabled={!selected.length || !otherFolder} onClick={() => void start("copy", selected, otherFolder)}>
+                <Copy size={14} /><ArrowRight size={12} />
+              </Tool>
+              <Tool label="移动到另一栏" disabled={!selected.length || !otherFolder} onClick={() => void start("move", selected, otherFolder)}>
+                <Scissors size={14} /><ArrowRight size={12} />
+              </Tool>
+            </>
+          )}
           <Tool
             label="移到回收站"
             disabled={!selected.length}
@@ -1584,7 +1752,13 @@ export default function App() {
             >
               修改日期
             </button>
-            <span>类型</span>
+            <select aria-label="列表分组" value={tab.group ?? ""} onChange={(event) =>
+              patchPane({ group: (event.target.value || undefined) as Tab["group"], scroll: 0 })
+            }>
+              <option value="">类型 · 不分组</option>
+              <option value="kind">按类型分组</option>
+              <option value="date">按修改日期分组</option>
+            </select>
             <button
               onClick={() =>
                 patchPane({ sort: "size", descending: !tab.descending })
@@ -1599,7 +1773,6 @@ export default function App() {
             tab={tab}
             side={side}
             hidden={hidden}
-            revision={revision}
             active={fileArea}
             preview={
               selected.length === 1
@@ -1719,11 +1892,25 @@ export default function App() {
             <Columns2 size={16} />
             {split ? "合并分栏" : "左右分栏"}
           </button>
+          {desktop && split && (
+            <button
+              className="window-action"
+              disabled={!left.listing || !right.listing}
+              onClick={() => setCompareOpen(true)}
+            >
+              对比目录
+            </button>
+          )}
           <Tool label="切换侧边栏" onClick={() => setSidebar(!sidebar)}>
             <PanelLeft size={16} />
           </Tool>
         </div>
       </header>
+      <datalist id={addressSuggestions}>
+        {[...new Set([...pathSuggestions, ...recentDirectories, ...commonPlaces.map((place) => place.path), ...favorites])].map((path) => (
+          <option key={path} value={path} />
+        ))}
+      </datalist>
       <div className="workspace">
         {sidebar && (
           <aside className="sidebar" aria-label="位置侧栏">
@@ -1817,11 +2004,40 @@ export default function App() {
         <main>
           <div
             className={`pane-stack${split ? " split" : ""}`}
+            style={split ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) 6px minmax(0, ${1 - splitRatio}fr)` } : undefined}
             hidden={
               storageVisible || Boolean(searchScope) || Boolean(settingsSection)
             }
           >
             {renderPane("left")}
+            {split && (
+              <div
+                className="pane-divider"
+                role="separator"
+                aria-label="调整左右栏宽度"
+                aria-orientation="vertical"
+                aria-valuemin={25}
+                aria-valuemax={75}
+                aria-valuenow={Math.round(splitRatio * 100)}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                  if (event.button === 0) event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                  const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
+                  const ratio = Math.max(0.25, Math.min(0.75, (event.clientX - bounds.left) / bounds.width));
+                  setSession((current) => ({ ...current, splitRatio: ratio }));
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const ratio = Math.max(0.25, Math.min(0.75, splitRatio + (event.key === "ArrowLeft" ? -0.05 : 0.05)));
+                  setSession((current) => ({ ...current, splitRatio: ratio }));
+                }}
+              />
+            )}
             {split && renderPane("right")}
           </div>
           <StorageDashboard
@@ -1883,11 +2099,7 @@ export default function App() {
                 {" "}
                 <span className="status-dot">·</span> 已选择 {selected.length}{" "}
                 项 <span className="status-dot">·</span>{" "}
-                {formatSize(
-                  entries
-                    .filter((e) => selected.includes(e.path) && !e.isDir)
-                    .reduce((s, e) => s + e.size, 0),
-                )}
+                {formatSize(pane.selectedBytes)}
               </>
             )}
         </span>
@@ -1915,6 +2127,7 @@ export default function App() {
           </button>
           <button
             className={running.length ? "task-active" : ""}
+            aria-expanded={taskPanel}
             onClick={() => setTaskPanel(!taskPanel)}
           >
             {running.length ? (
@@ -2193,6 +2406,9 @@ export default function App() {
                       <button onClick={() => renameSelected(menu.entry)}>
                         重命名
                       </button>
+                      {desktop && selected.length > 1 && selected.includes(menu.entry.path) && (
+                        <button onClick={openBatchRename}>批量重命名</button>
+                      )}
                     </>
                   )}
                   <button onClick={() => openProperties(menu.entry!)}>
@@ -2213,9 +2429,20 @@ export default function App() {
                   {!menu.entry.isDir &&
                     !menu.entry.isLink &&
                     /\.zip$/i.test(menu.entry.name) && (
-                      <button onClick={() => start("unzip", [menuPath])}>
-                        解压到同名文件夹
-                      </button>
+                      <>
+                        {desktop && (
+                          <button onClick={() => {
+                            setArchive({
+                              entry: menu.entry!,
+                              parent: menuPath.slice(0, Math.max(menuPath.lastIndexOf("/"), menuPath.lastIndexOf("\\")) + 1),
+                            });
+                            setMenu(null);
+                          }}>浏览压缩包</button>
+                        )}
+                        <button onClick={() => start("unzip", [menuPath])}>
+                          解压到同名文件夹
+                        </button>
+                      </>
                     )}
                   {menu.entry.isDir && (
                     <>
@@ -2249,14 +2476,11 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <button
-                    onClick={() => {
-                      setNewFolder(tab.path);
-                      setEditName("新建文件夹");
-                      setMenu(null);
-                    }}
-                  >
-                    新建文件夹
+                  <button onClick={() => promptCreate("folder", currentPath)}>
+                    {createOptions.folder.title}
+                  </button>
+                  <button onClick={() => promptCreate("text", currentPath)}>
+                    {createOptions.text.title}
                   </button>
                   <button onClick={() => paste()}>粘贴</button>
                   <button onClick={() => openSearch(menuPath)}>
@@ -2283,11 +2507,14 @@ export default function App() {
         </div>
       )}
       {taskPanel && (
-        <section className="task-panel">
+        <section className="task-panel" aria-label="文件任务">
           <div className="panel-title">
             <h3>
               文件任务 <small>{tasks.length}</small>
             </h3>
+            {desktop && tasks.some((task) => !activeTask(task)) && (
+              <button onClick={() => void runMenuAction(() => call("clear_task_history"))}>清理已结束任务</button>
+            )}
             <Tool label="关闭任务面板" onClick={() => setTaskPanel(false)}>
               <X size={17} />
             </Tool>
@@ -2312,6 +2539,7 @@ export default function App() {
                           zip: "压缩",
                           unzip: "解压",
                           undo: "撤销",
+                          rename: "批量重命名",
                         } as Record<string, string>
                       )[t.kind]
                     }
@@ -2320,6 +2548,7 @@ export default function App() {
                     {
                       (
                         {
+                          queued: "排队中",
                           running: "进行中",
                           conflict: "等待处理",
                           done: "已完成",
@@ -2329,7 +2558,7 @@ export default function App() {
                       )[t.status]
                     }
                   </span>
-                  {["running", "conflict"].includes(t.status) && (
+                  {activeTask(t) && (
                     <button
                       onClick={() =>
                         call("task_action", {
@@ -2345,7 +2574,9 @@ export default function App() {
                 </div>
                 <p title={t.current}>{basename(t.current)}</p>
                 <small>
-                  已完成 {t.completed} 个文件 · {formatSize(t.bytes)}
+                  已完成 {t.completed} 项 · {formatSize(t.bytes)}
+                  {Boolean(t.skipped) && ` · 跳过 ${t.skipped} 项`}
+                  {t.status === "running" && t.phase && ` · ${t.phase}`}
                 </small>
                 {t.status === "running" && (
                   <div className="progress">
@@ -2361,6 +2592,21 @@ export default function App() {
                       </p>
                     ))}
                   </details>
+                )}
+                {!activeTask(t) && (t.destination || Boolean(t.failedSources?.length)) && (
+                  <div className="task-controls">
+                    {t.destination && <button onClick={() => {
+                      setTaskPanel(false);
+                      go(t.destination, focused);
+                    }}>打开目标位置</button>}
+                    {!!t.failedSources?.length && t.status === "error" && (
+                      <button onClick={() => void runMenuAction(async () => {
+                        const id = await call<string>("retry_task", { id: t.id });
+                        submittedTasks.current.add(id);
+                        void refreshActivity();
+                      })}>重试失败项目</button>
+                    )}
+                  </div>
                 )}
               </div>
             ))
@@ -2408,6 +2654,33 @@ export default function App() {
             </div>
           </section>
         </div>
+      )}
+      {batchEntries && (
+        <BatchRename
+          entries={batchEntries}
+          onClose={() => setBatchEntries(null)}
+          onStarted={(id) => {
+            submittedTasks.current.add(id);
+            setBatchEntries(null);
+            void refreshActivity();
+          }}
+        />
+      )}
+      {compareOpen && left.listing && right.listing && (
+        <ComparePanel
+          left={left.listing.path}
+          right={right.listing.path}
+          onClose={() => setCompareOpen(false)}
+          onCopy={(sources, destination, within) => start("copy", sources, destination, within)}
+        />
+      )}
+      {archive && (
+        <ArchivePanel
+          entry={archive.entry}
+          parent={archive.parent}
+          onClose={() => setArchive(null)}
+          onExtract={(destination) => start("unzip", [archive.entry.path], destination)}
+        />
       )}
       {properties && (
         <div className="overlay" onClick={() => setProperties(null)}>
@@ -2461,7 +2734,11 @@ export default function App() {
               </Tool>
             </div>
             <div className="preview-body">
-              {imageUrl ? (
+              {previewPdf ? (
+                <Suspense fallback={<p role="status">正在打开 PDF…</p>}>
+                  <PdfPreview key={preview.path} path={preview.path} name={preview.name} />
+                </Suspense>
+              ) : imageUrl ? (
                 <img src={imageUrl} alt={preview.name} />
               ) : (
                 <pre>{previewContent || "正在读取…"}</pre>
@@ -2477,29 +2754,41 @@ export default function App() {
           </section>
         </div>
       )}
-      {newFolder && (
+      {newEntry && createOption && (
         <div className="overlay">
           <form
             className="modal form-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={createOption.title}
             onSubmit={(e) => {
               e.preventDefault();
-              submitRename();
+              void submitCreate();
             }}
           >
-            <h3>新建文件夹</h3>
-            <p>创建于 {basename(newFolder)}</p>
+            <h3>{createOption.title}</h3>
+            <p>创建于 {basename(newEntry.parent)}</p>
             <input
-              aria-label="文件夹名称"
+              aria-label={createOption.label}
               autoFocus
+              readOnly={creating}
               value={editName}
               onFocus={(e) => e.target.select()}
-              onChange={(e) => setEditName(e.target.value)}
+              onChange={(e) => {
+                setEditName(e.target.value);
+                setCreateError("");
+              }}
             />
+            {createError && <p role="alert">{createError}</p>}
             <div className="modal-buttons">
-              <button type="button" onClick={() => setNewFolder(null)}>
+              <button
+                type="button"
+                disabled={creating}
+                onClick={() => setNewEntry(null)}
+              >
                 取消
               </button>
-              <button className="primary" type="submit">
+              <button className="primary" type="submit" disabled={creating}>
                 创建
               </button>
             </div>
@@ -2565,7 +2854,7 @@ export default function App() {
                 </section>
               ))}
             </div>
-            <p>替换会先将目标项目移到回收站。</p>
+            <p>替换成功后，旧目标会移到回收站。</p>
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -2587,7 +2876,12 @@ export default function App() {
                   key={decision}
                   className={decision === "keep" ? "primary" : ""}
                   onClick={() =>
-                    call("task_action", { id: conflict.id, decision, applyAll })
+                    call("task_action", {
+                      id: conflict.id,
+                      conflictId: conflict.conflict?.id,
+                      decision,
+                      applyAll,
+                    })
                   }
                 >
                   {label}
@@ -2615,8 +2909,7 @@ export default function App() {
                     ),
                   );
                   setClosePrompt(false);
-                  setTaskPanel(true);
-                  setNotice("正在取消任务；完成后可关闭窗口。");
+                  setNotice("正在取消任务，完成后可关闭窗口。");
                 }}
               >
                 取消任务

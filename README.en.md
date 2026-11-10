@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.4.2 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.2).
+Download the v0.5.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.5.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -22,6 +22,8 @@ The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a
 - Drag a file or folder to another directory column, pane, or Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the directory displayed there.
 - Hold a dragged file near the left or right edge of Column View to scroll to other columns.
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
+- Drag the divider to resize the panes. Use the toolbar to copy or move the selection to the other pane. The shortcuts are **Command+Shift+C** or **Ctrl+Shift+C** to copy and **Command+Shift+M** or **Ctrl+Shift+M** to move.
+- **Compare Folders (对比目录)** shows items that exist on one side or differ. Compare sizes and modification times or check file contents, then select items to copy to the other pane.
 
 Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
 
@@ -33,15 +35,15 @@ Right-click a file, folder, or blank space in the file list to copy its full pat
 
 ## Views and system actions
 
-List and icon views distinguish Word, Excel, PowerPoint, PDF, images, and other common file types. The toolbar offers list view and four icon sizes. The drag preview shows the item icon, name, and selection count.
+Column, list, and icon views use colors and shapes to distinguish documents, media, archives, installers, design files, fonts, databases, and other types. macOS `.app` bundles and Windows `.exe` files use their system icons when available. The toolbar offers four icon sizes. The drag preview shows the item icon, name, and selection count.
 
-New tabs use Column View by default. Click a folder to open its contents in the next column. Select a file to see its preview or details. The toolbar switches each tab between Column, List, and Icon views.
+New tabs use Column View by default. Click a folder to open its contents in the next column. Select a file to see its preview or details. The toolbar switches each tab between Column, List, and Icon views. List View can group files by type or modification date. Open folders refresh when local files change.
 
 Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
 
 Click the sidebar's **Common Locations (常用位置)** or **Favorites (收藏目录)** heading to collapse or expand it. Use the plus button beside Common Locations to add the current folder. Right-click a shortcut to reorder or remove it. The sidebar remembers your changes.
 
-Open **Settings (设置)** at the bottom of the sidebar to set the default view. Choose appearance and theme separately. Appearance follows the system by default. Default, Mist Blue, and Warm Sand each support light and dark mode.
+Open **Settings (设置)** at the bottom of the sidebar to set the default view. Under **Appearance (外观)**, choose the display mode and theme separately. Display mode follows the system by default. The default theme uses a pure white background in light mode. Mist Blue, Warm Sand, Sage, Sea Salt Teal, Lilac, Rose, and Slate each support light and dark modes.
 
 Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
 
@@ -53,12 +55,16 @@ Starting with v0.4.0, Filepace checks, downloads, and verifies stable updates fr
 
 Use **Search (搜索)**, **Command+F** on macOS, or **Ctrl+F** on Windows to look for file and folder names in the current directory and its subfolders. Choose a file type to narrow the search. Filepace queries Spotlight or Windows Search first and can scan the directory when the index is unavailable or incomplete. Click a result to locate it.
 
+Search by type, modification date, or minimum file size with or without a name. Save search criteria for the current folder. The path bar suggests recent folders, favorites, and matching subfolders.
+
 ## File operations
 
-File tasks show progress. When names conflict, compare the source and destination paths, file sizes, and modification times before choosing to skip, replace, or keep both. A move completes the destination copy before removing the source. Deletions and replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue the task or cancel it and close the window.
+Open **File Tasks (文件任务)** in the status bar to see progress and results. When names conflict, compare the source and destination paths, file sizes, and modification times before choosing to skip, replace, or keep both. Moves on the same volume rename the original when the destination is vacant. Moves across volumes commit the staged destination before removing the source. Deletions and successfully replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue it or cancel it and close the window. View recent local errors under **Settings → Error Log (错误日志)**.
 
 - Use **Undo (撤销)** in the status bar or press **Command+Z** / **Ctrl+Z** to undo the most recent move or rename in the current session. Filepace stops if the original location is occupied or the item has been replaced. Replaced items can be recovered through the system trash.
-- Use **Compress to ZIP (压缩为 ZIP)** in the context menu to archive selected items with the system tool where available. **Extract to matching folder (解压到同名文件夹)** validates entry paths and prepares the contents in a temporary folder before committing the result.
+- Select multiple items and press **F2** to preview a batch rename. Find and replace text, add a prefix or suffix, or number the items. Undo can reverse the batch.
+- Press **Space** on a PDF to preview it and switch pages. Use **Browse Archive (浏览压缩包)** in a ZIP file's context menu to inspect entries and choose where to extract. Extraction validates entry paths and prepares the contents in a temporary folder before committing the result.
+- Use **Compress to ZIP (压缩为 ZIP)** in the context menu to archive selected items with the system tool where available.
 
 Filepace saves tabs and pane locations for each window and uses the signed-in user's filesystem permissions. You can browse symbolic links. File transfers involving symbolic links are currently unsupported. [Platform verification and known gaps](docs/scope.md)
 
@@ -98,5 +104,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.2/Filepace_0.4.2_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_x64-setup.exe

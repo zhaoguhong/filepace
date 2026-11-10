@@ -2,7 +2,16 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { viewLabels, type Place, type View } from "./model";
 
 export const modeLabels = { system: "跟随系统", light: "浅色", dark: "深色" };
-export const themeLabels = { default: "默认", mist: "雾蓝", sand: "暖砂" };
+export const themeLabels = {
+  default: "默认（纯白）",
+  mist: "雾蓝",
+  sand: "暖砂",
+  sage: "松雾绿",
+  teal: "海盐青",
+  lilac: "暮藤紫",
+  rose: "蔷薇粉",
+  slate: "石板灰",
+};
 export type SidebarSection = "common" | "favorites";
 export type Shortcut = Pick<Place, "name" | "path">;
 export type Preferences = {

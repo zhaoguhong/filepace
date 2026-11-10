@@ -5,20 +5,27 @@ use std::{
     process::Command,
 };
 
+use serde::Serialize;
 use tauri::AppHandle;
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::{
     cancelled, enqueue_task,
-    fs_safety::{check_ancestors, entry_path, is_link, rename_exclusive},
-    open_regular_file, resolve_conflict, strpath, system_process, trash_existing, update,
-    valid_name, Shared, Task,
+    fs_safety::{check_ancestors, entry_path, is_link, Directory},
+    open_regular_file, resolve_conflict, strpath, system_process,
+    transfer::{commit_staged, Source},
+    update, valid_name, Shared, Task,
 };
 
 const MAX_ENTRIES: usize = 250_000;
 
-pub(crate) fn start(kind: String, sources: Vec<String>, app: AppHandle) -> Result<String, String> {
+pub(crate) fn start(
+    kind: String,
+    sources: Vec<String>,
+    destination: String,
+    app: AppHandle,
+) -> Result<String, String> {
     let paths = sources
         .iter()
         .map(|path| entry_path(Path::new(path)))
@@ -56,7 +63,12 @@ pub(crate) fn start(kind: String, sources: Vec<String>, app: AppHandle) -> Resul
         format!("{stem}.zip")
     };
     valid_name(&target)?;
-    let target = parent.join(target);
+    let destination = if unpack && !destination.is_empty() {
+        crate::canonical(&destination)?
+    } else {
+        parent.clone()
+    };
+    let target = destination.join(target);
     if paths.contains(&target)
         || dunce::canonicalize(&target).is_ok_and(|resolved| {
             paths
@@ -66,15 +78,25 @@ pub(crate) fn start(kind: String, sources: Vec<String>, app: AppHandle) -> Resul
     {
         return Err("压缩包或解压目录不能与源项目同名".into());
     }
+    let originals = paths
+        .iter()
+        .cloned()
+        .map(Source::at)
+        .collect::<Result<Vec<_>, _>>()?;
+    let folder = Directory::at(&destination).map_err(|error| error.to_string())?;
     enqueue_task(
         app,
         Task {
             kind,
             sources,
-            destination: strpath(&parent),
+            destination: strpath(&destination),
             ..Default::default()
         },
         move |state, id, _| {
+            folder.check()?;
+            for original in &originals {
+                original.check()?;
+            }
             if unpack {
                 extract(&paths[0], target, state, id)
             } else {
@@ -82,6 +104,43 @@ pub(crate) fn start(kind: String, sources: Vec<String>, app: AppHandle) -> Resul
             }
         },
     )
+}
+
+#[derive(Serialize)]
+struct Member {
+    name: String,
+    size: u64,
+    directory: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct Contents {
+    entries: Vec<Member>,
+    total: usize,
+}
+
+#[tauri::command]
+pub(crate) async fn list_archive(path: PathBuf) -> Result<Contents, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = open_regular_file(&path, false)?;
+        let archive = ZipArchive::new(BufReader::new(file)).map_err(|error| error.to_string())?;
+        let total = archive.len();
+        let mut entries = Vec::with_capacity(total.min(1000));
+        for index in 0..total.min(1000) {
+            let item = archive
+                .by_index_data(index)
+                .map_err(|error| error.to_string())?;
+            let name = item.name().map_err(|error| error.to_string())?;
+            entries.push(Member {
+                name: name.into_owned(),
+                size: item.size(),
+                directory: item.is_dir(),
+            });
+        }
+        Ok(Contents { entries, total })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn check_cancelled(state: &Shared, id: &str) -> Result<(), String> {
@@ -244,6 +303,12 @@ fn compress(
     state: &Shared,
     id: &str,
 ) -> Result<(), String> {
+    let folder = Directory::at(parent).map_err(|error| error.to_string())?;
+    let roots = paths
+        .iter()
+        .cloned()
+        .map(Source::at)
+        .collect::<Result<Vec<_>, _>>()?;
     let source = match paths {
         [path] => Some(path.as_path()),
         _ => None,
@@ -251,8 +316,16 @@ fn compress(
     let Some((target, replace)) = resolve_conflict(state, id, source, target)? else {
         return Ok(());
     };
+    folder.check()?;
+    for root in &roots {
+        root.check()?;
+    }
     check_ancestors(&target).map_err(|error| error.to_string())?;
     let items = archive_items(paths, parent, state, id)?;
+    let originals = items
+        .iter()
+        .map(|(path, _)| Source::at(path.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
     let expected = items.iter().map(|(_, name)| name.as_str()).collect();
     update(state, id, |task| task.current = strpath(&paths[0]));
     let mut stage = tempfile::Builder::new()
@@ -328,13 +401,15 @@ fn compress(
     }
     check_cancelled(state, id)?;
     check_ancestors(&target).map_err(|error| error.to_string())?;
-    if let Some(identity) = &replace {
-        trash_existing(&target, identity)?;
+    for original in &originals {
+        original.check()?;
     }
-    let output = stage
-        .persist_noclobber(&target)
-        .map_err(|error| error.to_string())?;
-    let size = output.metadata().map(|meta| meta.len()).unwrap_or_default();
+    let size = stage
+        .as_file()
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len();
+    commit_staged(stage.path(), &target, &folder, replace.as_ref(), state, id)?;
     update(state, id, |task| {
         task.completed = items.len() as u64;
         if native {
@@ -345,9 +420,13 @@ fn compress(
 }
 
 fn extract(src: &Path, target: PathBuf, state: &Shared, id: &str) -> Result<(), String> {
+    let source = Source::at(src.to_owned())?;
+    let folder = Directory::parent(&target).map_err(|error| error.to_string())?;
     let Some((target, replace)) = resolve_conflict(state, id, Some(src), target)? else {
         return Ok(());
     };
+    source.check()?;
+    folder.check()?;
     check_ancestors(&target).map_err(|error| error.to_string())?;
     let parent = target.parent().ok_or("解压位置无效")?;
     let input = open_regular_file(src, false)?;
@@ -384,11 +463,8 @@ fn extract(src: &Path, target: PathBuf, state: &Shared, id: &str) -> Result<(), 
     }
     check_cancelled(state, id)?;
     check_ancestors(&target).map_err(|error| error.to_string())?;
-    if let Some(identity) = &replace {
-        trash_existing(&target, identity)?;
-    }
-    rename_exclusive(stage.path(), &target).map_err(|error| error.to_string())?;
-    let _ = stage.keep();
+    source.check()?;
+    commit_staged(stage.path(), &target, &folder, replace.as_ref(), state, id)?;
     Ok(())
 }
 

@@ -7,11 +7,14 @@ use std::{
 
 use crate::{
     cancelled,
-    fs_safety::{check_ancestors, missing, rename_exclusive, Identity},
-    strpath, transfer_file, update, Shared,
+    fs_safety::{check_ancestors, missing, rename_exclusive, Directory, Identity},
+    strpath,
+    transfer::{Source, Transfer},
+    update, Shared,
 };
 
 pub(crate) enum Change {
+    BatchRename(Vec<crate::batch_rename::Renamed>),
     Moved {
         from: PathBuf,
         to: PathBuf,
@@ -38,6 +41,8 @@ pub(crate) fn record(shared: &Shared, label: &'static str, changes: Vec<Change>)
         history.remove(0);
     }
     history.push(UndoRecord { label, changes });
+    drop(history);
+    shared.task_feed.change(None);
 }
 
 fn verify_item(path: &Path, identity: &Identity) -> Result<(), String> {
@@ -71,6 +76,7 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
             return Err("任务已取消".into());
         }
         let from = match change {
+            Change::BatchRename(_) => continue,
             Change::Moved { from, to, identity } => {
                 verify_item(to, identity)?;
                 from
@@ -93,6 +99,7 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
             return Err("任务已取消".into());
         }
         match change {
+            Change::BatchRename(changes) => crate::batch_rename::reverse(changes, shared, id)?,
             Change::Moved { from, to, identity } => {
                 update(shared, id, |task| task.current = strpath(to));
                 verify_item(to, identity)?;
@@ -100,7 +107,10 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
                 match rename_exclusive(to, from) {
                     Ok(()) => update(shared, id, |task| task.completed += 1),
                     Err(error) if error.kind() == ErrorKind::CrossesDevices => {
-                        transfer_file(to, from, shared, id, true, None)?;
+                        let source = Source::at(to.clone())?;
+                        verify_item(to, identity)?;
+                        let parent = Directory::parent(from).map_err(|error| error.to_string())?;
+                        Transfer::new(shared, id, true).stage(&source, from, &parent, None)?;
                     }
                     Err(error) => return Err(error.to_string()),
                 }

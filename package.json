@@ -1,6 +1,6 @@
 {
   "name": "filepace",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-opener": "^2.7.2",
     "lucide-react": "^1.70.0",
+    "pdfjs-dist": "6.5.438",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

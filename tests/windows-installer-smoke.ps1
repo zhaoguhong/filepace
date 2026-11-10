@@ -129,6 +129,15 @@ function Click-Element($element, [switch]$Right) {
     [FilepaceSmokeMouse]::Click(($bounds.Left + $bounds.Width / 2), ($bounds.Top + $bounds.Height / 2), $Right.IsPresent)
 }
 
+function Assert-TaskPanelClosed($area) {
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty, '关闭任务面板'
+    )
+    if ($area.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)) {
+        throw 'A file task opened the task panel automatically'
+    }
+}
+
 function Enter-Text($element, [string]$value) {
     Click-Element $element
     Set-Clipboard -Value $value
@@ -250,6 +259,9 @@ try {
     Click-Element (Wait-ForElement $window '撤销移动')
     Assert-Fixture (Join-Path $source 'move.docx')
     if (Test-Path (Join-Path $destination 'move.docx')) { throw 'Undo left the moved file behind' }
+    Assert-TaskPanelClosed $window
+    Click-Element (Wait-ForElement $window '文件任务')
+    $null = Wait-ForElement $window '已完成'
     Click-Element (Wait-ForElement $window '关闭任务面板')
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '重命名')
@@ -259,7 +271,7 @@ try {
     Click-Element (Wait-ForElement $window '撤销改名')
     Assert-Fixture (Join-Path $source 'copy.txt')
     if (Test-Path (Join-Path $source 'renamed.txt')) { throw 'Undo left the renamed file behind' }
-    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Assert-TaskPanelClosed $window
     Write-Host 'Verified undo of a move and a rename.'
 
     Click-Element (Wait-ForElement $window '跨目录搜索')
@@ -274,12 +286,12 @@ try {
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '压缩为 ZIP')
     $zip = Wait-ForElement $leftPane 'copy.zip*'
-    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Assert-TaskPanelClosed $window
     Click-Element $zip -Right
     Click-Element (Wait-ForElement $window '解压到同名文件夹')
     Assert-Fixture (Join-Path $source 'copy\copy.txt')
     Assert-Fixture (Join-Path $source 'copy.txt')
-    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Assert-TaskPanelClosed $window
     Write-Host 'Verified ZIP creation, extraction, and original contents.'
 
     $mainHandle = [IntPtr]$window.Current.NativeWindowHandle
@@ -312,7 +324,7 @@ try {
             $targetX, ($list.Top + 65), ($file -eq 'detached-copy.txt')
         )
         Assert-Fixture (Join-Path $detached $file)
-        Click-Element (Wait-ForElement $other '关闭任务面板')
+        Assert-TaskPanelClosed $other
     }
     if (Test-Path (Join-Path $source 'detached-move.txt')) { throw 'Separate-window move left its source behind' }
     Assert-Fixture (Join-Path $source 'detached-copy.txt')

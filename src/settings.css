@@ -90,3 +90,28 @@
 .setting-note {
   color: var(--muted);
 }
+.error-log-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.error-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+.error-log li {
+  border-top: 1px solid var(--hairline);
+  padding: 12px 0;
+}
+.error-log small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.error-log p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}

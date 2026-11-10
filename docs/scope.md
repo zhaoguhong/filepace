@@ -16,8 +16,14 @@
 - Frontend TypeScript and production asset build.
 - Rust compile and filesystem unit tests cover copying and moving actual files, cancellation preserving the source, conflict handling, invalid names, preview size limits, and refusal to read or transfer named pipes.
 - Browser interaction tests cover browsing, tab recovery, right-click actions and the properties fallback, file type icons, four icon sizes, and independent pane settings. Drag tests check the moving preview, selection count, move and modifier-copy gestures, cancellation, and the PNG handed off to the native drag command.
+- Browser fixtures checked 27 icon categories in light and dark mode, the blue and gold folder designs, and the fallback after an icon request fails. The installed macOS app displayed the native icons for Filepace and system apps. The Windows Shell icon path passed the Windows GNU target compilation check.
+- Browser tests verify pure white surfaces in the default light theme, distinct file hover and selection states, and theme persistence across reloads. All eight themes were rendered in light and dark mode in Chrome on macOS. The checked text and background pairs, including selected file text, had at least 4.5:1 contrast. The updated macOS app launched from the user's Applications folder, restored four saved tabs, and listed all eight themes in Appearance.
+- A browser test checks that creating a text document from a column's background menu targets that directory. A macOS desktop test created an empty `.txt` file in the right pane and verified that a duplicate name preserved the existing file contents.
 - Column-view tests confirm that file lists start at the top of their columns and that returning through the path bar keeps earlier columns with Windows paths.
 - Browser tests keep the Settings button visible while a long sidebar list scrolls and verify that the apply-all choice in a conflict dialog applies to the current file task only.
+- Browser tests confirm that sending a file to the trash leaves the task panel closed, completed tasks are visible when opened from the status bar, and failed tasks show a notice.
+- Rust and browser tests check that the local error log retains the 100 most recent records, keeps the original system error code, and can be refreshed from Settings.
+- A macOS desktop test used temporary files to verify context-menu, Return, and F2 renaming, including a folder in column view. Renaming and undo preserved the fixture contents, and opening a missing directory produced a log entry with the path and system error code.
 - Installed macOS app testing covered real file moves in both directions between panes, including a drop into a subfolder. The red close button closed an extra window and the final idle window. A pending conflict blocked closing the last window until the test task was cancelled.
 - The current macOS build showed the Finder Get Info window for both a file and a folder. A move from the extra-large icon view into a folder in the other pane and a copy into a folder in a single pane preserved the test file contents.
 - The Windows GNU target passed a Rust compilation check, including the Shell properties command.
@@ -62,12 +68,19 @@
 - Browser tests check scrolling toward hidden columns on both edges during a file drag and verify the destination and transfer mode at drop time.
 - On macOS and Windows, the installed app scrolled to a hidden ancestor and displayed the source and target file sizes and modification times. Choosing Keep Both preserved the existing target and moved the source bytes under a new name. [Installed desktop verification](https://github.com/zhaoguhong/filepace/actions/runs/42777121944)
 
+## v0.5.0 desktop verification
+
+- Rust fixture tests verify that an item replaced during a conflict is never moved, a same-volume directory move preserves mode, modification time and hard links, and a failed staging operation leaves the original target in place. They also verify a reversible rename cycle and relative paths in a folder comparison.
+- Browser tests verify bounded rendering and keyboard selection at the end of a 10,000-item grid, shared listings for two panes on the same path, targeted refresh after a path changes, and submission of a validated batch rename.
+- With 10,000 simulated text files and 20 trials in headless Chrome on macOS, the production frontend's p95 time to display the list was 36 ms. Selection took 37 ms and switching to the grid took 33 ms. The grid mounted 119 tiles at 1180 × 780. This measurement isolates frontend work.
+- An isolated macOS release build copied and moved temporary files between panes, copied a nested folder from comparison results, renamed and undid three items as a batch, and extracted a ZIP into a chosen folder. Source and destination bytes were checked, including the original and replacement files after a refused conflict. It also saved and ran a type-only search, restored its split session, and displayed both pages of a test PDF.
+- The locally signed macOS 0.4.2 build launched from the user's Applications folder and restored all four tabs and the active location from the previous installation.
+
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
 - Verify separate-window drags on macOS, including the Option copy modifier. A macOS UI automation attempt at a separate-window drop did not transfer the test file. Test Explorer/Finder drag interoperability and cut clipboard feedback with external applications.
-- Complete session geometry, per-history scroll/selection restoration, tab overflow menu, name disambiguation and focus restoration.
-- Enrich conflicts with both source and destination metadata; add task completion notifications, clear task history and open-location actions.
+- Exercise geometry and history restoration on multiple monitors and with the Windows desktop build.
 - Harden races and failure recovery, filesystem metadata fidelity, special files, symlinks, restricted folders and unavailable network/removable volumes.
 - Add stable platform-native menus, right-click recycle-bin entry, installer signing and macOS notarization.
 

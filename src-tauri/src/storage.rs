@@ -162,10 +162,13 @@ pub async fn storage_volumes() -> Result<Vec<Volume>, String> {
 }
 
 #[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanCounts {
     files: u64,
     folders: u64,
     bytes: u64,
+    #[cfg(unix)]
+    allocated_bytes: u64,
     skipped: u64,
 }
 
@@ -312,6 +315,14 @@ fn scan(
         let size = metadata.len();
         report.counts.files += 1;
         report.counts.bytes = report.counts.bytes.saturating_add(size);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            report.counts.allocated_bytes = report
+                .counts
+                .allocated_bytes
+                .saturating_add(metadata.blocks().saturating_mul(512));
+        }
         if let Some(folder) = &mut branch {
             folder.files += 1;
             folder.size = folder.size.saturating_add(size);
@@ -348,7 +359,11 @@ pub struct ScanState(Mutex<HashMap<String, ScanJob>>);
 impl ScanState {
     pub(crate) fn stop_window(&self, label: &str) {
         let jobs = self.0.lock().unwrap();
-        for key in [label, &format!("search:{label}")] {
+        for key in [
+            label,
+            &format!("search:{label}"),
+            &format!("compare:{label}"),
+        ] {
             if let Some(job) = jobs.get(key) {
                 job.cancelled.store(true, Ordering::Relaxed);
             }

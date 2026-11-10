@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, FolderSearch, Search, Square } from "lucide-react";
-import { call } from "./bridge";
+import { Channel } from "@tauri-apps/api/core";
+import { call, desktop } from "./bridge";
 import FileIcon from "./FileIcon";
 import { fileCategoryLabels } from "./fileTypes";
 import { formatSize, type Entry } from "./model";
@@ -11,6 +12,17 @@ export type SearchReport = {
   limited: boolean;
   skipped: number;
 };
+type SearchFields = { query: string; category: string; date: string; size: string };
+type SavedSearch = SearchFields & { id: string };
+
+function savedSearches(path: string): SavedSearch[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem("filepace-searches:" + path) ?? "[]") as SavedSearch[];
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function SearchPanel({
   path,
@@ -25,11 +37,15 @@ export default function SearchPanel({
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
+  const [date, setDate] = useState("");
+  const [size, setSize] = useState("");
+  const [saved, setSaved] = useState(() => savedSearches(path));
   const [report, setReport] = useState<SearchReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const request = useRef("");
-  const lastSearch = useRef({ query: "", category: "" });
+  const lastSearch = useRef<SearchFields>({ query: "", category: "", date: "", size: "" });
+  const hasFilter = Boolean(query.trim() || category || date || size);
   useEffect(
     () => () => {
       if (!request.current) return;
@@ -41,13 +57,23 @@ export default function SearchPanel({
 
   async function find(exhaustive = false) {
     const text = query.trim();
-    if (!text || request.current) return;
+    if (!hasFilter || request.current) return;
     const id = crypto.randomUUID();
     request.current = id;
-    lastSearch.current = { query: text, category };
+    lastSearch.current = { query: text, category, date, size };
     setBusy(true);
     setNotice("");
     setReport(null);
+    const onBatch = desktop ? new Channel<SearchReport["hits"]>() : undefined;
+    if (onBatch) onBatch.onmessage = (hits) => {
+      if (request.current !== id) return;
+      setReport((prior) => ({
+        hits: [...(prior?.hits ?? []), ...hits],
+        indexed: false,
+        limited: false,
+        skipped: 0,
+      }));
+    };
     try {
       const result = await call<SearchReport | null>("search_files", {
         path,
@@ -56,9 +82,12 @@ export default function SearchPanel({
         hidden,
         exhaustive,
         id,
+        minSize: size ? Math.ceil(Number(size) * 1024 ** 2) : undefined,
+        modifiedAfter: date ? Math.floor(new Date(date + "T00:00:00").getTime() / 1000) : undefined,
+        onBatch,
       });
       if (request.current === id) {
-        setReport(result);
+        if (result) setReport(result);
         if (!result) setNotice("搜索已停止。");
       }
     } catch (error) {
@@ -107,6 +136,14 @@ export default function SearchPanel({
           />
         </label>
         <label>
+          <span>修改日期起</span>
+          <input type="date" value={date} disabled={busy} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <label>
+          <span>至少（MB）</span>
+          <input type="number" min="0" max="1000000000" step="any" value={size} disabled={busy} onChange={(event) => setSize(event.target.value)} />
+        </label>
+        <label>
           <span>文件类型</span>
           <select
             aria-label="文件类型"
@@ -138,10 +175,39 @@ export default function SearchPanel({
           <button
             className="storage-primary"
             type="submit"
-            disabled={!query.trim()}
+            disabled={!hasFilter}
           >
             <Search size={14} /> 开始搜索
           </button>
+        )}
+        <button
+          className="storage-secondary"
+          type="button"
+          disabled={!hasFilter || busy}
+          onClick={() => {
+            const next = [{ id: crypto.randomUUID(), query, category, date, size }, ...saved].slice(0, 12);
+            localStorage.setItem("filepace-searches:" + path, JSON.stringify(next));
+            setSaved(next);
+            setNotice("已保存当前目录的搜索条件。");
+          }}
+        >
+          保存条件
+        </button>
+        {saved.length > 0 && (
+          <label>
+            <span>已保存条件</span>
+            <select value="" disabled={busy} onChange={(event) => {
+              const item = saved.find((item) => item.id === event.target.value);
+              if (!item) return;
+              setQuery(item.query);
+              setCategory(item.category);
+              setDate(item.date);
+              setSize(item.size);
+            }}>
+              <option value="">选择条件</option>
+              {saved.map((item) => <option key={item.id} value={item.id}>{[item.query, item.category && fileCategoryLabels[item.category as keyof typeof fileCategoryLabels], item.date, item.size && item.size + " MB"].filter(Boolean).join(" · ")}</option>)}
+            </select>
+          </label>
         )}
       </form>
       {busy && (
@@ -169,7 +235,9 @@ export default function SearchPanel({
             </div>
             {report.indexed &&
               query.trim() === lastSearch.current.query &&
-              category === lastSearch.current.category && (
+              category === lastSearch.current.category &&
+              date === lastSearch.current.date &&
+              size === lastSearch.current.size && (
                 <button
                   className="storage-secondary"
                   onClick={() => void find(true)}

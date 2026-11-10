@@ -27,6 +27,7 @@ export type ScanCounts = {
   files: number;
   folders: number;
   bytes: number;
+  allocatedBytes?: number;
   skipped: number;
 };
 export type RankedItem = {
@@ -448,6 +449,12 @@ export default function StorageDashboard({
               <dt>文件大小</dt>
               <dd>{formatSize(counts.bytes)}</dd>
             </div>
+            {counts.allocatedBytes !== undefined && (
+              <div title="按文件路径累计已分配块，硬链接和共享块可能重复计入">
+                <dt>分配空间（按路径）</dt>
+                <dd>{formatSize(counts.allocatedBytes)}</dd>
+              </div>
+            )}
             <div>
               <dt>文件</dt>
               <dd>{number.format(counts.files)}</dd>

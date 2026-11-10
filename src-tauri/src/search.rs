@@ -2,11 +2,11 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
-use tauri::{State, Window};
+use tauri::{ipc::Channel, State, Window};
 use walkdir::WalkDir;
 
 use crate::{
@@ -18,8 +18,8 @@ use crate::{
 
 const LIMIT: usize = 300;
 
-#[derive(Serialize)]
-struct Hit {
+#[derive(Clone, Serialize)]
+pub(crate) struct Hit {
     entry: Entry,
     parent: String,
 }
@@ -36,6 +36,8 @@ struct Filter {
     query: String,
     category: String,
     hidden: bool,
+    min_size: Option<u64>,
+    modified_after: Option<u64>,
 }
 
 impl Filter {
@@ -48,6 +50,12 @@ impl Filter {
         (self.category.is_empty() || self.category == category)
             && (self.hidden || !entry.hidden)
             && entry.name.to_lowercase().contains(&self.query)
+            && self
+                .min_size
+                .is_none_or(|size| !entry.is_dir && entry.size >= size)
+            && self
+                .modified_after
+                .is_none_or(|time| entry.modified >= time)
     }
 }
 
@@ -181,13 +189,20 @@ fn search_index(
     (!report.hits.is_empty()).then_some(report)
 }
 
-fn walk(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<SearchReport, String> {
+fn walk(
+    root: &Path,
+    filter: &Filter,
+    stop: &AtomicBool,
+    mut on_batch: impl FnMut(&[Hit]),
+) -> Result<SearchReport, String> {
     let mut report = SearchReport::default();
     let mut entries = WalkDir::new(root)
         .min_depth(1)
         .follow_links(false)
         .same_file_system(true)
         .into_iter();
+    let mut sent = 0;
+    let mut last = Instant::now();
     while let Some(entry) = entries.next() {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -217,8 +232,18 @@ fn walk(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<SearchReport,
         if item.is_dir && item.hidden && !filter.hidden {
             entries.skip_current_dir();
         }
-        if filter.matches(&item) && !report.add(item) {
-            break;
+        if filter.matches(&item) {
+            if !report.add(item) {
+                break;
+            }
+            if sent == 0
+                || report.hits.len() - sent >= 32
+                || last.elapsed() >= Duration::from_millis(160)
+            {
+                on_batch(&report.hits[sent..]);
+                sent = report.hits.len();
+                last = Instant::now();
+            }
         }
     }
     Ok(report)
@@ -234,10 +259,20 @@ pub(crate) async fn search_files(
     category: String,
     hidden: bool,
     exhaustive: bool,
+    min_size: Option<u64>,
+    modified_after: Option<u64>,
+    on_batch: Channel<Vec<Hit>>,
 ) -> Result<Option<SearchReport>, String> {
     let query = query.trim().to_owned();
-    if !path.is_absolute() || query.is_empty() || query.len() > 1024 || query.contains('\0') {
-        return Err("请输入有效的文件名关键词".into());
+    if !path.is_absolute()
+        || query.len() > 1024
+        || query.contains('\0')
+        || (query.is_empty()
+            && category.is_empty()
+            && min_size.is_none()
+            && modified_after.is_none())
+    {
+        return Err("请输入关键词或选择搜索条件".into());
     }
     state
         .run(format!("search:{}", window.label()), id, move |stop| {
@@ -249,15 +284,19 @@ pub(crate) async fn search_files(
                 query: query.to_lowercase(),
                 category,
                 hidden,
+                min_size,
+                modified_after,
             };
-            let indexed = if exhaustive {
+            let indexed = if exhaustive || query.is_empty() {
                 None
             } else {
                 search_index(&root, &filter, &query, stop)
             };
             let mut report = match indexed {
                 Some(report) => report,
-                None => walk(&root, &filter, stop)?,
+                None => walk(&root, &filter, stop, |batch| {
+                    let _ = on_batch.send(batch.to_vec());
+                })?,
             };
             report.hits.sort_by(|a, b| {
                 a.entry
@@ -294,13 +333,20 @@ mod tests {
             query: "会议".into(),
             category: "documents".into(),
             hidden: false,
+            min_size: Some(7),
+            modified_after: None,
         };
         let stopped = AtomicBool::new(false);
-        let report = walk(root, &filter, &stopped).unwrap();
+        let mut batches = 0;
+        let report = walk(root, &filter, &stopped, |batch| batches += batch.len()).unwrap();
         assert_eq!(report.hits.len(), 1);
+        assert_eq!(batches, 1);
         assert_eq!(report.hits[0].entry.name, "会议.PDF");
         assert_eq!(report.hits[0].parent, strpath(&root.join("sub")));
         stopped.store(true, Ordering::Relaxed);
-        assert!(walk(root, &filter, &stopped).unwrap().hits.is_empty());
+        assert!(walk(root, &filter, &stopped, |_| {})
+            .unwrap()
+            .hits
+            .is_empty());
     }
 }

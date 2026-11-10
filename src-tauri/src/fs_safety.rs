@@ -45,7 +45,7 @@ pub(crate) fn check_ancestors(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
     volume: u64,
     file: u64,
@@ -55,11 +55,15 @@ pub(crate) struct Identity {
 impl Identity {
     pub(crate) fn at(path: &Path) -> io::Result<Self> {
         let metadata = path.symlink_metadata()?;
-        if !(metadata.is_file() || metadata.is_dir() || is_link(&metadata)) {
+        Self::from_path(path, &metadata)
+    }
+
+    fn from_path(_path: &Path, metadata: &Metadata) -> io::Result<Self> {
+        if !(metadata.is_file() || metadata.is_dir() || is_link(metadata)) {
             return Err(io::Error::other("特殊文件不支持撤销"));
         }
         #[cfg(unix)]
-        return Ok(Self::from_metadata(&metadata));
+        return Ok(Self::from_metadata(metadata));
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
@@ -69,7 +73,7 @@ impl Identity {
             let file = std::fs::OpenOptions::new()
                 .access_mode(0)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(path)?;
+                .open(_path)?;
             Self::from_file(&file)
         }
     }
@@ -107,6 +111,85 @@ impl Identity {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    pub(crate) identity: Identity,
+    size: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+impl Snapshot {
+    pub(crate) fn at(path: &Path, metadata: &Metadata) -> io::Result<Self> {
+        Ok(Self::new(Identity::from_path(path, metadata)?, metadata))
+    }
+
+    pub(crate) fn from_file(file: &File, metadata: &Metadata) -> io::Result<Self> {
+        Ok(Self::new(Identity::from_file(file)?, metadata))
+    }
+
+    fn new(identity: Identity, metadata: &Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            identity,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+
+    pub(crate) fn matches(&self, path: &Path) -> bool {
+        path.symlink_metadata()
+            .and_then(|metadata| Self::at(path, &metadata))
+            .as_ref()
+            .ok()
+            == Some(self)
+    }
+
+    pub(crate) fn matches_after_rename(&self, path: &Path) -> bool {
+        path.symlink_metadata()
+            .and_then(|metadata| Self::at(path, &metadata))
+            .is_ok_and(|current| {
+                current.identity == self.identity
+                    && current.size == self.size
+                    && current.modified == self.modified
+            })
+    }
+}
+
+pub(crate) struct Directory {
+    pub(crate) path: PathBuf,
+    identity: Identity,
+}
+
+impl Directory {
+    pub(crate) fn at(path: &Path) -> io::Result<Self> {
+        let metadata = path.symlink_metadata()?;
+        if !metadata.is_dir() || is_link(&metadata) {
+            return Err(io::Error::other("上级路径不是普通文件夹"));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            identity: Identity::from_path(path, &metadata)?,
+        })
+    }
+
+    pub(crate) fn parent(path: &Path) -> io::Result<Self> {
+        Self::at(path.parent().ok_or(ErrorKind::InvalidInput)?)
+    }
+
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if Identity::at(&self.path).as_ref().ok() == Some(&self.identity) {
+            Ok(())
+        } else {
+            Err(format!("上级文件夹已变更：{}", self.path.display()))
+        }
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -132,24 +215,25 @@ pub(crate) fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub(crate) fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-
     // Canonicalize the parents to get extended-length paths without following
     // a link at the entry itself.
-    let wide_path = |path: &Path| -> io::Result<Vec<u16>> {
-        let parent = path
-            .parent()
-            .ok_or(ErrorKind::InvalidInput)?
-            .canonicalize()?;
-        let full = parent.join(path.file_name().ok_or(ErrorKind::InvalidInput)?);
-        let wide: Vec<_> = full.as_os_str().encode_wide().collect();
-        if wide.contains(&0) {
-            return Err(ErrorKind::InvalidInput.into());
-        }
-        Ok(wide.into_iter().chain([0]).collect())
-    };
+    let parent = path
+        .parent()
+        .ok_or(ErrorKind::InvalidInput)?
+        .canonicalize()?;
+    let full = parent.join(path.file_name().ok_or(ErrorKind::InvalidInput)?);
+    let wide: Vec<_> = full.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(ErrorKind::InvalidInput.into());
+    }
+    Ok(wide.into_iter().chain([0]).collect())
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
     let from = wide_path(from)?;
     let to = wide_path(to)?;
     if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 {

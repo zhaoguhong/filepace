@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import packageInfo from "../package.json" with { type: "json" };
 import type { Task } from "../src/model";
 test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
@@ -102,22 +103,35 @@ test("searches by file name and type and reveals the result", async ({ page }) =
 test("follows system light and dark mode and keeps an explicit theme", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
+  const root = page.locator("html");
+  await expect(root).toHaveAttribute("data-mode", "light");
+  for (const surface of ["html", ".titlebar", ".sidebar", ".tabs", ".active-column", ".statusbar"]) {
+    await expect(page.locator(surface)).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  }
+  const file = page.getByRole("option", { name: /会议纪要\.docx/ });
+  await file.hover();
+  await expect(file).toHaveCSS("background-color", "rgb(241, 242, 244)");
+  await file.click();
+  await expect(file).toHaveCSS("background-color", "rgb(234, 241, 255)");
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "外观", exact: true }).click();
   const theme = page.getByRole("combobox", { name: "主题" });
   const mode = page.getByRole("combobox", { name: "显示模式" });
   await expect(mode).toHaveValue("system");
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+  await expect(theme).toHaveValue("default");
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "dark");
+  await expect(root).toHaveAttribute("data-mode", "dark");
   await theme.selectOption("mist");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "mist");
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "dark");
+  await expect(root).toHaveCSS("background-color", "rgb(28, 43, 64)");
   await theme.selectOption("sand");
+  await expect(root).toHaveCSS("background-color", "rgb(48, 40, 32)");
+  await theme.selectOption("lilac");
+  await expect(root).toHaveCSS("background-color", "rgb(44, 37, 56)");
   await mode.selectOption("light");
   await page.reload();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "sand");
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+  await expect(root).toHaveAttribute("data-theme", "lilac");
+  await expect(root).toHaveAttribute("data-mode", "light");
+  await expect(root).toHaveCSS("background-color", "rgb(252, 249, 255)");
 });
 
 test("opens new tabs in columns and follows a branch until the file preview", async ({ page }) => {
@@ -215,10 +229,11 @@ test("shows path and system actions for a file, a folder and an empty list", asy
 
 const home = "/Users/demo";
 
-async function mockDesktop(page: Page, defaultView: "list" | "columns", root = home) {
-  await page.addInitScript(({ home, defaultView }) => {
+async function mockDesktop(page: Page, defaultView: "list" | "columns", root = home, count = 0) {
+  await page.addInitScript(({ home, defaultView, count, version }) => {
     localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView }));
     const writes: { command: string; args: Record<string, unknown> }[] = [];
+    const reads: string[] = [];
     const separator = home.includes("\\") ? "\\" : "/";
     const listings: Record<string, [string, boolean][]> = {
       [home]: [["项目", true], ["左栏文件.txt", false], ["补充文档.DOCX", false]],
@@ -230,23 +245,47 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
       branch += separator + folder;
     }
     listings[branch] = [["深层文件.txt", false]];
+    if (count) listings[home] = Array.from({ length: count }, (_, i) => [`文件 ${(i * 7919) % count}.txt`, false]);
     let callback = 0;
+    let revision = 0;
+    let tasks: Task[] = [];
+    const callbacks = new Map<number, (value: unknown) => void>();
+    const listeners = new Map<number, { name: string; callback: number }>();
+    const emit = (name: string, payload: unknown) => {
+      for (const [id, listener] of listeners)
+        if (listener.name === name) callbacks.get(listener.callback)?.({ event: name, id, payload });
+    };
+    Object.defineProperty(window, "filepaceTasks", {
+      get: () => tasks,
+      set: (next: Task[]) => {
+        const removed = tasks.filter((old) => !next.some((task) => task.id === old.id)).map((task) => task.id);
+        tasks = next;
+        emit("task-activity", { revision: ++revision, updates: tasks, removed, undo: null });
+      },
+    });
     Object.assign(window, {
       isTauri: true,
       filepaceWrites: writes,
+      filepaceReads: reads,
+      filepaceEmit: emit,
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
       __TAURI_INTERNALS__: {
         metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main", windowLabel: "main" } },
-        transformCallback: () => ++callback,
+        transformCallback: (handler: (value: unknown) => void) => {
+          callbacks.set(++callback, handler);
+          return callback;
+        },
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
-          if (command === "tasks") return { tasks: (window as Window & { filepaceTasks?: Task[] }).filepaceTasks ?? [], undo: null };
-          if (command === "update_status") return { current: "0.4.2", phase: "current" };
+          if (command === "tasks") return { tasks, revision, undo: null };
+          if (command === "error_log") return (window as Window & { filepaceErrors?: unknown[] }).filepaceErrors ?? [];
+          if (command === "update_status") return { current: version, phase: "current" };
           if (command === "list_directory") {
             const requested = String(args.path);
             const path = separator === "\\" && requested.length > 3 && requested.endsWith(separator)
               ? requested.slice(0, -1)
               : requested;
+            reads.push(path);
             return {
               path,
               parent: path.slice(0, path.lastIndexOf(separator)),
@@ -255,14 +294,179 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
               })),
             };
           }
+          if (command === "make_text_file") {
+            writes.push({ command, args });
+            const parent = String(args.parent);
+            const name = String(args.name);
+            const fileName = name.toLowerCase().endsWith(".txt") ? name : name + ".txt";
+            const entries = listings[parent] ?? [];
+            if (entries.some(([entry]) => entry === fileName)) throw "同名项目已存在，请换个名称";
+            listings[parent] = [...entries, [fileName, false]];
+            return null;
+          }
           if (["start_task", "new_window", "start_file_drag", "clipboard_set", "task_action"].includes(command)) writes.push({ command, args });
-          if (command === "plugin:event|listen") return ++callback;
+          if (command === "start_task") return `task-${writes.length}`;
+          if (command === "preview_batch_rename" || command === "batch_rename") {
+            writes.push({ command, args });
+            return command === "preview_batch_rename" ? "rename-preview" : "rename-task";
+          }
+          if (command === "plugin:event|listen") {
+            listeners.set(++callback, { name: String(args.event), callback: Number(args.handler) });
+            return callback;
+          }
+          if (command === "plugin:event|unlisten") listeners.delete(Number(args.eventId));
           return null;
         },
       },
     });
-  }, { home: root, defaultView });
+  }, { home: root, defaultView, count, version: packageInfo.version });
 }
+
+test("keeps the ten-thousand-item grid bounded and reveals its last row", async ({ page }) => {
+  await mockDesktop(page, "list", home, 10_000);
+  await page.goto("/");
+  const list = page.getByRole("listbox", { name: "文件列表" });
+  await expect(list.getByRole("option", { name: /文件 0\.txt/ })).toBeVisible();
+  await page.getByRole("button", { name: "图标视图", exact: true }).click();
+  await expect(list).toHaveClass(/grid/);
+  expect(await list.getByRole("option").count()).toBeLessThan(300);
+  await list.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const last = list.getByRole("option", { name: "文件 9999.txt", exact: true });
+  await expect(last).toBeVisible();
+  await last.click();
+  await page.keyboard.press("ArrowLeft");
+  await expect(list.getByRole("option", { name: "文件 9998.txt", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
+test("shares a directory snapshot and refreshes only the changed pane", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("button", { name: "左右分栏" }).click();
+  const right = page.getByRole("region", { name: "右栏" });
+  await expect(right.getByRole("option", { name: /项目/ })).toBeVisible();
+  await right.getByRole("option", { name: /项目/ }).dblclick();
+  await expect(right.getByRole("option", { name: /右栏文件/ })).toBeVisible();
+  await page.evaluate((home) => {
+    (window as Window & { filepaceEmit: (name: string, payload: unknown) => void }).filepaceEmit(
+      "directory-changed", [home + "/项目/外部修改.txt"],
+    );
+  }, home);
+  await expect.poll(() => page.evaluate(() => (window as Window & { filepaceReads: string[] }).filepaceReads)).toEqual(
+    [home, home + "/项目", home + "/项目"],
+  );
+});
+
+test("previews a batch rename and submits the validated token", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  const list = page.getByRole("listbox", { name: "文件列表" });
+  await list.getByRole("option", { name: /左栏文件\.txt/ }).click();
+  await list.getByRole("option", { name: /补充文档\.DOCX/ }).click({ modifiers: ["Shift"] });
+  await page.keyboard.press("F2");
+  const dialog = page.getByRole("dialog", { name: "批量重命名" });
+  await dialog.getByLabel("规则").selectOption("affix");
+  await dialog.getByRole("textbox", { name: "前缀", exact: true }).fill("整理-");
+  await expect(dialog.getByRole("region", { name: "改名预览" })).toContainText("整理-左栏文件.txt");
+  await dialog.getByRole("button", { name: "应用改名" }).click();
+  await expect(dialog).toBeHidden();
+  const writes = await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites);
+  expect(writes).toContainEqual({ command: "batch_rename", args: { token: "rename-preview" } });
+});
+
+test("creates a text document in the directory whose blank area was right-clicked", async ({ page }) => {
+  await mockDesktop(page, "columns");
+  await page.goto("/");
+  const files = page.getByLabel("文件列表", { exact: true });
+  await files.getByRole("option", { name: "项目", exact: true }).click();
+  await files.getByRole("option", { name: "归档", exact: true }).click();
+  const parent = page.getByLabel("文件夹 · 项目", { exact: true });
+  await parent.click({ button: "right", position: { x: 40, y: 200 } });
+  const menu = page.locator(".context-menu");
+  await expect(menu.getByRole("button", { name: "新建文件夹", exact: true })).toBeVisible();
+  await menu.getByRole("button", { name: "新建文本文档", exact: true }).click();
+
+  const dialog = page.getByRole("dialog", { name: "新建文本文档" });
+  await expect(dialog).toContainText("创建于 项目");
+  const name = dialog.getByRole("textbox", { name: "文档名称" });
+  await expect(name).toHaveValue("新建文本文档.txt");
+  await name.fill("右栏文件");
+  await name.press("Enter");
+  await expect(dialog.getByRole("alert")).toHaveText("同名项目已存在，请换个名称");
+  await name.fill("整理记录");
+  await dialog.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(files.getByRole("option", { name: "整理记录.txt", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "文件任务" })).toBeHidden();
+  const writes = await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites);
+  expect(writes).toEqual([
+    { command: "make_text_file", args: { parent: `${home}/项目`, name: "右栏文件" } },
+    { command: "make_text_file", args: { parent: `${home}/项目`, name: "整理记录" } },
+  ]);
+});
+
+test("keeps routine file tasks quiet and shows failures without opening the panel", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "文件任务" });
+  const taskButton = page.getByRole("button", { name: "文件任务", exact: true });
+  const source = `${home}/左栏文件.txt`;
+  const task: Task = {
+    id: "task-1", kind: "trash", sources: [source], destination: home,
+    status: "running", current: source, completed: 0, bytes: 0, errors: [], conflict: null,
+  };
+  async function showTask(status: Task["status"], errors: string[] = []) {
+    await page.evaluate((value) => {
+      (window as Window & { filepaceTasks: Task[] }).filepaceTasks = [value];
+    }, { ...task, status, errors, completed: status === "done" ? 1 : 0 });
+  }
+  async function trashFile() {
+    await page.getByRole("option").filter({ hasText: "左栏文件.txt" }).click({ button: "right" });
+    await page.locator(".context-menu").getByRole("button", { name: "移到回收站", exact: true }).click();
+  }
+
+  await trashFile();
+  await showTask("running");
+  await expect(page.getByRole("button", { name: "1 个文件任务" })).toBeVisible();
+  await expect(panel).toBeHidden();
+  await showTask("done");
+  await expect(taskButton).toBeVisible();
+  await expect(panel).toBeHidden();
+  await expect(page.locator(".toast")).toBeHidden();
+  await taskButton.click();
+  await expect(panel.getByText("已完成", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "关闭任务面板" }).click();
+
+  task.id = "task-2";
+  await trashFile();
+  await showTask("error", ["无法将此项目移到回收站"]);
+  await expect(page.getByText("文件任务遇到问题，可在「文件任务」查看详情。")).toBeVisible();
+  await expect(panel).toBeHidden();
+  await taskButton.click();
+  await panel.getByText("1 个问题").click();
+  await expect(panel.getByText("无法将此项目移到回收站")).toBeVisible();
+});
+
+test("shows recent local errors and refreshes Windows error details in settings", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "错误日志", exact: true }).click();
+  await expect(page.getByText("还没有错误记录。")).toBeVisible();
+
+  const path = String.raw`C:\Filepace Fixture\NUL`;
+  await page.evaluate((record) => {
+    (window as Window & { filepaceErrors: unknown[] }).filepaceErrors = [record];
+  }, {
+    time: 1_800_000_000, operation: "打开文件夹", step: "读取项目属性",
+    path, osCode: 1, message: "函数不正确。",
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  const log = page.locator(".error-log");
+  await expect(log).toContainText("打开文件夹 · 读取项目属性");
+  await expect(log).toContainText(path);
+  await expect(log).toContainText("OS Error 1");
+  await expect(log).toContainText("函数不正确。");
+});
 
 test("keeps earlier columns when using Windows breadcrumbs", async ({ page }) => {
   await mockDesktop(page, "columns", "C:\\Filepace Fixture");
@@ -291,6 +495,7 @@ test("compares conflict metadata and scopes apply-all to the current file task",
       id, kind: "copy", sources: [source], destination: `${home}/项目`, status: "conflict",
       current: source, completed: 0, bytes: 0, errors: [],
       conflict: {
+        id: `conflict-${id}`,
         source: { path: source, isDir: false, size: 12, modified: sourceTime },
         destination: { path, isDir: false, size: 1024, modified: targetTime },
       },
@@ -316,8 +521,8 @@ test("compares conflict metadata and scopes apply-all to the current file task",
   await skip.click();
   const writes = await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites);
   expect(writes).toEqual([
-    { command: "task_action", args: { id: "first", decision: "skip", applyAll: true } },
-    { command: "task_action", args: { id: "second", decision: "skip", applyAll: false } },
+    { command: "task_action", args: { id: "first", conflictId: "conflict-first", decision: "skip", applyAll: true } },
+    { command: "task_action", args: { id: "second", conflictId: "conflict-second", decision: "skip", applyAll: false } },
   ]);
 });
 

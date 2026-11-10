@@ -1,5 +1,6 @@
 import {
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent,
@@ -9,13 +10,14 @@ import {
 import { LoaderCircle } from "lucide-react";
 import FileIcon from "./FileIcon";
 import { useDirectoryListing, type PaneSide } from "./browsePane";
+import { revealItem, useFileViewport, visibleRange } from "./fileViewport";
 import { useFilePreview } from "./filePreview";
 import { describeFile } from "./fileTypes";
 import {
   basename,
   columnPaths,
   formatSize,
-  visibleEntries,
+  sortEntries,
   type Entry,
   type Tab,
 } from "./model";
@@ -25,7 +27,6 @@ type Props = {
   tab: Tab;
   side: PaneSide;
   hidden: boolean;
-  revision: number;
   active: ReactNode;
   preview?: Entry;
   dropPath?: string;
@@ -53,7 +54,6 @@ function Ancestor({
   tab,
   side,
   hidden,
-  revision,
   dropPath,
   renderRow,
   onChoose,
@@ -64,31 +64,22 @@ function Ancestor({
   child: string;
   columns: string[];
 }) {
-  const { listing, loading, error } = useDirectoryListing(path, revision);
+  const { listing, loading, error } = useDirectoryListing(path);
   const [scroll, setScroll] = useState(0);
-  const list = useRef<HTMLDivElement>(null);
-  const entries = listing
-    ? visibleEntries(listing.entries, { ...tab, query: "" }, hidden)
-    : [];
-  const start = Math.max(
-    0,
-    Math.min(entries.length - 1, Math.floor(scroll / 34) - 8),
+  const { listRef: list, attachList, height, layout } = useFileViewport("columns");
+  const entries = useMemo(
+    () => listing ? sortEntries(listing.entries, tab.sort, tab.descending, hidden) : [],
+    [listing, tab.sort, tab.descending, hidden],
   );
-  const shown = entries.slice(start, start + 55);
+  const range = visibleRange(entries.length, scroll, height, layout);
+  const shown = entries.slice(range.start, range.end);
 
   useLayoutEffect(() => {
     const index = entries.findIndex((entry) => entry.path === child);
     if (index < 0 || !list.current) return;
-    const element = list.current;
-    const top = index * 34;
-    if (
-      top < element.scrollTop ||
-      top + 34 > element.scrollTop + element.clientHeight
-    ) {
-      element.scrollTop = Math.max(0, top - (element.clientHeight - 34) / 2);
-      setScroll(element.scrollTop);
-    }
-  }, [listing, child]);
+    revealItem(list.current, index, layout);
+    setScroll(list.current.scrollTop);
+  }, [entries, child, height]);
 
   return (
     <section
@@ -100,7 +91,9 @@ function Ancestor({
         aria-label={`文件夹 · ${basename(path)}`}
         data-pane={side}
         data-drop-path={listing?.path}
-        ref={list}
+        ref={attachList}
+        role="listbox"
+        aria-multiselectable="true"
         tabIndex={-1}
         onPointerDown={(event) =>
           onMarquee(event, columns, listing?.path ?? path, entries)
@@ -121,15 +114,11 @@ function Ancestor({
           <p className="column-empty">这个文件夹还是空的</p>
         ) : (
           <>
-            <div style={{ height: start * 34 }} />
+            <div style={{ height: range.above }} />
             {shown.map((entry) =>
               renderRow(entry, listing?.path ?? path, columns, child),
             )}
-            <div
-              style={{
-                height: Math.max(0, entries.length - start - shown.length) * 34,
-              }}
-            />
+            <div style={{ height: range.below }} />
           </>
         )}
       </div>

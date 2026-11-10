@@ -8,27 +8,38 @@
     "documents"
   ],
   "pdf": ["PDF 文档", "pdf", "documents"],
-  "document": ["文档", "txt md markdown rtf log pages odt", "documents"],
+  "document": ["文档", "txt rtf log pages odt", "documents"],
+  "markdown": ["Markdown 文档", "md markdown mdx", "documents"],
   "table": ["表格", "csv tsv ods numbers", "documents"],
   "slides": ["演示文稿", "key odp", "documents"],
+  "book": ["电子书", "epub mobi azw azw3 fb2 djvu", "documents"],
   "image": [
     "图像",
-    "png jpg jpeg webp gif bmp heic heif avif svg tif tiff ico",
+    "png jpg jpeg webp gif bmp heic heif avif svg tif tiff ico icns dng raw cr2 cr3 nef arw",
     "images"
   ],
-  "video": ["视频", "mp4 mov m4v mkv avi wmv webm mpeg mpg", "videos"],
-  "audio": ["音频", "mp3 wav flac aac m4a ogg opus aiff wma", "audio"],
-  "archive": ["压缩包", "zip rar 7z tar gz bz2 xz tgz tbz2", "archives"],
+  "design": ["设计文件", "psd psb ai eps fig sketch xd xcf afdesign afphoto indd", "images"],
+  "video": ["视频", "mp4 mov m4v mkv avi wmv webm mpeg mpg flv mts m2ts", "videos"],
+  "audio": ["音频", "mp3 wav flac aac m4a ogg opus aiff wma alac m4b mid midi", "audio"],
+  "archive": ["压缩包", "zip rar 7z tar gz bz2 xz tgz tbz2 zst lz4 txz cab jar war", "archives"],
   "code": [
     "代码",
-    "js jsx ts tsx json html css scss py rs c cpp h go java swift sh yaml yml toml xml",
+    "js jsx mjs cjs ts tsx cts css scss less py rs c cc cpp h hpp go java kt kts swift rb php cs lua dart sql",
     "code"
   ],
+  "script": ["脚本", "sh bash zsh fish ps1 psm1 bat cmd", "code"],
+  "web": ["网页", "htm html xhtml mhtml webarchive", "code"],
+  "config": ["配置与结构化文本", "json jsonc json5 yaml yml toml xml ini cfg conf plist properties", "code"],
+  "database": ["数据库", "db db3 sqlite sqlite3 duckdb mdb accdb", "other"],
+  "font": ["字体", "ttf ttc otf otc woff woff2", "other"],
+  "library": ["程序库", "dll dylib so lib a framework", "other"],
+  "application": ["应用程序", "app exe com appimage", "apps"],
   "installer": [
-    "应用程序或安装包",
-    "exe msi msix appx dmg pkg apk deb rpm iso",
+    "安装包",
+    "msi msix msixbundle appx appxbundle pkg mpkg apk deb rpm",
     "apps"
   ],
+  "disk": ["磁盘映像", "dmg iso img vhd vhdx vmdk sparseimage sparsebundle", "apps"],
   "shortcut": ["快捷方式", "lnk url webloc", "other"],
   "generic": ["文件", "", "other"]
 }

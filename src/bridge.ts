@@ -47,13 +47,15 @@ export async function call<T>(
       parent: String(args.path).split("/").slice(0, -1).join("/") || null,
       entries: args.path === root ? demo : [],
     } as T;
-  if (command === "tasks") return { tasks: [], undo: null } as T;
+  if (command === "tasks") return { tasks: [], undo: null, revision: 0 } as T;
   if (command === "search_files") {
     const query = String(args.query).toLowerCase();
     const hits = (args.path === root || args.path === "/" ? demo : [])
       .filter((entry) =>
         (args.hidden || !entry.hidden) &&
         entry.name.toLowerCase().includes(query) &&
+        (args.minSize === undefined || (!entry.isDir && entry.size >= Number(args.minSize))) &&
+        (args.modifiedAfter === undefined || entry.modified >= Number(args.modifiedAfter)) &&
         (!args.category || describeFile(entry).category === args.category ||
           (entry.isDir && args.category === "folder")),
       )

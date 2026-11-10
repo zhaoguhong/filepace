@@ -1,35 +1,43 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod application_icon;
 mod archives;
+mod batch_rename;
+mod compare;
+mod diagnostics;
+mod directory_watch;
 mod fs_safety;
 mod native_drag;
 mod search;
 mod storage;
 mod system_actions;
 mod system_process;
+mod task_feed;
+mod transfer;
 mod undo;
 mod updates;
 
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
-use fs_safety::{entry_path, is_link, missing, rename_exclusive, Identity};
+use diagnostics::Failure;
+use fs_safety::{entry_path, is_link, missing, rename_exclusive, Directory, Identity, Snapshot};
 use native_drag::start_file_drag;
-use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::{BufReader, ErrorKind, Read, Write},
+    io::{BufReader, ErrorKind, Read},
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
     },
-    time::{Duration, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 use storage::{cancel_storage_scan, scan_storage, storage_volumes};
 use system_actions::{open_properties, open_system_storage, open_with};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use transfer::{Source, Transfer};
 use undo::Change;
 
 #[derive(Serialize, Clone)]
@@ -83,37 +91,67 @@ impl ConflictItem {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Conflict {
+    id: String,
     source: Option<ConflictItem>,
     destination: ConflictItem,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Clone)]
+#[serde(transparent)]
+struct FailedSource {
+    path: String,
+    #[serde(skip)]
+    identity: Identity,
+}
+
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct Task {
     id: String,
+    sequence: u64,
     kind: String,
     sources: Vec<String>,
     destination: String,
     status: String,
     current: String,
+    phase: String,
     completed: u64,
+    skipped: u64,
     bytes: u64,
     errors: Vec<String>,
+    failed_sources: Vec<FailedSource>,
+    #[serde(skip)]
+    destination_folder: Option<Arc<Directory>>,
+    #[serde(skip)]
+    within: Option<String>,
     conflict: Option<Conflict>,
     decision: Option<String>,
     policy: Option<String>,
     cancelled: bool,
 }
+
+type TaskWork = Box<dyn FnOnce(&Shared, &str, &tauri::AppHandle) -> Result<(), String> + Send>;
+
+#[derive(Default)]
+struct TaskQueue {
+    pending: VecDeque<(String, TaskWork)>,
+    running: bool,
+}
+
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<HashMap<String, Task>>,
+    task_queue: Mutex<TaskQueue>,
+    task_sequence: AtomicU64,
+    task_wake: Condvar,
+    task_feed: task_feed::TaskFeed,
+    mutation: Mutex<()>,
     installing_update: AtomicBool,
     undo: Mutex<Vec<undo::UndoRecord>>,
     sessions: Mutex<HashMap<String, serde_json::Value>>,
     closing_windows: Mutex<HashSet<String>>,
     clipboard: Mutex<(Vec<String>, bool)>,
-    watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    watched: Mutex<Vec<PathBuf>>,
+    directory_watch: Mutex<directory_watch::DirectoryWatch>,
 }
 fn strpath(p: &Path) -> String {
     p.to_string_lossy().into_owned()
@@ -234,25 +272,36 @@ fn entry_info(path: &Path, meta: &fs::Metadata) -> Entry {
             .unwrap_or(0),
     }
 }
+fn read_directory(path: &Path) -> Result<(PathBuf, Vec<Entry>), Failure> {
+    let operation = "打开文件夹";
+    let directory = dunce::canonicalize(path)
+        .map_err(|error| Failure::io(operation, "解析路径", path, error))?;
+    let items = fs::read_dir(&directory)
+        .map_err(|error| Failure::io(operation, "打开目录", &directory, error))?;
+    let mut entries = Vec::new();
+    for item in items {
+        let item = item.map_err(|error| Failure::io(operation, "枚举目录项", &directory, error))?;
+        let path = item.path();
+        // Windows already provides metadata during enumeration. Opening a
+        // child by name could resolve an on-disk entry such as NUL as a device.
+        let meta = match item.metadata() {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(Failure::io(operation, "读取项目属性", &path, error)),
+        };
+        entries.push(entry_info(&path, &meta));
+    }
+    Ok((directory, entries))
+}
+
 #[tauri::command]
 async fn list_directory(path: String, app: tauri::AppHandle) -> Result<Listing, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let p = canonical(&path)?;
-        let mut entries = Vec::new();
-        for item in fs::read_dir(&p).map_err(|e| e.to_string())? {
-            let item = item.map_err(|e| e.to_string())?;
-            let path = item.path();
-            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            entries.push(entry_info(&path, &meta));
-        }
-        let shared = app.state::<Arc<Shared>>();
-        let mut watched = shared.watched.lock().unwrap();
-        if !watched.contains(&p) {
-            if let Some(w) = shared.watcher.lock().unwrap().as_mut() {
-                let _ = w.watch(&p, notify::RecursiveMode::NonRecursive);
-            }
-            watched.push(p.clone());
-        }
+        let (p, entries) = read_directory(Path::new(&path)).map_err(|failure| {
+            let message = format!("{}失败：{}", failure.step, failure.message);
+            diagnostics::record(&app, failure);
+            message
+        })?;
         Ok(Listing {
             path: strpath(&p),
             parent: p.parent().map(strpath),
@@ -261,6 +310,48 @@ async fn list_directory(path: String, app: tauri::AppHandle) -> Result<Listing, 
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn suggest_directories(input: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = Path::new(&input);
+        if !path.is_absolute() {
+            return Ok(Vec::new());
+        }
+        let (parent, prefix) = if input.ends_with(['/', '\\']) {
+            (path, String::new())
+        } else {
+            let parent = path.parent().ok_or("缺少上级文件夹")?;
+            (
+                parent,
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase(),
+            )
+        };
+        let mut suggestions = Vec::new();
+        for entry in fs::read_dir(parent)
+            .map_err(|error| error.to_string())?
+            .flatten()
+        {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.to_lowercase().starts_with(&prefix)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                suggestions.push(strpath(&entry.path()));
+                if suggestions.len() == 24 {
+                    break;
+                }
+            }
+        }
+        suggestions.sort();
+        Ok(suggestions)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 fn places() -> Vec<Place> {
@@ -362,13 +453,52 @@ fn launch_terminal(_directory: &Path) -> Result<(), String> {
 fn make_directory(parent: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
     valid_name(&name)?;
     let shared = app.state::<Arc<Shared>>();
+    let _mutation = shared
+        .mutation
+        .try_lock()
+        .map_err(|_| "正在写入文件，请稍后重试")?;
     let tasks = shared.tasks.lock().unwrap();
     ensure_mutation_allowed(&shared, &tasks)?;
-    fs::create_dir(canonical(&parent)?.join(name)).map_err(|e| e.to_string())?;
+    let path = canonical(&parent)?.join(name);
+    fs::create_dir(&path).map_err(|e| e.to_string())?;
     drop(tasks);
-    let _ = app.emit("directory-changed", ());
+    let _ = app.emit("directory-changed", [strpath(&path)]);
     Ok(())
 }
+
+fn create_text_file(parent: &str, name: &str) -> Result<(), String> {
+    valid_name(name)?;
+    let name = if name.to_ascii_lowercase().ends_with(".txt") {
+        name.to_owned()
+    } else {
+        format!("{name}.txt")
+    };
+    fs::File::create_new(canonical(parent)?.join(name))
+        .map(drop)
+        .map_err(|error| {
+            if error.kind() == ErrorKind::AlreadyExists {
+                "同名项目已存在，请换个名称".into()
+            } else {
+                error.to_string()
+            }
+        })
+}
+
+#[tauri::command]
+fn make_text_file(parent: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
+    let shared = app.state::<Arc<Shared>>();
+    let _mutation = shared
+        .mutation
+        .try_lock()
+        .map_err(|_| "正在写入文件，请稍后重试")?;
+    let tasks = shared.tasks.lock().unwrap();
+    ensure_mutation_allowed(&shared, &tasks)?;
+    create_text_file(&parent, &name)?;
+    drop(tasks);
+    let _ = app.emit("directory-changed", [parent]);
+    Ok(())
+}
+
 #[tauri::command]
 fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
     valid_name(&name)?;
@@ -378,6 +508,10 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
         return Ok(());
     }
     let shared = app.state::<Arc<Shared>>();
+    let _mutation = shared
+        .mutation
+        .try_lock()
+        .map_err(|_| "正在写入文件，请稍后重试")?;
     let tasks = shared.tasks.lock().unwrap();
     ensure_mutation_allowed(&shared, &tasks)?;
     rename_exclusive(&src, &dst).map_err(|error| {
@@ -387,6 +521,7 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
             error.to_string()
         }
     })?;
+    let changed = [strpath(&src), strpath(&dst)];
     if let Ok(identity) = Identity::at(&dst) {
         undo::record(
             &shared,
@@ -399,7 +534,7 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
         );
     }
     drop(tasks);
-    let _ = app.emit("directory-changed", ());
+    let _ = app.emit("directory-changed", changed);
     Ok(())
 }
 #[tauri::command]
@@ -465,7 +600,8 @@ fn clipboard_copy_paths(paths: Vec<String>, names_only: Option<bool>) -> Result<
 
 fn update(shared: &Shared, id: &str, f: impl FnOnce(&mut Task)) {
     if let Some(t) = shared.tasks.lock().unwrap().get_mut(id) {
-        f(t)
+        f(t);
+        shared.task_feed.change(Some(id));
     }
 }
 fn cancelled(shared: &Shared, id: &str) -> bool {
@@ -502,35 +638,32 @@ fn choose(shared: &Shared, id: &str, source: Option<&Path>, dst: &Path) -> Resul
         return Ok(policy);
     }
     let conflict = Conflict {
+        id: uuid::Uuid::new_v4().to_string(),
         source: source.map(ConflictItem::at),
         destination: ConflictItem::at(dst),
     };
-    update(shared, id, |t| {
-        t.conflict = Some(conflict);
-        t.status = "conflict".into();
-        t.decision = None;
-    });
-    loop {
-        if cancelled(shared, id) {
-            return Err("任务已取消".into());
-        }
-        let decision = {
-            shared
-                .tasks
-                .lock()
-                .unwrap()
-                .get_mut(id)
-                .and_then(|t| t.decision.take())
-        };
-        if let Some(d) = decision {
-            update(shared, id, |t| {
-                t.conflict = None;
-                t.status = "running".into()
-            });
-            return Ok(d);
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    let mut tasks = shared.tasks.lock().unwrap();
+    let task = tasks.get_mut(id).ok_or("文件任务已结束")?;
+    task.conflict = Some(conflict);
+    task.status = "conflict".into();
+    task.decision = None;
+    shared.task_feed.change(Some(id));
+    let mut tasks = shared
+        .task_wake
+        .wait_while(tasks, |tasks| {
+            tasks
+                .get(id)
+                .is_some_and(|task| !task.cancelled && task.decision.is_none())
+        })
+        .unwrap();
+    let task = tasks.get_mut(id).ok_or("文件任务已结束")?;
+    task.conflict = None;
+    if task.cancelled {
+        return Err("任务已取消".into());
     }
+    task.status = "running".into();
+    shared.task_feed.change(Some(id));
+    task.decision.take().ok_or_else(|| "无效的冲突处理".into())
 }
 
 fn resolve_conflict(
@@ -538,13 +671,18 @@ fn resolve_conflict(
     id: &str,
     source: Option<&Path>,
     dst: PathBuf,
-) -> Result<Option<(PathBuf, Option<Identity>)>, String> {
+) -> Result<Option<(PathBuf, Option<Snapshot>)>, String> {
     if missing(&dst).map_err(|error| error.to_string())? {
         return Ok(Some((dst, None)));
     }
-    let before = Identity::at(&dst);
+    let before = dst
+        .symlink_metadata()
+        .and_then(|meta| Snapshot::at(&dst, &meta));
     match choose(shared, id, source, &dst)?.as_str() {
-        "skip" => Ok(None),
+        "skip" => {
+            update(shared, id, |task| task.skipped += 1);
+            Ok(None)
+        }
         "keep" => Ok(Some((unique_target(&dst)?, None))),
         "replace" => {
             let identity = before.map_err(|error| error.to_string())?;
@@ -554,217 +692,161 @@ fn resolve_conflict(
     }
 }
 
-fn trash_existing(path: &Path, identity: &Identity) -> Result<(), String> {
-    if Identity::at(path).as_ref().ok() != Some(identity) {
-        return Err("目标在确认期间已变更，请重试".into());
-    }
-    trash::delete(path).map_err(|error| format!("无法将原项目移到回收站：{error}"))
-}
-
+#[cfg(test)]
 fn copy_entry(
-    src: &Path,
-    dest: &Path,
-    shared: &Shared,
-    id: &str,
-    moving: bool,
-    journal: &mut Vec<Change>,
-) -> Result<bool, String> {
-    if cancelled(shared, id) {
-        return Err("任务已取消".into());
-    }
-    let meta = fs::symlink_metadata(src).map_err(|e| e.to_string())?;
-    if is_link(&meta) {
-        return Err(format!("暂不传输链接：{}", strpath(src)));
-    }
-    if !meta.is_file() && !meta.is_dir() {
-        return Err(format!("暂不传输特殊文件：{}", strpath(src)));
-    }
-    update(shared, id, |t| t.current = strpath(src));
-    let merge = meta.is_dir()
-        && dest
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata));
-    let Some((dst, replace)) = (if merge {
-        Some((dest.to_path_buf(), None))
-    } else {
-        resolve_conflict(shared, id, Some(src), dest.to_path_buf())?
-    }) else {
-        return Ok(false);
-    };
-    if meta.is_dir() {
-        if let Some(identity) = &replace {
-            trash_existing(&dst, identity)?;
-        }
-        match fs::create_dir(&dst) {
-            Ok(()) => {
-                if moving {
-                    if let Ok(identity) = Identity::at(&dst) {
-                        journal.push(Change::MadeDirectory {
-                            path: dst.clone(),
-                            identity,
-                        });
-                    }
-                }
-            }
-            Err(error)
-                if merge
-                    && error.kind() == ErrorKind::AlreadyExists
-                    && dst
-                        .symlink_metadata()
-                        .is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) => {}
-            Err(error) => return Err(error.to_string()),
-        }
-        let mut all = true;
-        for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            match copy_entry(
-                &entry.path(),
-                &dst.join(entry.file_name()),
-                shared,
-                id,
-                moving,
-                journal,
-            ) {
-                Ok(copied) => all &= copied,
-                Err(error) => {
-                    all = false;
-                    update(shared, id, |t| {
-                        t.errors
-                            .push(format!("{}: {error}", strpath(&entry.path())))
-                    });
-                    if cancelled(shared, id) {
-                        return Err("任务已取消".into());
-                    }
-                }
-            }
-        }
-        if moving && all {
-            fs::remove_dir(src).map_err(|e| e.to_string())?;
-            journal.push(Change::RemovedDirectory(src.to_path_buf()));
-        }
-        return Ok(all);
-    }
-    if let Some(identity) = transfer_file(src, &dst, shared, id, moving, replace.as_ref())? {
-        journal.push(Change::Moved {
-            from: src.to_path_buf(),
-            to: dst,
-            identity,
-        });
-    }
-    Ok(true)
-}
-
-// Copies commit from a temporary sibling. Cancellation keeps the original file.
-fn transfer_file(
     src: &Path,
     dst: &Path,
     shared: &Shared,
     id: &str,
     moving: bool,
-    replace: Option<&Identity>,
-) -> Result<Option<Identity>, String> {
-    let mut input = open_regular_file(src, false)?;
-    let meta = input.metadata().map_err(|error| error.to_string())?;
-    let original = Identity::from_file(&input).map_err(|error| error.to_string())?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".filepace-")
-        .suffix(".partial")
-        .tempfile_in(dst.parent().ok_or("目标路径无效")?)
-        .map_err(|e| e.to_string())?;
-    let result = (|| {
-        let output = temp.as_file_mut();
-        let mut buf = vec![0u8; 1024 * 1024];
-        loop {
-            if cancelled(shared, id) {
-                return Err("任务已取消".into());
-            }
-            let n = input.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            output.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            update(shared, id, |t| t.bytes += n as u64);
-        }
-        output.sync_all().map_err(|e| e.to_string())?;
-        fs::set_permissions(temp.path(), meta.permissions()).map_err(|e| e.to_string())?;
-        // Commit without replacing a destination created by another process.
-        filetime::set_file_times(
-            temp.path(),
-            filetime::FileTime::from_last_access_time(&meta),
-            filetime::FileTime::from_last_modification_time(&meta),
-        )
-        .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        for name in xattr::list(src).map_err(|e| e.to_string())? {
-            if let Some(value) = xattr::get(src, &name).map_err(|e| e.to_string())? {
-                xattr::set(temp.path(), &name, &value).map_err(|e| e.to_string())?;
-            }
-        }
-        let current = fs::symlink_metadata(src).map_err(|e| e.to_string())?;
-        if Identity::at(src).as_ref().ok() != Some(&original)
-            || current.len() != meta.len()
-            || current.modified().ok() != meta.modified().ok()
-        {
-            return Err("复制期间源文件发生变化，保留原文件，请重试".into());
-        }
-        if cancelled(shared, id) {
-            return Err("任务已取消".into());
-        }
-        if let Some(identity) = replace {
-            trash_existing(dst, identity)?;
-        }
-        let output = temp
-            .persist_noclobber(dst)
-            .map_err(|e| format!("无法提交目标文件（原文件保留）：{e}"))?;
-        let identity = if moving {
-            let identity = Identity::from_file(&output).map_err(|error| error.to_string())?;
-            if Identity::at(src).as_ref().ok() != Some(&original) {
-                return Err("目标已写入，源文件发生变化并已保留".into());
-            }
-            fs::remove_file(src).map_err(|e| format!("目标已写入，无法移除源文件：{e}"))?;
-            Some(identity)
-        } else {
-            None
-        };
-        update(shared, id, |t| t.completed += 1);
-        Ok(identity)
-    })();
+    journal: &mut Vec<Change>,
+) -> Result<bool, String> {
+    let source = Source::at(src.to_owned())?;
+    let parent = Directory::parent(dst).map_err(|error| error.to_string())?;
+    let mut operation = Transfer::new(shared, id, moving);
+    let result = operation.run(&source, dst, &parent);
+    journal.extend(operation.journal);
     result
 }
+
 #[tauri::command]
-fn start_task(
+async fn start_task(
     kind: String,
     sources: Vec<String>,
     destination: String,
+    within: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_task(kind, sources, destination, within, None, app)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn prepare_task(
+    kind: String,
+    sources: Vec<String>,
+    destination: String,
+    within: Option<String>,
+    retry: Option<&Task>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     if matches!(kind.as_str(), "zip" | "unzip") {
-        return archives::start(kind, sources, app);
+        return archives::start(kind, sources, destination, app);
     }
-    if !["copy", "move", "trash"].contains(&kind.as_str()) {
+    let TransferPlan { folder, items } =
+        plan_transfer(&kind, &sources, &destination, within.as_deref(), retry)?;
+    enqueue_task(
+        app,
+        Task {
+            kind: kind.clone(),
+            sources,
+            destination,
+            destination_folder: folder.clone(),
+            within,
+            ..Default::default()
+        },
+        move |state, id, app| {
+            let mut operation = Transfer::new(state, id, kind == "move");
+            for (source, target) in items {
+                if cancelled(state, id) {
+                    break;
+                }
+                let path = strpath(&source.path);
+                update(state, id, |task| task.current = path.clone());
+                let result = if let (Some(target), Some(folder)) = (&target, folder.as_ref()) {
+                    operation.run(&source, target, folder).map(|_| ())
+                } else {
+                    source.check().and_then(|()| {
+                        trash::delete(&source.path).map_err(|error| error.to_string())?;
+                        update(state, id, |task| task.completed += 1);
+                        Ok(())
+                    })
+                };
+                if let Err(error) = result {
+                    update(state, id, |task| {
+                        task.errors.push(format!("{path}: {error}"));
+                        if !task.cancelled {
+                            task.failed_sources.push(FailedSource {
+                                path: path.clone(),
+                                identity: source.identity().clone(),
+                            });
+                        }
+                    });
+                }
+                let changed: Vec<_> = std::iter::once(path)
+                    .chain(folder.as_ref().map(|folder| strpath(&folder.path)))
+                    .chain(target.as_ref().map(|target| strpath(target)))
+                    .collect();
+                let _ = app.emit("directory-changed", changed);
+            }
+            undo::record(state, "撤销移动", operation.journal);
+            Ok(())
+        },
+    )
+}
+
+struct TransferPlan {
+    folder: Option<Arc<Directory>>,
+    items: Vec<(Source, Option<PathBuf>)>,
+}
+
+fn plan_transfer(
+    kind: &str,
+    sources: &[String],
+    destination: &str,
+    within: Option<&str>,
+    retry: Option<&Task>,
+) -> Result<TransferPlan, String> {
+    if !["copy", "move", "trash"].contains(&kind) {
         return Err("未知操作".into());
     }
     if sources.is_empty() {
         return Err("请选择文件".into());
     }
-    let destination_path = if kind != "trash" {
-        let p = canonical(&destination)?;
-        if !p.is_dir() {
-            return Err("目标必须是文件夹".into());
+    let folder = if kind != "trash" {
+        let path = canonical(destination)?;
+        if let Some(root) = within {
+            if !path.starts_with(canonical(root)?) {
+                return Err("目标位置已不在对比的文件夹内".into());
+            }
         }
-        Some(p)
+        let directory = if let Some(previous) =
+            retry.and_then(|task| task.destination_folder.as_ref())
+        {
+            if previous.path != path {
+                return Err("目标位置已变更，请重新选择目标文件夹".into());
+            }
+            previous.check()?;
+            previous.clone()
+        } else {
+            Arc::new(Directory::at(&path).map_err(|error| error.to_string())?)
+        };
+        Some(directory)
     } else {
         None
     };
-    let mut transfers = Vec::with_capacity(sources.len());
-    for source in &sources {
+    let mut items = Vec::with_capacity(sources.len());
+    let mut seen = HashSet::new();
+    let failed = retry.map(|task| {
+        task.failed_sources
+            .iter()
+            .map(|source| (source.path.as_str(), &source.identity))
+            .collect::<HashMap<_, _>>()
+    });
+    for source in sources {
         let path = entry_path(Path::new(source))?;
-        let resolved = canonical(source)?;
-        let target = if let Some(dst) = &destination_path {
-            let name = path.file_name().ok_or("需要选择文件或文件夹")?;
-            let target = dst.join(name);
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let target = if let Some(folder) = &folder {
+            let resolved = canonical(source)?;
+            let target = folder
+                .path
+                .join(path.file_name().ok_or("需要选择文件或文件夹")?);
             if resolved.parent().is_none()
-                || dst.starts_with(&resolved)
+                || folder.path.starts_with(&resolved)
                 || target == resolved
                 || dunce::canonicalize(&target).is_ok_and(|target| target == resolved)
             {
@@ -774,47 +856,25 @@ fn start_task(
         } else {
             None
         };
-        transfers.push((path, target));
+        let item = Source::at(path)?;
+        if failed.as_ref().is_some_and(|failed| {
+            failed.get(source.as_str()).copied() != Some(item.identity())
+        }) {
+            return Err(format!("源项目已替换，请重新选择：{source}"));
+        }
+        items.push((item, target));
     }
-    enqueue_task(
-        app,
-        Task {
-            kind: kind.clone(),
-            sources,
-            destination,
-            ..Default::default()
-        },
-        move |state, id, app| {
-            let mut journal = Vec::new();
-            for (src, dst) in transfers {
-                if cancelled(state, id) {
-                    break;
-                }
-                let source = strpath(&src);
-                update(state, id, |t| t.current = source.clone());
-                let result = if let Some(dst) = dst {
-                    copy_entry(&src, &dst, state, id, kind == "move", &mut journal)
-                } else {
-                    trash::delete(&src)
-                        .map(|_| {
-                            update(state, id, |t| t.completed += 1);
-                            true
-                        })
-                        .map_err(|e| e.to_string())
-                };
-                if let Err(e) = result {
-                    update(state, id, |t| t.errors.push(format!("{source}: {e}")));
-                }
-                let _ = app.emit("directory-changed", ());
-            }
-            undo::record(state, "撤销移动", journal);
-            Ok(())
-        },
-    )
+    if seen
+        .iter()
+        .any(|path| path.ancestors().skip(1).any(|parent| seen.contains(parent)))
+    {
+        return Err("请勿同时选择文件夹和其中的项目".into());
+    }
+    Ok(TransferPlan { folder, items })
 }
 
 fn active(task: &Task) -> bool {
-    matches!(task.status.as_str(), "running" | "conflict")
+    matches!(task.status.as_str(), "queued" | "running" | "conflict")
 }
 
 fn ensure_mutation_allowed(shared: &Shared, tasks: &HashMap<String, Task>) -> Result<(), String> {
@@ -837,6 +897,7 @@ fn enqueue_task(
 ) -> Result<String, String> {
     let state = app.state::<Arc<Shared>>().inner().clone();
     let id = uuid::Uuid::new_v4().to_string();
+    let mut queue = state.task_queue.lock().unwrap();
     {
         let mut tasks = state.tasks.lock().unwrap();
         ensure_mutation_allowed(&state, &tasks)?;
@@ -849,28 +910,89 @@ fn enqueue_task(
             }
         }
         task.id = id.clone();
-        task.status = "running".into();
-        tasks.insert(id.clone(), task);
-    }
-    let task_id = id.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = work(&state, &task_id, &app) {
-            update(&state, &task_id, |task| task.errors.push(error));
+        task.sequence = state.task_sequence.fetch_add(1, Ordering::Relaxed);
+        task.status = "queued".into();
+        if tasks.len() >= 100 {
+            if let Some(oldest) = tasks
+                .values()
+                .filter(|task| !active(task))
+                .min_by_key(|task| task.sequence)
+                .map(|task| task.id.clone())
+            {
+                tasks.remove(&oldest);
+                state.task_feed.change(Some(&oldest));
+            } else {
+                return Err("文件任务队列已满，请等待任务完成".into());
+            }
         }
+        tasks.insert(id.clone(), task);
+        state.task_feed.change(Some(&id));
+    }
+    queue.pending.push_back((id.clone(), Box::new(work)));
+    if !queue.running {
+        queue.running = true;
+        let worker_state = state.clone();
+        std::thread::spawn(move || run_tasks(worker_state, app));
+    }
+    Ok(id)
+}
+
+fn run_tasks(state: Arc<Shared>, app: tauri::AppHandle) {
+    loop {
+        let (task_id, work) = {
+            let mut queue = state.task_queue.lock().unwrap();
+            match queue.pending.pop_front() {
+                Some(job) => job,
+                None => {
+                    queue.running = false;
+                    return;
+                }
+            }
+        };
+        let _mutation = state.mutation.lock().unwrap();
+        if !cancelled(&state, &task_id) {
+            update(&state, &task_id, |task| task.status = "running".into());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                work(&state, &task_id, &app)
+            }))
+            .unwrap_or_else(|_| Err("文件任务意外停止，请检查源和目标位置".into()));
+            if let Err(error) = result {
+                update(&state, &task_id, |task| task.errors.push(error));
+            }
+        }
+        let mut failure = None;
         update(&state, &task_id, |t| {
             t.conflict = None;
             t.status = if t.cancelled {
                 "cancelled"
-            } else if t.errors.is_empty() {
-                "done"
-            } else {
+            } else if let Some(error) = t.errors.first() {
+                let path = if t.destination.is_empty() {
+                    &t.current
+                } else {
+                    &t.destination
+                };
+                failure = Some(Failure::new(
+                    "文件任务",
+                    &t.kind,
+                    Path::new(path),
+                    error.clone(),
+                ));
                 "error"
+            } else {
+                "done"
             }
             .into()
         });
-        let _ = app.emit("directory-changed", ());
-    });
-    Ok(id)
+        if let Some(failure) = failure {
+            diagnostics::record(&app, failure);
+        }
+        let changed = state.tasks.lock().unwrap().get(&task_id).and_then(|task| {
+            matches!(task.kind.as_str(), "zip" | "unzip" | "undo").then(|| task.destination.clone())
+        });
+        if let Some(path) = changed {
+            let _ = app.emit("directory-changed", (!path.is_empty()).then_some([path]));
+        }
+    }
 }
 
 #[tauri::command]
@@ -892,39 +1014,135 @@ fn undo_last(app: tauri::AppHandle) -> Result<String, String> {
 
 #[derive(Serialize)]
 struct Activity {
+    revision: u64,
     tasks: Vec<Task>,
     undo: Option<&'static str>,
 }
 
 #[tauri::command]
 fn tasks(state: tauri::State<Arc<Shared>>) -> Activity {
-    let mut t: Vec<_> = state.tasks.lock().unwrap().values().cloned().collect();
-    t.sort_by(|a, b| a.id.cmp(&b.id));
+    let tasks = state.tasks.lock().unwrap();
+    let mut t: Vec<_> = tasks.values().cloned().collect();
+    t.sort_by_key(|task| std::cmp::Reverse(task.sequence));
     let undo = state.undo.lock().unwrap().last().map(|entry| entry.label);
-    Activity { tasks: t, undo }
+    Activity {
+        revision: state.task_feed.revision(),
+        tasks: t,
+        undo,
+    }
 }
+
 #[tauri::command]
-fn task_action(id: String, decision: String, apply_all: bool, state: tauri::State<Arc<Shared>>) {
-    update(&state, &id, |t| {
-        if decision == "cancel" {
-            t.cancelled = true
-        } else if ["replace", "skip", "keep"].contains(&decision.as_str()) {
-            if apply_all {
-                t.policy = Some(decision.clone())
-            }
-            t.decision = Some(decision)
+fn clear_task_history(state: tauri::State<Arc<Shared>>) {
+    state.tasks.lock().unwrap().retain(|id, task| {
+        if active(task) {
+            return true;
         }
+        state.task_feed.change(Some(id));
+        false
+    });
+}
+
+#[tauri::command]
+async fn retry_task(id: String, app: tauri::AppHandle) -> Result<String, String> {
+    let task = app
+        .state::<Arc<Shared>>()
+        .tasks
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .filter(|task| task.status == "error" && !task.failed_sources.is_empty())
+        .ok_or("没有可重试的文件项目")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sources = task
+            .failed_sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect();
+        prepare_task(
+            task.kind.clone(),
+            sources,
+            task.destination.clone(),
+            task.within.clone(),
+            Some(&task),
+            app,
+        )
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
-async fn thumbnail(path: String) -> Result<Vec<u8>, String> {
+fn task_action(
+    id: String,
+    decision: String,
+    apply_all: bool,
+    conflict_id: Option<String>,
+    state: tauri::State<Arc<Shared>>,
+) {
+    act_on_task(&state, &id, decision, apply_all, conflict_id);
+}
+
+fn act_on_task(
+    shared: &Shared,
+    id: &str,
+    decision: String,
+    apply_all: bool,
+    conflict_id: Option<String>,
+) {
+    update(shared, id, |task| {
+        if decision == "cancel" && active(task) {
+            task.cancelled = true;
+        } else if ["replace", "skip", "keep"].contains(&decision.as_str())
+            && task.status == "conflict"
+            && task.decision.is_none()
+            && task.conflict.as_ref().map(|conflict| &conflict.id) == conflict_id.as_ref()
+        {
+            if apply_all {
+                task.policy = Some(decision.clone());
+            }
+            task.decision = Some(decision);
+        }
+    });
+    shared.task_wake.notify_all();
+}
+
+#[tauri::command]
+async fn thumbnail(
+    path: String,
+    application_icon: Option<bool>,
+) -> Result<tauri::ipc::Response, String> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    static SLOTS: [tauri::async_runtime::Mutex<()>; 3] =
+        [const { tauri::async_runtime::Mutex::const_new(()) }; 3];
+    let slot = NEXT.fetch_add(1, Ordering::Relaxed) % SLOTS.len();
+    let _worker = SLOTS[slot].lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        let file = open_regular_file(Path::new(&path), true)?;
+        let path = Path::new(&path);
+        if application_icon == Some(true) {
+            return application_icon::load(path).map(tauri::ipc::Response::new);
+        }
+        let file = open_regular_file(path, true)?;
+        #[cfg(target_os = "macos")]
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "pdf" | "heic" | "heif"
+                )
+            })
+        {
+            return quick_look_thumbnail(path).map(tauri::ipc::Response::new);
+        }
         let mut reader = image::ImageReader::new(BufReader::new(file))
             .with_guessed_format()
             .map_err(|e| e.to_string())?;
         let mut limits = image::Limits::default();
         limits.max_alloc = Some(128 * 1024 * 1024);
+        limits.max_image_width = Some(20_000);
+        limits.max_image_height = Some(20_000);
         reader.limits(limits);
         let image = reader
             .decode()
@@ -934,10 +1152,35 @@ async fn thumbnail(path: String) -> Result<Vec<u8>, String> {
         image
             .write_to(&mut bytes, image::ImageFormat::Png)
             .map_err(|e| e.to_string())?;
-        Ok(bytes.into_inner())
+        Ok(tauri::ipc::Response::new(bytes.into_inner()))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn quick_look_thumbnail(path: &Path) -> Result<Vec<u8>, String> {
+    let path = dunce::canonicalize(path).map_err(|error| error.to_string())?;
+    let folder = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut command = Command::new("/usr/bin/qlmanage");
+    command
+        .args(["-t", "-s", "512", "-o"])
+        .arg(folder.path())
+        .arg(path);
+    let output = system_process::run(command, || false, Some(std::time::Duration::from_secs(6)))
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("系统缩略图不可用".into());
+    }
+    for entry in fs::read_dir(folder.path()).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry.path().extension().is_some_and(|ext| ext == "png")
+        {
+            return read_limited(&entry.path(), 4 * 1024 * 1024, "系统缩略图过大");
+        }
+    }
+    Err("系统缩略图不可用".into())
 }
 
 fn read_limited(path: &Path, limit: u64, too_large: &str) -> Result<Vec<u8>, String> {
@@ -956,18 +1199,29 @@ fn read_limited(path: &Path, limit: u64, too_large: &str) -> Result<Vec<u8>, Str
     Ok(bytes)
 }
 
-#[tauri::command]
-fn read_preview(path: String) -> Result<String, String> {
+fn read_preview_text(path: &Path) -> Result<String, String> {
     let bytes = read_limited(
-        Path::new(&path),
+        path,
         2 * 1024 * 1024,
         "文本预览上限为 2 MB，请用默认应用打开",
     )?;
     String::from_utf8(bytes).map_err(|_| "此文件暂不支持文本预览".into())
 }
 #[tauri::command]
-fn read_image(path: String) -> Result<Vec<u8>, String> {
-    read_limited(Path::new(&path), 20 * 1024 * 1024, "图片预览上限为 20 MB")
+async fn read_preview(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || read_preview_text(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_image(path: String) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_limited(Path::new(&path), 30 * 1024 * 1024, "文件预览上限为 30 MB")
+            .map(tauri::ipc::Response::new)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 fn session_file(app: &tauri::AppHandle) -> PathBuf {
     app.path().app_config_dir().unwrap().join("sessions.json")
@@ -977,18 +1231,79 @@ fn persist_sessions(
     app: &tauri::AppHandle,
     sessions: &HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let path = session_file(app);
+    persist_json(&session_file(app), sessions)
+}
+
+fn persist_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let directory = path.parent().unwrap();
     fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut temp, sessions).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut temp, value).map_err(|e| e.to_string())?;
     temp.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
+#[derive(Deserialize, Serialize)]
+struct WindowGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
+fn save_geometry(window: &tauri::Window, value: &mut serde_json::Value) {
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) || size.width == 0 || size.height == 0 {
+        return;
+    }
+    value["geometry"] = serde_json::json!(WindowGeometry {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        maximized: window.is_maximized().unwrap_or(false),
+    });
+}
+
+fn restore_geometry(window: &tauri::WebviewWindow, geometry: serde_json::Value) {
+    let Ok(saved) = serde_json::from_value::<WindowGeometry>(geometry) else {
+        return;
+    };
+    let Ok(monitors) = window.available_monitors() else {
+        return;
+    };
+    if let Some(monitor) = monitors.iter().find(|monitor| {
+        let area = monitor.work_area();
+        let dx = i64::from(saved.x) - i64::from(area.position.x);
+        let dy = i64::from(saved.y) - i64::from(area.position.y);
+        dx >= -100
+            && dy >= -100
+            && dx < i64::from(area.size.width) - 80
+            && dy < i64::from(area.size.height) - 80
+    }) {
+        let area = monitor.work_area();
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            saved.width.clamp(320, area.size.width.max(320)),
+            saved
+                .height
+                .clamp(240, area.size.height.max(240).saturating_sub(30).max(240)),
+        ));
+        let _ = window.set_position(tauri::PhysicalPosition::new(
+            saved.x.max(area.position.x),
+            saved.y.max(area.position.y),
+        ));
+        if saved.maximized {
+            let _ = window.maximize();
+        }
+    }
+}
+
 #[tauri::command]
 fn save_session(
-    value: serde_json::Value,
+    mut value: serde_json::Value,
     window: tauri::Window,
     state: tauri::State<Arc<Shared>>,
     app: tauri::AppHandle,
@@ -996,6 +1311,10 @@ fn save_session(
     if app.get_webview_window(window.label()).is_none() {
         return Ok(());
     }
+    if !value.is_object() {
+        return Err("无效的窗口会话".into());
+    }
+    save_geometry(&window, &mut value);
     let mut sessions = state.sessions.lock().unwrap();
     sessions.insert(window.label().into(), value);
     persist_sessions(&app, &sessions)
@@ -1030,6 +1349,12 @@ fn handle_window_close(window: &tauri::Window, event: &tauri::WindowEvent) {
                 );
             } else if !last {
                 closing.insert(window.label().into());
+            } else {
+                let mut sessions = state.sessions.lock().unwrap();
+                if let Some(session) = sessions.get_mut(window.label()) {
+                    save_geometry(window, session);
+                    let _ = persist_sessions(app, &sessions);
+                }
             }
         }
         tauri::WindowEvent::Destroyed => {
@@ -1039,6 +1364,11 @@ fn handle_window_close(window: &tauri::Window, event: &tauri::WindowEvent) {
                 if let Err(error) = persist_sessions(app, &sessions) {
                     eprintln!("无法保存窗口会话：{error}");
                 }
+            }
+        }
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            if let Some(session) = state.sessions.lock().unwrap().get_mut(window.label()) {
+                save_geometry(window, session);
             }
         }
         _ => {}
@@ -1080,6 +1410,8 @@ fn main() {
     let shared = Arc::new(Shared::default());
     tauri::Builder::default()
         .manage(shared)
+        .manage(batch_rename::Plans::default())
+        .manage(diagnostics::ErrorLog::default())
         .manage(native_drag::DragState::default())
         .manage(storage::ScanState::default())
         .manage(updates::UpdateState::default())
@@ -1090,20 +1422,24 @@ fn main() {
             native_drag::handle_window_event(window, event);
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window
+                    .state::<Arc<Shared>>()
+                    .directory_watch
+                    .lock()
+                    .unwrap()
+                    .close(window.label());
+                window
                     .state::<storage::ScanState>()
                     .stop_window(window.label());
             }
         })
         .setup(|app| {
             let handle = app.handle().clone();
-            let watch_handle = handle.clone();
-            let watcher =
-                notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                    if result.is_ok() {
-                        let _ = watch_handle.emit("directory-changed", ());
-                    }
-                })?;
-            *app.state::<Arc<Shared>>().watcher.lock().unwrap() = Some(watcher);
+            app.state::<Arc<Shared>>().task_feed.start(handle.clone());
+            app.state::<Arc<Shared>>()
+                .directory_watch
+                .lock()
+                .unwrap()
+                .start(handle.clone());
             if let Ok(data) = fs::read(session_file(&handle)) {
                 if let Ok(mut sessions) =
                     serde_json::from_slice::<HashMap<String, serde_json::Value>>(&data)
@@ -1120,14 +1456,23 @@ fn main() {
                             clear_tab_selection(right);
                         }
                     }
+                    let main_geometry = sessions
+                        .get("main")
+                        .and_then(|session| session.get("geometry"))
+                        .cloned();
                     let labels: Vec<_> = sessions
-                        .keys()
-                        .filter(|s| s.starts_with("files-"))
-                        .cloned()
+                        .iter()
+                        .filter(|(label, _)| label.starts_with("files-"))
+                        .map(|(label, session)| (label.clone(), session.get("geometry").cloned()))
                         .collect();
                     *app.state::<Arc<Shared>>().sessions.lock().unwrap() = sessions;
-                    for label in labels {
-                        let _ = tauri::WebviewWindowBuilder::new(
+                    if let (Some(window), Some(geometry)) =
+                        (app.get_webview_window("main"), main_geometry)
+                    {
+                        restore_geometry(&window, geometry);
+                    }
+                    for (label, geometry) in labels {
+                        let window = tauri::WebviewWindowBuilder::new(
                             app,
                             &label,
                             tauri::WebviewUrl::App("index.html".into()),
@@ -1136,6 +1481,9 @@ fn main() {
                         .inner_size(1180., 780.)
                         .min_inner_size(780., 520.)
                         .build();
+                        if let (Ok(window), Some(geometry)) = (window, geometry) {
+                            restore_geometry(&window, geometry);
+                        }
                     }
                 }
             }
@@ -1143,6 +1491,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_directory,
+            suggest_directories,
+            directory_watch::watch_directories,
+            diagnostics::error_log,
             places,
             open_entry,
             open_properties,
@@ -1153,9 +1504,15 @@ fn main() {
             cancel_storage_scan,
             search::search_files,
             search::cancel_search,
+            compare::compare_directories,
+            compare::cancel_compare,
+            archives::list_archive,
             open_terminal,
             make_directory,
+            make_text_file,
             rename_entry,
+            batch_rename::preview_batch_rename,
+            batch_rename::batch_rename,
             clipboard_set,
             clipboard_get,
             clipboard_copy_paths,
@@ -1166,6 +1523,8 @@ fn main() {
             updates::check_update,
             updates::install_update,
             tasks,
+            clear_task_history,
+            retry_task,
             task_action,
             read_preview,
             thumbnail,
@@ -1178,9 +1537,12 @@ fn main() {
         .expect("启动 Filepace 失败")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if has_active_tasks(&app.state::<Arc<Shared>>()) {
+                let shared = app.state::<Arc<Shared>>();
+                if has_active_tasks(&shared) {
                     api.prevent_exit();
                     let _ = app.emit("exit-blocked", ());
+                } else {
+                    let _ = persist_sessions(app, &shared.sessions.lock().unwrap());
                 }
             }
         });
@@ -1189,12 +1551,85 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_keeps_the_original_source_and_destination() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let source = root.join("sample.txt");
+        let destination = root.join("compared").join("target");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(&source, b"original").unwrap();
+        let sources = [strpath(&source)];
+        let scope = strpath(destination.parent().unwrap());
+        let destination_name = strpath(&destination);
+        let plan = plan_transfer("move", &sources, &destination_name, Some(&scope), None).unwrap();
+        let failed = Task {
+            kind: "move".into(),
+            destination: destination_name,
+            destination_folder: plan.folder,
+            within: Some(scope),
+            failed_sources: vec![FailedSource {
+                path: sources[0].clone(),
+                identity: plan.items[0].0.identity().clone(),
+            }],
+            ..Default::default()
+        };
+        let retry = || {
+            plan_transfer(
+                &failed.kind,
+                &sources,
+                &failed.destination,
+                failed.within.as_deref(),
+                Some(&failed),
+            )
+        };
+        assert!(retry().is_ok());
+
+        let original_folder = root.join("original-target");
+        fs::rename(&destination, &original_folder).unwrap();
+        fs::create_dir(&destination).unwrap();
+        assert!(retry().is_err());
+        assert!(!destination.join("sample.txt").exists());
+        fs::remove_dir(&destination).unwrap();
+        fs::rename(&original_folder, &destination).unwrap();
+
+        let original_file = root.join("original.txt");
+        fs::rename(&source, &original_file).unwrap();
+        fs::write(&source, b"replacement").unwrap();
+        assert!(retry().is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"replacement");
+        assert_eq!(fs::read(&original_file).unwrap(), b"original");
+    }
     #[test]
     fn rejects_unsafe_names() {
         for name in ["", "..", "a/b", "a\\b"] {
             assert!(valid_name(name).is_err())
         }
         assert!(valid_name("新文件夹").is_ok());
+    }
+    #[test]
+    fn creates_empty_text_files_and_preserves_existing_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = strpath(directory.path());
+        let notes = directory.path().join("会议记录.txt");
+
+        create_text_file(&parent, "会议记录").unwrap();
+        assert!(fs::read(&notes).unwrap().is_empty());
+        create_text_file(&parent, "Draft.TXT").unwrap();
+        assert!(fs::read(directory.path().join("Draft.TXT"))
+            .unwrap()
+            .is_empty());
+
+        fs::write(&notes, b"existing contents").unwrap();
+        assert_eq!(
+            create_text_file(&parent, "会议记录.txt").unwrap_err(),
+            "同名项目已存在，请换个名称"
+        );
+        assert_eq!(fs::read(&notes).unwrap(), b"existing contents");
+        assert!(create_text_file(&parent, "../outside").is_err());
+        assert!(create_text_file(&strpath(&notes), "nested").is_err());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
     #[cfg(windows)]
     #[test]
@@ -1211,6 +1646,22 @@ mod tests {
             assert!(valid_name(name).is_err(), "accepted {name}");
         }
         assert!(valid_name("report COM1.txt").is_ok());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn lists_an_existing_file_with_a_reserved_device_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let reserved = dir.path().canonicalize().unwrap().join("NUL");
+        fs::write(&reserved, b"on-disk file").unwrap();
+        fs::write(dir.path().join("ordinary.txt"), b"ordinary file").unwrap();
+
+        let listing = read_directory(dir.path());
+        fs::remove_file(&reserved).unwrap();
+        let (_, entries) = listing.unwrap();
+        assert_eq!(entries.len(), 2);
+        let entry = entries.iter().find(|entry| entry.name == "NUL").unwrap();
+        assert_eq!(entry.size, 12);
+        assert!(!entry.is_dir && !entry.is_link);
     }
     #[test]
     fn preview_checks_the_read_limit() {
@@ -1238,8 +1689,8 @@ mod tests {
             .insert("t".into(), Task::default());
         let destination = dir.path().join("target.png");
         assert!(copy_entry(&pipe, &destination, &shared, "t", true, &mut Vec::new()).is_err());
-        assert!(read_preview(strpath(&pipe)).is_err());
-        assert!(read_image(strpath(&pipe)).is_err());
+        assert!(read_preview_text(&pipe).is_err());
+        assert!(read_limited(&pipe, 1024, "limit").is_err());
         assert!(open_regular_file(&pipe, true).is_err());
         assert!(pipe.exists());
         assert!(!destination.exists());

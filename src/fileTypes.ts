@@ -30,8 +30,6 @@ const formatLabels: Record<string, string> = {
   jpeg: "JPEG 图像",
   webp: "WebP 图像",
   txt: "文本文档",
-  md: "Markdown 文档",
-  markdown: "Markdown 文档",
   pages: "Pages 文档",
   numbers: "Numbers 表格",
   key: "Keynote 演示文稿",
@@ -45,13 +43,18 @@ const formatLabels: Record<string, string> = {
 export function describeFile(entry: Entry) {
   const dot = entry.name.lastIndexOf(".");
   const extension = dot > 0 ? entry.name.slice(dot + 1).toLowerCase() : "";
-  const kind = entry.isDir
+  const windows = !entry.path.startsWith("/");
+  const macPackage =
+    !windows && entry.isDir && !entry.isLink &&
+    /^(app|pkg|mpkg|sparsebundle|framework)$/.test(extension);
+  const kind = entry.isDir && !macPackage
     ? "folder"
     : entry.isLink
       ? "shortcut"
       : (byExtension.get(extension) ?? "generic");
   return {
     kind,
+    windows,
     category: fileKinds[kind][2],
     label: entry.isLink
       ? "符号链接"
@@ -60,6 +63,7 @@ export function describeFile(entry: Entry) {
         : Object.hasOwn(formatLabels, extension)
           ? formatLabels[extension]
           : fileKinds[kind][0],
-    thumbnail: kind === "image" && /^(png|jpe?g|webp|gif|bmp)$/.test(extension),
+    thumbnail: kind === "pdf" || (kind === "image" && /^(png|jpe?g|webp|gif|bmp|heic|heif)$/.test(extension)),
+    applicationIcon: kind === "application" && (macPackage || (windows && extension === "exe")),
   };
 }

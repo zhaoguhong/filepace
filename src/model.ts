@@ -1,3 +1,5 @@
+import { describeFile } from "./fileTypes";
+
 export type Entry = {
   name: string;
   path: string;
@@ -20,15 +22,22 @@ export type Tab = {
   path: string;
   history: string[];
   index: number;
+  locationState?: Record<number, LocationState>;
   query: string;
   view: View;
   columns?: string[];
   gridSize?: GridSize;
   sort: "name" | "modified" | "size";
+  group?: "kind" | "date";
   descending: boolean;
   selected: string[];
   scroll: number;
 };
+type LocationState = Pick<Tab, "columns" | "query" | "selected" | "scroll">;
+
+function locationState(tab: Tab): LocationState {
+  return { columns: tab.columns, query: tab.query, selected: tab.selected, scroll: tab.scroll };
+}
 export type ConflictItem = {
   path: string;
   isDir: boolean;
@@ -37,17 +46,21 @@ export type ConflictItem = {
 };
 export type Task = {
   id: string;
+  sequence?: number;
   kind: string;
   sources: string[];
   destination: string;
   status: string;
   current: string;
+  phase?: string;
   completed: number;
+  skipped?: number;
   bytes: number;
   errors: string[];
-  conflict: { source: ConflictItem | null; destination: ConflictItem } | null;
+  failedSources?: string[];
+  conflict: { id: string; source: ConflictItem | null; destination: ConflictItem } | null;
 };
-export type FileActivity = { tasks: Task[]; undo: string | null };
+export type FileActivity = { tasks: Task[]; undo: string | null; revision: number };
 export type Place = { name: string; path: string; kind: string };
 export const basename = (p: string) =>
   p
@@ -72,10 +85,28 @@ export function navigate(tab: Tab, path: string): Tab {
     path,
     columns: undefined,
     history: [...tab.history.slice(0, tab.index + 1), path],
+    locationState: {
+      ...Object.fromEntries(Object.entries(tab.locationState ?? {}).filter(([index]) => Number(index) < tab.index)),
+      [tab.index]: locationState(tab),
+    },
     index: tab.index + 1,
     query: "",
     selected: [],
     scroll: 0,
+  };
+}
+
+export function travelTab(tab: Tab, index: number): Partial<Tab> {
+  const path = tab.history[index];
+  const remembered = tab.locationState?.[index];
+  return {
+    index,
+    path,
+    columns: tab.view === "columns" ? remembered?.columns ?? travelColumns(tab, path) : undefined,
+    query: remembered?.query ?? "",
+    selected: remembered?.selected ?? [],
+    scroll: remembered?.scroll ?? 0,
+    locationState: { ...tab.locationState, [tab.index]: locationState(tab) },
   };
 }
 
@@ -95,21 +126,40 @@ export function travelColumns(tab: Tab, path: string) {
     ? [...columns, path]
     : [path];
 }
-export function visibleEntries(entries: Entry[], tab: Tab, hidden: boolean) {
-  return entries
-    .filter(
-      (e) =>
-        (hidden || !e.hidden) &&
-        e.name.toLocaleLowerCase().includes(tab.query.toLocaleLowerCase()),
-    )
-    .sort(
+const fileNames = new Intl.Collator("zh-CN", { numeric: true });
+const dayFormat = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+
+export function entryGroup(entry: Entry, group: NonNullable<Tab["group"]>) {
+  return group === "kind" ? describeFile(entry).label : dayFormat.format(entry.modified * 1000);
+}
+
+export function sortEntries(
+  entries: Entry[],
+  sort: Tab["sort"],
+  descending: boolean,
+  hidden: boolean,
+  group?: Tab["group"],
+) {
+  const visible = entries.filter((entry) => hidden || !entry.hidden);
+  const groups = group && new Map(visible.map((entry) => [entry, entryGroup(entry, group)]));
+  return visible.sort(
       (a, b) =>
+        (groups ? fileNames.compare(groups.get(a)!, groups.get(b)!) * (group === "date" ? -1 : 1) : 0) ||
         Number(b.isDir) - Number(a.isDir) ||
-        (tab.descending ? -1 : 1) *
-          (tab.sort === "name"
-            ? a.name.localeCompare(b.name, "zh-CN", { numeric: true })
-            : a[tab.sort] - b[tab.sort]),
+        (descending ? -1 : 1) *
+          (sort === "name" ? fileNames.compare(a.name, b.name) : a[sort] - b[sort]),
     );
+}
+
+export function filterEntries(entries: Entry[], query: string) {
+  const needle = query.toLocaleLowerCase();
+  return needle
+    ? entries.filter((entry) => entry.name.toLocaleLowerCase().includes(needle))
+    : entries;
+}
+
+export function visibleEntries(entries: Entry[], tab: Tab, hidden: boolean) {
+  return filterEntries(sortEntries(entries, tab.sort, tab.descending, hidden, tab.group), tab.query);
 }
 export function formatSize(size: number, base = 1024) {
   if (size < base) return `${size} B`;
