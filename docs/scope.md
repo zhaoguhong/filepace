@@ -49,6 +49,12 @@
 - The Windows installer passed current-user installation with and without a preinstalled WebView2 runtime. The installed app moved and Ctrl-copied files between separate windows with the destination in column view. [Installer checks](https://github.com/zhaoguhong/filepace/actions/runs/42767422205)
 - On Windows, the updater rejected a mismatched signed version, installed the verified v0.4.0 package, and relaunched with the saved directory and fixture file intact. [Windows update verification](https://github.com/zhaoguhong/filepace/actions/runs/42769047016)
 
+## v0.4.1 selection and sidebar shortcuts
+
+- Browser tests cover marquee selection in columns, lists, and icon views, cancelling a selection with Escape, repeated Shift-arrow selection, and arrow-key navigation in icon view.
+- Browser tests cover keeping older favorites, adding, removing and reordering common locations, and syncing group expansion between windows after reopening.
+- The installed macOS and Windows apps moved a real file between columns in one pane and copied another with Option or Ctrl. Marquee selection followed by system clipboard copy and paste preserved the bytes of the selected files and a folder's contents in both locations. [Installed desktop verification](https://github.com/zhaoguhong/filepace/actions/runs/42773449596)
+
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
