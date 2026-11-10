@@ -191,6 +191,9 @@ try {
         $app.Refresh()
     } while ($app.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
     if ($app.MainWindowHandle -eq 0) { throw 'Filepace did not open a window' }
+    if (-not [FilepaceSmokeMouse]::MoveWindow($app.MainWindowHandle, 8, 12, 1000, 680, $true)) {
+        throw 'Could not fit the app into the test desktop'
+    }
     $window = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
 
     Click-Element (Wait-ForElement $window '存储概览')
@@ -232,6 +235,9 @@ try {
     # The Shell chooser is hosted outside Filepace and may be absent from the UIA tree.
     Wait-ForForegroundProcess 'OpenWith'
     [FilepaceSmokeMouse]::PressKey(27)
+    Start-Sleep -Milliseconds 400
+    $windowBounds = $window.Current.BoundingRectangle
+    [FilepaceSmokeMouse]::Click(($windowBounds.Left + 140), ($windowBounds.Top + 13), $false)
     Wait-ForForegroundProcess 'filepace'
     Write-Host 'Verified the native Open With chooser.'
 
