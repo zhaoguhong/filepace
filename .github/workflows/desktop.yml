@@ -42,10 +42,6 @@ jobs:
       - run: npm run tauri -- build --bundles ${{ matrix.bundles }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
-      - name: Verify installed Windows app
-        if: ${{ runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
-        shell: powershell
-        run: ./tests/windows-installer-smoke.ps1
       - uses: actions/upload-artifact@v7
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
         with:
@@ -54,3 +50,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
+      - name: Verify installed Windows app
+        if: ${{ runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
+        shell: powershell
+        run: ./tests/windows-installer-smoke.ps1

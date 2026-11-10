@@ -13,6 +13,13 @@ public static class FilepaceSmokeMouse {
     private static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll", SetLastError=true)]
+    private static extern bool PostMessage(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam);
+    public static void Close(IntPtr window) {
+        if (!PostMessage(window, 0x0010, UIntPtr.Zero, IntPtr.Zero)) {
+            throw new System.ComponentModel.Win32Exception();
+        }
+    }
     private static void Move(int x, int y) {
         if (!SetCursorPos(x, y)) throw new System.ComponentModel.Win32Exception();
     }
@@ -105,10 +112,15 @@ function Close-NativeDialog([string]$kind) {
         foreach ($window in $windows) {
             $name = $window.Current.Name
             $process = (Get-Process -Id $window.Current.ProcessId -ErrorAction SilentlyContinue).ProcessName
-            if (($kind -eq 'properties' -and $name -like '*copy.txt*Properties*') -or
-                ($kind -eq 'open-with' -and ($name -match 'Open With|Select an app' -or $process -eq 'OpenWith'))) {
+            if (($kind -eq 'properties' -and $name -match '^copy(?:\.txt)? Properties$') -or
+                ($kind -eq 'open-with' -and ($name -match 'Open With|Select an app|How do you want to open' -or $process -eq 'OpenWith'))) {
                 Write-Host "Observed native $kind window: $name ($process)"
-                $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+                $pattern = $null
+                if ($window.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {
+                    $pattern.Close()
+                } else {
+                    [FilepaceSmokeMouse]::Close([IntPtr]$window.Current.NativeWindowHandle)
+                }
                 return
             }
         }
@@ -162,6 +174,10 @@ try {
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '属性')
     Close-NativeDialog 'properties'
+    Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
+    Click-Element (Wait-ForElement $window '复制名称')
+    $null = Wait-ForElement $window '已复制名称'
+    if ((Get-Clipboard -Raw) -ne 'copy.txt') { throw 'Unexpected copied file name' }
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '打开方式')
     Close-NativeDialog 'open-with'

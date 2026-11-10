@@ -26,6 +26,7 @@
 - Scans run on request and report logical sizes per file path. They skip symbolic links, Windows reparse points, and unreadable items. Traversal stays on the selected file system. The overview ranks the largest items in each category and direct subfolders.
 - Rust tests check volume capacities, category totals, ranking, cancellation, and symlink handling. Browser tests cover scan controls, classification filters, and navigating from results.
 - The macOS app reported both the system disk and a mounted test image. A disposable directory scan matched the expected counts, bytes, category filter, and link exclusion. The macOS shortcuts and system actions opened Finder Get Info, an associated app selected from the Open With list, and Disk Utility.
+- On a Windows GitHub Actions runner, the installed app displayed live volume data, scanned a temporary directory, filtered a category, and opened the native Properties sheet. Split-pane move and Ctrl-copy checks verified the resulting source and destination bytes.
 
 ## v0.1.0 installer preview
 
