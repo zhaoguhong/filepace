@@ -1,0 +1,96 @@
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px clamp(16px, 3vw, 36px);
+  background: var(--subtle);
+}
+.settings-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.settings-heading > div {
+  flex: 1;
+}
+.settings-heading h1,
+.settings-card h2 {
+  margin: 0;
+}
+.settings-heading p {
+  margin: 3px 0 0;
+  color: var(--muted);
+}
+.settings-mark {
+  display: grid;
+  place-items: center;
+  width: 45px;
+  height: 45px;
+  border-radius: 10px;
+  color: var(--accent-text);
+  background: var(--accent-tint);
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(94px, 155px) minmax(0, 1fr);
+  gap: 14px;
+  max-width: 830px;
+}
+.settings-layout nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.settings-layout nav button {
+  justify-content: flex-start;
+  padding: 9px 11px;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.settings-layout nav button:hover,
+.settings-layout nav button[aria-pressed="true"] {
+  color: var(--accent-text);
+  background: var(--accent-tint);
+}
+.settings-card {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.settings-card h2 {
+  font-size: 16px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.setting-row small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.setting-row select {
+  min-width: 94px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--chrome);
+  color: var(--text);
+  font: inherit;
+}
+.setting-row input {
+  accent-color: var(--accent);
+}
+.setting-note {
+  color: var(--muted);
+}
+.sidebar-settings {
+  width: 100%;
+  margin-top: 8px;
+}

@@ -7,6 +7,7 @@ mod storage;
 mod system_actions;
 mod system_process;
 mod undo;
+mod updates;
 
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
 use fs_safety::{entry_path, is_link, missing, rename_exclusive, Identity};
@@ -19,7 +20,10 @@ use std::{
     io::{BufReader, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, UNIX_EPOCH},
 };
 use storage::{cancel_storage_scan, scan_storage, storage_volumes};
@@ -71,6 +75,7 @@ struct Task {
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<HashMap<String, Task>>,
+    installing_update: AtomicBool,
     undo: Mutex<Vec<undo::UndoRecord>>,
     sessions: Mutex<HashMap<String, serde_json::Value>>,
     closing_windows: Mutex<HashSet<String>>,
@@ -326,7 +331,7 @@ fn make_directory(parent: String, name: String, app: tauri::AppHandle) -> Result
     valid_name(&name)?;
     let shared = app.state::<Arc<Shared>>();
     let tasks = shared.tasks.lock().unwrap();
-    ensure_mutation_allowed(&tasks)?;
+    ensure_mutation_allowed(&shared, &tasks)?;
     fs::create_dir(canonical(&parent)?.join(name)).map_err(|e| e.to_string())?;
     drop(tasks);
     let _ = app.emit("directory-changed", ());
@@ -342,7 +347,7 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
     }
     let shared = app.state::<Arc<Shared>>();
     let tasks = shared.tasks.lock().unwrap();
-    ensure_mutation_allowed(&tasks)?;
+    ensure_mutation_allowed(&shared, &tasks)?;
     rename_exclusive(&src, &dst).map_err(|error| {
         if error.kind() == ErrorKind::AlreadyExists {
             "同名文件已存在".into()
@@ -775,7 +780,10 @@ fn active(task: &Task) -> bool {
     matches!(task.status.as_str(), "running" | "conflict")
 }
 
-fn ensure_mutation_allowed(tasks: &HashMap<String, Task>) -> Result<(), String> {
+fn ensure_mutation_allowed(shared: &Shared, tasks: &HashMap<String, Task>) -> Result<(), String> {
+    if shared.installing_update.load(Ordering::Relaxed) {
+        return Err("正在安装更新，请在重启后继续文件操作".into());
+    }
     if tasks
         .values()
         .any(|task| task.kind == "undo" && active(task))
@@ -794,7 +802,7 @@ fn enqueue_task(
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut tasks = state.tasks.lock().unwrap();
-        ensure_mutation_allowed(&tasks)?;
+        ensure_mutation_allowed(&state, &tasks)?;
         if task.kind == "undo" {
             if tasks.values().any(active) {
                 return Err("请等文件任务结束后再撤销".into());
@@ -1037,7 +1045,9 @@ fn main() {
         .manage(shared)
         .manage(native_drag::DragState::default())
         .manage(storage::ScanState::default())
+        .manage(updates::UpdateState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             handle_window_close(window, event);
             native_drag::handle_window_event(window, event);
@@ -1115,6 +1125,9 @@ fn main() {
             start_file_drag,
             start_task,
             undo_last,
+            updates::update_status,
+            updates::check_update,
+            updates::install_update,
             tasks,
             task_action,
             read_preview,

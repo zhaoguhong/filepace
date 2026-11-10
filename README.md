@@ -6,7 +6,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.3.0) 下载适合你的 v0.3.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.0) 下载适合你的 v0.4.0 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 ## 同时整理两个目录
 
-- 点「新建窗口」会在当前位置打开一个独立窗口。也可以通过标签页的右键菜单把它移到新窗口。
+- 按 macOS 的 **⌘N** 或 Windows 的 **Ctrl+N**，在当前位置打开独立窗口。也可通过标签页右键菜单将标签移到新窗口。
 - 点「左右分栏」会在当前窗口内打开右侧窗格。两侧各有独立的标签页、选区和浏览历史。侧栏导航和键盘快捷键作用于当前窗格。
 - 把文件或文件夹拖到另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入当前目录。
 - 点「合并分栏」会回到单栏，并保留两边的标签页。
@@ -34,9 +34,15 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 文件列表和图标视图区分 Word、Excel、PowerPoint、PDF、图片及其他常见类型。工具栏可切换列表和小、中、大、超大图标。拖动时会显示文件图标、名称和多选数量。
 
-窗口顶部可以切换主题，默认跟随系统的浅色或深色设置。也可以固定为浅色、深色、雾蓝或暖砂。
+新标签默认使用列视图。单击文件夹会在右侧展开下一列，选中文件会显示预览或基本信息。每个标签可用工具栏切换列视图、列表和图标。
+
+从侧栏底部打开「设置」，在「浏览」中可选择新标签的默认视图。在「外观」中分别选显示模式与主题。显示模式默认跟随系统，默认、雾蓝和暖砂主题各有浅色和深色版本。
 
 右键「打开方式」可选用系统提供的应用。右键「属性」或按 macOS 的 **⌘I**、Windows 的 **Alt+Enter**，可查看选中项目的系统简介或属性。系统窗口无法打开时会显示基本信息。「复制名称」可复制所选项目的名称，存储概览可直达 macOS 磁盘工具或 Windows 存储设置。
+
+## 应用更新
+
+从 v0.4.0 起，Filepace 会后台检查、下载并校验 GitHub 上的正式更新。在「设置 → 更新」可以手动检查，或关闭自动更新。选择「重启更新」前请完成正在运行的文件任务。v0.3.0 和更早版本可从发布页下载安装包升级一次。
 
 ## 跨目录搜索
 
@@ -87,5 +93,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_x64-setup.exe

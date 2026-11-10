@@ -65,7 +65,6 @@ function pointerTarget(
     gesture.paths.includes(target.path)
   )
     return null;
-  if (target.pane === gesture.pane && !target.folder) return null;
   const copy =
     target.pane === gesture.pane || (isMac ? event.altKey : event.ctrlKey);
   return { ...target, kind: copy ? "copy" : "move" };

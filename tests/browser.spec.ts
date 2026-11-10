@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
   await page.goto("/");
   await expect(page.locator(".file-area").getByRole("option")).toHaveCount(11);
   await page.getByLabel("筛选当前文件夹").fill("需求");
@@ -29,6 +30,7 @@ test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
 
 test("distinguishes document icons and saves the chosen size per tab", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "列表视图" }).click();
   const files = page.getByLabel("文件列表");
   const word = files.getByRole("option", { name: /会议纪要\.docx/ });
   const excel = files.getByRole("option", { name: /预算表\.xlsx/ });
@@ -99,21 +101,45 @@ test("searches by file name and type and reveals the result", async ({ page }) =
 test("follows system light and dark mode and keeps an explicit theme", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "外观", exact: true }).click();
   const theme = page.getByRole("combobox", { name: "主题" });
-  await expect(theme).toHaveValue("system");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  const mode = page.getByRole("combobox", { name: "显示模式" });
+  await expect(mode).toHaveValue("system");
+  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.getByRole("button", { name: "存储概览", exact: true }).click();
-  await expect(page.getByRole("region", { name: "存储概览" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-mode", "dark");
   await theme.selectOption("mist");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "mist");
+  await expect(page.locator("html")).toHaveAttribute("data-mode", "dark");
   await theme.selectOption("sand");
+  await mode.selectOption("light");
   await page.reload();
-  await expect(theme).toHaveValue("sand");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "sand");
-  await theme.selectOption("light");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+});
+
+test("opens new tabs in columns and follows a branch until the file preview", async ({ page }) => {
+  await page.goto("/");
+  const current = page.getByLabel("文件列表", { exact: true });
+  await current.getByRole("option", { name: /项目/ }).click();
+  const ancestor = page.getByLabel("文件夹 · demo", { exact: true });
+  await expect(ancestor.getByRole("option", { name: /项目/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "当前目录列 · 项目" })).toBeVisible();
+  await ancestor.getByRole("option", { name: /设计素材/ }).click();
+  await expect(page.getByRole("region", { name: "当前目录列 · 设计素材" })).toBeVisible();
+  await ancestor.getByRole("option", { name: /产品需求\.md/ }).click();
+  await expect(page.getByRole("region", { name: "文件预览" })).toContainText("产品需求.md");
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const view = page.getByRole("combobox", { name: "默认视图" });
+  await expect(view).toHaveValue("columns");
+  await view.selectOption("list");
+  await page.getByRole("button", { name: "返回文件" }).click();
+  await page.getByRole("button", { name: "新建标签", exact: true }).click();
+  await expect(current).toHaveClass(/^file-area list/);
+  await page.getByRole("tab").first().click();
+  await expect(current).toHaveClass(/column-list/);
 });
 test("new folder errors are visible and navigation can be typed", async ({
   page,
@@ -129,6 +155,7 @@ test("new folder errors are visible and navigation can be typed", async ({
 });
 
 test('reorders tabs with pointer gestures independently of native file drag', async ({page})=>{
+ await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
  await page.goto('/');await page.getByLabel('新建标签',{exact:true}).click();await page.locator('.file-area').getByRole('option').filter({hasText:'项目'}).dblclick();
  const from=await page.getByRole('tab').last().boundingBox();const to=await page.getByRole('tab').first().boundingBox();
  await page.mouse.move(from!.x+30,from!.y+15);await page.mouse.down();await page.mouse.move(to!.x+30,to!.y+15,{steps:8});await page.mouse.up();
@@ -138,6 +165,7 @@ test('reorders tabs with pointer gestures independently of native file drag', as
 test("shows path and system actions for a file, a folder and an empty list", async ({
   page,
 }) => {
+  await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
   await page.goto("/");
   const files = page.getByLabel("文件列表");
   const file = files.getByRole("option").filter({ hasText: "产品需求.md" });
@@ -177,6 +205,7 @@ test("shows path and system actions for a file, a folder and an empty list", asy
 test("moves and copies files between panes and keeps both tabs when merging", async ({ page }) => {
   const home = "/Users/demo";
   await page.addInitScript((home) => {
+    localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" }));
     const writes: { command: string; args: Record<string, unknown> }[] = [];
     const listings: Record<string, [string, boolean][]> = {
       [home]: [["项目", true], ["左栏文件.txt", false], ["补充文档.DOCX", false]],
@@ -193,6 +222,7 @@ test("moves and copies files between panes and keeps both tabs when merging", as
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
           if (command === "tasks") return { tasks: [], undo: null };
+          if (command === "update_status") return { current: "0.4.0", phase: "current" };
           if (command === "list_directory") {
             const path = String(args.path);
             return {
@@ -297,5 +327,9 @@ test("moves and copies files between panes and keeps both tabs when merging", as
   await page.getByRole("button", { name: "合并分栏" }).click();
   await expect(page.getByRole("region", { name: "右栏" })).toHaveCount(0);
   await expect(page.getByRole("tab")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "新建窗口" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "新建窗口", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Control+n");
+  await expect.poll(() => page.evaluate(() => (
+    window as Window & { filepaceWrites: { command: string }[] }
+  ).filepaceWrites.at(-1)?.command)).toBe("new_window");
 });

@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.3.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.3.0).
+Download the v0.4.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a
 
 ## Work with two folders
 
-- **New Window (新建窗口)** opens a separate desktop window at the current location. A tab's context menu can also move it to a new window.
+- Press **Command+N** on macOS or **Ctrl+N** on Windows to open a separate window at the current location. Use the tab context menu to move a tab to a new window.
 - **Split View (左右分栏)** opens a right pane in the current window. Each pane has its own tabs, selection, and navigation history. Sidebar navigation and keyboard shortcuts apply to the active pane.
 - Drag a file or folder to the other pane or another Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the pane's current directory.
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
@@ -34,9 +34,15 @@ Right-click a file, folder, or blank space in the file list to copy its full pat
 
 List and icon views distinguish Word, Excel, PowerPoint, PDF, images, and other common file types. The toolbar offers list view and four icon sizes. The drag preview shows the item icon, name, and selection count.
 
-The theme picker follows the system's light or dark appearance by default. You can also choose Light, Dark, Mist Blue, or Warm Sand.
+New tabs use Column View by default. Click a folder to open its contents in the next column. Select a file to see its preview or details. The toolbar switches each tab between Column, List, and Icon views.
+
+Open **Settings (设置)** at the bottom of the sidebar to set the default view. Choose appearance and theme separately. Appearance follows the system by default. Default, Mist Blue, and Warm Sand each support light and dark mode.
 
 Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
+
+## App updates
+
+Starting with v0.4.0, Filepace checks, downloads, and verifies stable updates from GitHub in the background. Use **Settings → Updates** to check manually or turn off automatic updates. Finish active file tasks before restarting to install an update. Upgrade from v0.3.0 or earlier by downloading the new installer once.
 
 ## Search subfolders
 
@@ -87,5 +93,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_x64-setup.exe

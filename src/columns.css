@@ -1,0 +1,118 @@
+.column-browser {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--subtle);
+}
+.directory-column {
+  display: flex;
+  flex: 1 0 205px;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 325px;
+  border-right: 1px solid var(--divider);
+  background: var(--surface);
+}
+.column-heading {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  height: 35px;
+  padding: 0 10px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--chrome);
+}
+.column-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.active-column .column-heading {
+  color: var(--accent-text);
+  background: var(--accent-tint);
+}
+.column-list .file-row {
+  height: 34px;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 9px;
+}
+.column-list .file-name {
+  flex: 1;
+  gap: 6px;
+}
+.column-list .entry-icon {
+  width: 22px;
+  height: 22px;
+}
+.column-list .empty {
+  margin: 22px 9px;
+  padding: 10px;
+}
+.column-empty {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  margin: 16px 10px;
+}
+.file-preview-column {
+  flex-basis: 220px;
+}
+.column-preview-body {
+  padding: 18px 12px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.column-preview-body > img {
+  display: block;
+  max-width: 100%;
+  max-height: 210px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+.column-preview-body > .entry-icon {
+  display: block;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto;
+}
+.column-preview-body h3 {
+  margin: 12px 0;
+  color: var(--strong);
+}
+.column-preview-body pre {
+  max-height: 190px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 6px;
+  background: var(--subtle);
+}
+.column-preview-body dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.column-preview-body dd {
+  margin: 0;
+  color: var(--text);
+}
+.column-open {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-tint);
+  color: var(--accent-text);
+}

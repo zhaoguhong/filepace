@@ -1,7 +1,8 @@
 import FileIcon from "./FileIcon";
 import StorageDashboard from "./StorageDashboard";
 import SearchPanel from "./SearchPanel";
-import ThemeControl from "./ThemeControl";
+import ColumnBrowser from "./ColumnBrowser";
+import Settings, { type SettingsSection } from "./Settings";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -36,6 +37,8 @@ import {
   RefreshCw,
   ExternalLink,
   Columns2,
+  Columns3,
+  Settings as SettingsIcon,
   Check,
   LoaderCircle,
   ArrowDownToLine,
@@ -51,8 +54,13 @@ import { call, desktop } from "./bridge";
 import { useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
 import { describeFile } from "./fileTypes";
+import { useFilePreview } from "./filePreview";
+import { usePreferences } from "./preferences";
+import { useUpdates } from "./updates";
 import {
   basename,
+  columnPaths,
+  travelColumns,
   makeTab,
   navigate,
   formatSize,
@@ -111,6 +119,8 @@ function Tool({
   );
 }
 export default function App() {
+  const { preferences, change: changePreferences } = usePreferences();
+  const updates = useUpdates(preferences.autoUpdate);
   const [session, setSession] = useState<Session>({ tabs: [], active: "" }),
     [places, setPlaces] = useState<Place[]>([]),
     [bootError, setBootError] = useState(""),
@@ -130,9 +140,13 @@ export default function App() {
     } | null>(null),
     [storageVisible, setStorageVisible] = useState(false),
     [storageScope, setStorageScope] = useState(""),
-    [searchScope, setSearchScope] = useState<{ path: string; pane: PaneSide } | null>(null),
-    [previewContent, setPreviewContent] = useState(""),
-    [imageUrl, setImageUrl] = useState(""),
+    [searchScope, setSearchScope] = useState<{
+      path: string;
+      pane: PaneSide;
+    } | null>(null),
+    [settingsSection, setSettingsSection] = useState<SettingsSection | null>(
+      null,
+    ),
     [rename, setRename] = useState<{ pane: PaneSide; path: string } | null>(
       null,
     ),
@@ -172,6 +186,8 @@ export default function App() {
     onError: setNotice,
   });
   const { tasks, undo } = activity;
+  const { text: previewContent, image: imageUrl } =
+    useFilePreview(preview) ?? {};
   const running = tasks.filter((t) =>
     ["running", "conflict"].includes(t.status),
   );
@@ -206,7 +222,7 @@ export default function App() {
         active: tab.id,
       });
     } else {
-      const next = makeTab(tab.path);
+      const next = makeTab(tab.path, preferences.defaultView);
       setSession({
         ...session,
         right: { tabs: [next], active: next.id },
@@ -222,14 +238,23 @@ export default function App() {
       ),
     }));
   }
-  function go(path: string, side = focused, selectedPath?: string) {
+  function go(
+    path: string,
+    side = focused,
+    selectedPath?: string,
+    columns?: string[],
+  ) {
     (side === "left" ? left : right).reveal.current = selectedPath ?? null;
     updatePane(side, (group) => ({
       ...group,
       tabs: group.tabs.map((t) =>
         t.id === group.active
           ? {
-              ...navigate(t, path),
+              ...(t.path === path ? t : navigate(t, path)),
+              columns:
+                t.view === "columns"
+                  ? (columns ?? travelColumns(t, path))
+                  : undefined,
               selected: selectedPath ? [selectedPath] : [],
             }
           : t,
@@ -237,6 +262,7 @@ export default function App() {
     }));
     setStorageVisible(false);
     setSearchScope(null);
+    setSettingsSection(null);
     setMenu(null);
     setEditingPath(null);
     setRename(null);
@@ -246,7 +272,15 @@ export default function App() {
     setMenu(null);
     setTaskPanel(false);
     setStorageVisible(false);
+    setSettingsSection(null);
     setSearchScope({ path, pane: focused });
+  }
+  function openSettings(section: SettingsSection = "browse") {
+    setMenu(null);
+    setTaskPanel(false);
+    setStorageVisible(false);
+    setSearchScope(null);
+    setSettingsSection(section);
   }
   function travel(delta: number, side = focused) {
     const current = (side === "left" ? left : right).tab;
@@ -257,6 +291,10 @@ export default function App() {
         {
           index: i,
           path: current.history[i],
+          columns:
+            current.view === "columns"
+              ? travelColumns(current, current.history[i])
+              : undefined,
           selected: [],
           query: "",
           scroll: 0,
@@ -272,7 +310,7 @@ export default function App() {
   }
   function newTab(path = tab?.path, side = focused) {
     if (!path) return;
-    const next = makeTab(path);
+    const next = makeTab(path, preferences.defaultView);
     updatePane(side, (group) => ({
       tabs: [...group.tabs, next],
       active: next.id,
@@ -346,7 +384,7 @@ export default function App() {
         setPlaces(ps);
         const restored = saved?.tabs?.length
           ? saved.tabs
-          : [makeTab(ps[0]?.path || "/")];
+          : [makeTab(ps[0]?.path || "/", preferences.defaultView)];
         setSession({
           tabs: restored,
           active:
@@ -383,6 +421,16 @@ export default function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [session, focused]);
+  async function installUpdate() {
+    await call("save_session", {
+      value: {
+        ...cleanPane(session),
+        right: session.right && cleanPane(session.right),
+        focused,
+      },
+    });
+    await updates.install();
+  }
   useEffect(() => {
     void refreshActivity();
     const timer = setInterval(refreshActivity, 650);
@@ -443,33 +491,6 @@ export default function App() {
       pathRef.current?.select();
     }
   }, [editingPath]);
-  useEffect(() => {
-    let cancelled = false;
-    let url = "";
-    setPreviewContent("");
-    setImageUrl("");
-    if (preview) {
-      if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(preview.name) && desktop) {
-        call<number[]>("read_image", { path: preview.path })
-          .then((bytes) => {
-            if (cancelled) return;
-            url = URL.createObjectURL(new Blob([new Uint8Array(bytes)]));
-            setImageUrl(url);
-          })
-          .catch((e) => setPreviewContent(String(e)));
-      } else {
-        call<string>("read_preview", { path: preview.path })
-          .then((text) => {
-            if (!cancelled) setPreviewContent(text);
-          })
-          .catch((e) => setPreviewContent(String(e)));
-      }
-    }
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [preview?.path]);
   function editPath(side: PaneSide) {
     const target = side === "left" ? left : right;
     if (!target.tab) return;
@@ -545,7 +566,9 @@ export default function App() {
     }
   }
   function refreshActivity() {
-    return call<FileActivity>("tasks").then(setActivity).catch(() => {});
+    return call<FileActivity>("tasks")
+      .then(setActivity)
+      .catch(() => {});
   }
   async function undoLast() {
     if (!undo || running.length || conflict || !desktop) return;
@@ -644,6 +667,15 @@ export default function App() {
       if (!tab || fileDrag.preview) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (mod && key === ",") {
+        e.preventDefault();
+        openSettings();
+        return;
+      }
+      if (settingsSection) {
+        if (key === "escape") setSettingsSection(null);
+        return;
+      }
       if (searchScope) {
         if (key === "escape") {
           e.preventDefault();
@@ -701,7 +733,7 @@ export default function App() {
       if (mod && ["t", "n", "w", "l", "a", "c", "x", "v"].includes(key)) {
         e.preventDefault();
         if (key === "t") e.shiftKey ? restore() : newTab();
-        if (key === "n") windowFor(makeTab(tab.path));
+        if (key === "n") windowFor(makeTab(tab.path, preferences.defaultView));
         if (key === "w") closeTab(tab.id);
         if (key === "l") editPath(focused);
         if (key === "a") patch({ selected: entries.map((x) => x.path) });
@@ -745,6 +777,29 @@ export default function App() {
         e.preventDefault();
         travel(1);
       }
+      if (tab.view === "columns" && !e.altKey && !mod) {
+        const columns = columnPaths(tab);
+        if (key === "arrowleft" && columns.length > 1) {
+          e.preventDefault();
+          go(
+            columns[columns.length - 2],
+            focused,
+            undefined,
+            columns.slice(0, -1),
+          );
+          return;
+        }
+        if (key === "arrowright") {
+          const folder = entries.find(
+            (entry) => entry.isDir && selected.includes(entry.path),
+          );
+          if (folder) {
+            e.preventDefault();
+            go(folder.path, focused, undefined, [...columns, folder.path]);
+          }
+          return;
+        }
+      }
       if (!e.altKey && ["arrowup", "arrowdown"].includes(key)) {
         e.preventDefault();
         const index = entries.findIndex(
@@ -767,8 +822,17 @@ export default function App() {
             ctrlKey: false,
           });
           const i = entries.indexOf(next);
-          if (tab.view === "list")
-            listRef.current?.scrollTo({ top: Math.max(0, i * 44 - 150) });
+          if (tab.view !== "grid") {
+            const height = tab.view === "columns" ? 34 : 44;
+            const list = listRef.current;
+            const top = i * height;
+            if (
+              list &&
+              (top < list.scrollTop ||
+                top + height > list.scrollTop + list.clientHeight)
+            )
+              list.scrollTo({ top: Math.max(0, top - 150) });
+          }
         }
       }
       if (key === "escape") {
@@ -805,15 +869,19 @@ export default function App() {
       entry,
       paths: selected.includes(entry.path) ? selected : [entry.path],
     });
+    const rowHeight = tab.view === "columns" ? 34 : 44;
     const startIndex =
-      tab.view === "list"
+      tab.view !== "grid"
         ? Math.max(
             0,
-            Math.min(entries.length - 1, Math.floor(tab.scroll / 44) - 8),
+            Math.min(
+              entries.length - 1,
+              Math.floor(tab.scroll / rowHeight) - 8,
+            ),
           )
         : 0;
     const shown =
-      tab.view === "list"
+      tab.view !== "grid"
         ? entries.slice(startIndex, startIndex + 55)
         : entries;
     const path = tab.path;
@@ -827,6 +895,193 @@ export default function App() {
         : "/" + crumbs.slice(0, i + 1).join("/");
     }
     const label = side === "left" ? "左栏" : "右栏";
+    function renderFileRow(
+      entry: Entry,
+      directory: string,
+      columns?: string[],
+      child?: string,
+    ) {
+      if (!tab) return null;
+      const type = describeFile(entry);
+      const current = !columns || columns.at(-1) === tab.path;
+      const marked = current
+        ? selected.includes(entry.path)
+        : child === entry.path;
+      const dragSource =
+        dragPreview?.pane === side && dragPreview.paths.has(entry.path);
+      return (
+        <div
+          key={entry.path}
+          data-path={entry.path}
+          data-directory={entry.isDir ? entry.path : undefined}
+          onPointerDown={(event) =>
+            fileDrag.begin(event, {
+              ...(current
+                ? dragSelection(entry)
+                : { entry, paths: [entry.path] }),
+              pane: side,
+              directory,
+            })
+          }
+          role="option"
+          aria-selected={marked}
+          className={`file-row ${marked ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dragSource ? " drag-source" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (
+              columns &&
+              entry.isDir &&
+              !e.shiftKey &&
+              !e.metaKey &&
+              !e.ctrlKey
+            ) {
+              go(entry.path, side, undefined, [...columns, entry.path]);
+            } else if (!current && columns) {
+              go(columns.at(-1)!, side, entry.path, columns);
+            } else {
+              select(entry, e, side);
+            }
+          }}
+          onDoubleClick={() => {
+            if (!columns || !entry.isDir) void open(entry, side);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            focusPane(side);
+            if (!current && columns) {
+              go(columns.at(-1)!, side, entry.path, columns);
+            } else if (!selected.includes(entry.path)) {
+              patchPane({ selected: [entry.path] });
+            }
+            setMenu({ x: e.clientX, y: e.clientY, entry });
+          }}
+        >
+          <div className="file-name">
+            <FileIcon entry={entry} type={type} />
+            {rename?.pane === side && rename.path === entry.path ? (
+              <input
+                autoFocus
+                aria-label="新文件名"
+                value={editName}
+                onFocus={(e) =>
+                  e.target.setSelectionRange(
+                    0,
+                    entry.isDir
+                      ? entry.name.length
+                      : Math.max(0, entry.name.lastIndexOf(".")) ||
+                          entry.name.length,
+                  )
+                }
+                onChange={(e) => setEditName(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitRename();
+                  if (e.key === "Escape") setRename(null);
+                }}
+              />
+            ) : (
+              <span className="file-label">{entry.name}</span>
+            )}
+          </div>
+          {columns && entry.isDir && (
+            <ChevronRight size={14} className="column-chevron" />
+          )}
+          {tab.view === "list" && (
+            <>
+              <span className="file-date">
+                {new Date(entry.modified * 1000).toLocaleDateString("zh-CN", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                })}
+              </span>
+              <span className="file-type" title={type.label}>
+                {type.label}
+              </span>
+              <span className="file-size">
+                {entry.isDir ? "—" : formatSize(entry.size)}
+              </span>
+            </>
+          )}
+        </div>
+      );
+    }
+    const fileArea = (
+      <div
+        className={`file-area ${tab.view === "columns" ? "column-list" : tab.view}${dropHint?.path === listing?.path && dropHint && !dropHint.folder ? " drop-target" : ""}`}
+        ref={listRef}
+        tabIndex={0}
+        aria-label="文件列表"
+        data-pane={side}
+        data-grid-size={
+          tab.view === "grid" ? (tab.gridSize ?? "medium") : undefined
+        }
+        data-drop-path={listing?.path}
+        onScroll={(e) => patchPane({ scroll: e.currentTarget.scrollTop })}
+        onClick={(e) => {
+          if (!(e.target as Element).closest("button, input"))
+            patchPane({ selected: [] });
+        }}
+        onContextMenu={(e) => {
+          if ((e.target as Element).closest("button, input")) return;
+          e.preventDefault();
+          focusPane(side);
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        {loading && !listing && !error ? (
+          <div className="empty">
+            <LoaderCircle className="spin" size={28} />
+            <p>正在读取文件夹…</p>
+          </div>
+        ) : error ? (
+          <div className="empty">
+            <Folder size={42} />
+            <h3>暂时无法打开这个位置</h3>
+            <p>{error}</p>
+            <button className="primary" onClick={refresh}>
+              重新尝试
+            </button>
+          </div>
+        ) : !entries.length ? (
+          <div className="empty">
+            <Folder size={45} />
+            <h3>{tab.query ? "没有匹配的项目" : "这个文件夹还是空的"}</h3>
+            <p>
+              {tab.query
+                ? "试试其他名称，或清除筛选。"
+                : "拖入文件，或新建一个文件夹。"}
+            </p>
+            {tab.query && (
+              <button onClick={() => patchPane({ query: "" })}>清除筛选</button>
+            )}
+          </div>
+        ) : (
+          <>
+            {tab.view !== "grid" && (
+              <div style={{ height: startIndex * rowHeight }} />
+            )}
+            {shown.map((entry) =>
+              renderFileRow(
+                entry,
+                listing?.path ?? tab.path,
+                tab.view === "columns" ? columnPaths(tab) : undefined,
+              ),
+            )}
+            {tab.view !== "grid" && (
+              <div
+                style={{
+                  height:
+                    Math.max(0, entries.length - startIndex - shown.length) *
+                    rowHeight,
+                }}
+              />
+            )}
+          </>
+        )}
+      </div>
+    );
     return (
       <section
         className={`file-pane${focused === side ? " focused" : ""}`}
@@ -1047,6 +1302,16 @@ export default function App() {
           </Tool>
           <div className="view-switch">
             <Tool
+              label="列视图"
+              active={tab.view === "columns"}
+              onClick={() =>
+                tab.view !== "columns" &&
+                patchPane({ view: "columns", columns: undefined, scroll: 0 })
+              }
+            >
+              <Columns3 size={iconSize} />
+            </Tool>
+            <Tool
               label="列表视图"
               active={tab.view === "list"}
               onClick={() =>
@@ -1131,158 +1396,35 @@ export default function App() {
             </button>
           </div>
         )}
-        <div
-          className={`file-area ${tab.view}${dropHint && !dropHint.folder ? " drop-target" : ""}`}
-          ref={listRef}
-          tabIndex={0}
-          aria-label="文件列表"
-          data-pane={side}
-          data-grid-size={
-            tab.view === "grid" ? (tab.gridSize ?? "medium") : undefined
-          }
-          data-drop-path={listing?.path}
-          onScroll={(e) => patchPane({ scroll: e.currentTarget.scrollTop })}
-          onClick={(e) => {
-            if (!(e.target as Element).closest("button, input"))
-              patchPane({ selected: [] });
-          }}
-          onContextMenu={(e) => {
-            if ((e.target as Element).closest("button, input")) return;
-            e.preventDefault();
-            focusPane(side);
-            setMenu({ x: e.clientX, y: e.clientY });
-          }}
-        >
-          {loading && !listing && !error ? (
-            <div className="empty">
-              <LoaderCircle className="spin" size={28} />
-              <p>正在读取文件夹…</p>
-            </div>
-          ) : error ? (
-            <div className="empty">
-              <Folder size={42} />
-              <h3>暂时无法打开这个位置</h3>
-              <p>{error}</p>
-              <button className="primary" onClick={refresh}>
-                重新尝试
-              </button>
-            </div>
-          ) : !entries.length ? (
-            <div className="empty">
-              <Folder size={45} />
-              <h3>{tab.query ? "没有匹配的项目" : "这个文件夹还是空的"}</h3>
-              <p>
-                {tab.query
-                  ? "试试其他名称，或清除筛选。"
-                  : "拖入文件，或新建一个文件夹。"}
-              </p>
-              {tab.query && (
-                <button onClick={() => patchPane({ query: "" })}>
-                  清除筛选
-                </button>
-              )}
-            </div>
-          ) : (
-            <>
-              {tab.view === "list" && (
-                <div style={{ height: startIndex * 44 }} />
-              )}
-              {shown.map((entry) => {
-                const type = describeFile(entry);
-                const dragSource =
-                  dragPreview?.pane === side &&
-                  dragPreview.paths.has(entry.path);
-                return (
-                  <div
-                    key={entry.path}
-                    data-path={entry.path}
-                    data-directory={entry.isDir ? entry.path : undefined}
-                    onPointerDown={(event) =>
-                      fileDrag.begin(event, {
-                        ...dragSelection(entry),
-                        pane: side,
-                        directory: listing?.path ?? tab.path,
-                      })
-                    }
-                    role="option"
-                    aria-selected={selected.includes(entry.path)}
-                    className={`file-row ${selected.includes(entry.path) ? "selected" : ""} ${cutPaths.includes(entry.path) ? "cut" : ""}${dragSource ? " drag-source" : ""}${dropHint?.folder === entry.path ? " drop-target" : ""}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      select(entry, e, side);
-                    }}
-                    onDoubleClick={() => open(entry, side)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      focusPane(side);
-                      if (!selected.includes(entry.path))
-                        patchPane({ selected: [entry.path] });
-                      setMenu({ x: e.clientX, y: e.clientY, entry });
-                    }}
-                  >
-                    <div className="file-name">
-                      <FileIcon entry={entry} type={type} />
-                      {rename?.pane === side && rename.path === entry.path ? (
-                        <input
-                          autoFocus
-                          aria-label="新文件名"
-                          value={editName}
-                          onFocus={(e) =>
-                            e.target.setSelectionRange(
-                              0,
-                              entry.isDir
-                                ? entry.name.length
-                                : Math.max(0, entry.name.lastIndexOf(".")) ||
-                                    entry.name.length,
-                            )
-                          }
-                          onChange={(e) => setEditName(e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") submitRename();
-                            if (e.key === "Escape") setRename(null);
-                          }}
-                        />
-                      ) : (
-                        <span className="file-label">{entry.name}</span>
-                      )}
-                    </div>
-                    {tab.view === "list" && (
-                      <>
-                        <span className="file-date">
-                          {new Date(entry.modified * 1000).toLocaleDateString(
-                            "zh-CN",
-                            {
-                              year: "numeric",
-                              month: "2-digit",
-                              day: "2-digit",
-                            },
-                          )}
-                        </span>
-                        <span className="file-type" title={type.label}>
-                          {type.label}
-                        </span>
-                        <span className="file-size">
-                          {entry.isDir ? "—" : formatSize(entry.size)}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-              {tab.view === "list" && (
-                <div
-                  style={{
-                    height:
-                      Math.max(0, entries.length - startIndex - shown.length) *
-                      44,
-                  }}
-                />
-              )}
-            </>
-          )}
-        </div>
+        {tab.view === "columns" ? (
+          <ColumnBrowser
+            tab={tab}
+            side={side}
+            hidden={hidden}
+            revision={revision}
+            active={fileArea}
+            preview={
+              selected.length === 1
+                ? entries.find(
+                    (entry) => !entry.isDir && entry.path === selected[0],
+                  )
+                : undefined
+            }
+            dropPath={dropHint && !dropHint.folder ? dropHint.path : undefined}
+            renderRow={renderFileRow}
+            onChoose={(columns) =>
+              go(columns.at(-1)!, side, undefined, columns)
+            }
+            onContext={(event, columns) => {
+              event.preventDefault();
+              go(columns.at(-1)!, side, undefined, columns);
+              setMenu({ x: event.clientX, y: event.clientY });
+            }}
+            onOpen={(entry) => open(entry, side)}
+          />
+        ) : (
+          fileArea
+        )}
         <div className="location-footer">
           <Folder size={13} />
           <span title={tab.path}>{tab.path}</span>
@@ -1325,14 +1467,20 @@ export default function App() {
           <b>Filepace</b>
         </div>
         <span className="window-location">
-          {storageVisible ? "存储概览" : searchScope ? "跨目录搜索" : basename(tab.path)}
+          {settingsSection
+            ? "设置"
+            : storageVisible
+              ? "存储概览"
+              : searchScope
+                ? "跨目录搜索"
+                : basename(tab.path)}
         </span>
         <div className="title-actions">
           <button
             className="window-action"
             aria-label="跨目录搜索"
             aria-pressed={Boolean(searchScope)}
-            onClick={() => searchScope ? setSearchScope(null) : openSearch()}
+            onClick={() => (searchScope ? setSearchScope(null) : openSearch())}
           >
             <FolderSearch size={16} /> 搜索
           </button>
@@ -1344,6 +1492,7 @@ export default function App() {
               setMenu(null);
               setTaskPanel(false);
               setSearchScope(null);
+              setSettingsSection(null);
               setStorageVisible(!storageVisible);
             }}
           >
@@ -1357,14 +1506,6 @@ export default function App() {
             <Columns2 size={16} />
             {split ? "合并分栏" : "左右分栏"}
           </button>
-          <button
-            className="window-action"
-            onClick={() => windowFor(makeTab(tab.path))}
-          >
-            <ExternalLink size={15} />
-            新建窗口
-          </button>
-          <ThemeControl />
           <Tool label="切换侧边栏" onClick={() => setSidebar(!sidebar)}>
             <PanelLeft size={16} />
           </Tool>
@@ -1463,13 +1604,23 @@ export default function App() {
             <div className="sidebar-bottom">
               <span className="green-dot" />
               本地工作空间<small>文件始终保存在你的设备上</small>
+              <button
+                className="place sidebar-settings"
+                aria-pressed={Boolean(settingsSection)}
+                onClick={() => openSettings()}
+              >
+                <SettingsIcon size={16} />
+                <span>设置</span>
+              </button>
             </div>
           </aside>
         )}
         <main>
           <div
             className={`pane-stack${split ? " split" : ""}`}
-            hidden={storageVisible || Boolean(searchScope)}
+            hidden={
+              storageVisible || Boolean(searchScope) || Boolean(settingsSection)
+            }
           >
             {renderPane("left")}
             {split && renderPane("right")}
@@ -1494,31 +1645,72 @@ export default function App() {
             <SearchPanel
               path={searchScope.path}
               hidden={hidden}
-              onBrowse={(path, selectedPath) => go(path, searchScope.pane, selectedPath)}
+              onBrowse={(path, selectedPath) =>
+                go(path, searchScope.pane, selectedPath)
+              }
               onClose={() => setSearchScope(null)}
+            />
+          )}
+          {settingsSection && (
+            <Settings
+              section={settingsSection}
+              onSection={setSettingsSection}
+              preferences={preferences}
+              change={changePreferences}
+              status={updates.status}
+              busy={running.length > 0}
+              check={updates.check}
+              install={installUpdate}
+              onClose={() => setSettingsSection(null)}
             />
           )}
         </main>
       </div>
       <footer className="statusbar">
         <span>
-          {storageVisible ? "本地存储概览" : searchScope ? "跨目录搜索" : `${entries.length} 个项目`}
-          {!storageVisible && !searchScope && selected.length > 0 && (
-            <>
-              {" "}
-              <span className="status-dot">·</span> 已选择 {selected.length} 项{" "}
-              <span className="status-dot">·</span>{" "}
-              {formatSize(
-                entries
-                  .filter((e) => selected.includes(e.path) && !e.isDir)
-                  .reduce((s, e) => s + e.size, 0),
-              )}
-            </>
-          )}
+          {settingsSection
+            ? "应用设置"
+            : storageVisible
+              ? "本地存储概览"
+              : searchScope
+                ? "跨目录搜索"
+                : `${entries.length} 个项目`}
+          {!storageVisible &&
+            !searchScope &&
+            !settingsSection &&
+            selected.length > 0 && (
+              <>
+                {" "}
+                <span className="status-dot">·</span> 已选择 {selected.length}{" "}
+                项 <span className="status-dot">·</span>{" "}
+                {formatSize(
+                  entries
+                    .filter((e) => selected.includes(e.path) && !e.isDir)
+                    .reduce((s, e) => s + e.size, 0),
+                )}
+              </>
+            )}
         </span>
         <div className="status-actions">
-          <button aria-label={undo ?? "撤销上一步"} title={undo ?? "撤销上一步"}
-            disabled={!undo || running.length > 0} onClick={() => void undoLast()}>
+          {!sidebar && (
+            <button onClick={() => openSettings()}>
+              <SettingsIcon size={14} /> 设置
+            </button>
+          )}
+          {updates.status.phase === "ready" && !settingsSection && (
+            <button
+              className="task-active"
+              onClick={() => openSettings("update")}
+            >
+              更新已就绪
+            </button>
+          )}
+          <button
+            aria-label={undo ?? "撤销上一步"}
+            title={undo ?? "撤销上一步"}
+            disabled={!undo || running.length > 0}
+            onClick={() => void undoLast()}
+          >
             <Undo2 size={14} /> 撤销
           </button>
           <button
@@ -1646,7 +1838,13 @@ export default function App() {
                   <button onClick={() => newTab(menu.entry!.path)}>
                     在新标签打开
                   </button>
-                  <button onClick={() => windowFor(makeTab(menu.entry!.path))}>
+                  <button
+                    onClick={() =>
+                      windowFor(
+                        makeTab(menu.entry!.path, preferences.defaultView),
+                      )
+                    }
+                  >
                     在新窗口打开
                   </button>
                   <button onClick={() => favorite(menu.entry!.path)}>
@@ -1755,23 +1953,35 @@ export default function App() {
                     属性
                   </button>
                   {!menu.entry.isLink && (
-                    <button onClick={() => start("zip", selected.includes(menuPath) ? selected : [menuPath])}>
+                    <button
+                      onClick={() =>
+                        start(
+                          "zip",
+                          selected.includes(menuPath) ? selected : [menuPath],
+                        )
+                      }
+                    >
                       压缩为 ZIP
                     </button>
                   )}
-                  {!menu.entry.isDir && !menu.entry.isLink && /\.zip$/i.test(menu.entry.name) && (
-                    <button onClick={() => start("unzip", [menuPath])}>
-                      解压到同名文件夹
-                    </button>
-                  )}
+                  {!menu.entry.isDir &&
+                    !menu.entry.isLink &&
+                    /\.zip$/i.test(menu.entry.name) && (
+                      <button onClick={() => start("unzip", [menuPath])}>
+                        解压到同名文件夹
+                      </button>
+                    )}
                   {menu.entry.isDir && (
                     <>
-                      <button onClick={() => openSearch(menuPath)}>在此文件夹内搜索</button>
+                      <button onClick={() => openSearch(menuPath)}>
+                        在此文件夹内搜索
+                      </button>
                       <button
                         onClick={() => {
                           setStorageScope(menuPath);
                           setMenu(null);
                           setSearchScope(null);
+                          setSettingsSection(null);
                           setStorageVisible(true);
                         }}
                       >
@@ -1799,7 +2009,9 @@ export default function App() {
                     新建文件夹
                   </button>
                   <button onClick={() => paste()}>粘贴</button>
-                  <button onClick={() => openSearch(menuPath)}>在此文件夹内搜索</button>
+                  <button onClick={() => openSearch(menuPath)}>
+                    在此文件夹内搜索
+                  </button>
                   <button onClick={() => favorite()}>收藏当前目录</button>
                   <button
                     onClick={() => {

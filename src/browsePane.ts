@@ -5,29 +5,17 @@ import { visibleEntries, type Listing, type Tab } from "./model";
 export type PaneSide = "left" | "right";
 export type PaneSession = { tabs: Tab[]; active: string };
 
-export function useBrowsePane(
-  session: PaneSession | undefined,
-  hidden: boolean,
+export function useDirectoryListing(
+  path: string | undefined,
   revision: number,
 ) {
-  const tab =
-    session?.tabs.find((t) => t.id === session.active) ?? session?.tabs[0];
-  const path = tab?.path;
   const [result, setResult] = useState<{
     path: string;
     listing?: Listing;
     error?: string;
   }>();
   const [loading, setLoading] = useState(false);
-  const listRef = useRef<HTMLDivElement>(null);
-  const anchor = useRef<{ tab: string; path: string } | null>(null);
-  const reveal = useRef<string | null>(null);
   const current = result?.path === path ? result : undefined;
-  const listing = current?.listing;
-  const entries = useMemo(
-    () => (tab && listing ? visibleEntries(listing.entries, tab, hidden) : []),
-    [tab, listing, hidden],
-  );
 
   useEffect(() => {
     if (!path) return;
@@ -49,6 +37,30 @@ export function useBrowsePane(
       disposed = true;
     };
   }, [path, revision]);
+  return {
+    listing: current?.listing,
+    loading: loading || (!!path && !current),
+    error: current?.error,
+  };
+}
+
+export function useBrowsePane(
+  session: PaneSession | undefined,
+  hidden: boolean,
+  revision: number,
+) {
+  const tab =
+    session?.tabs.find((t) => t.id === session.active) ?? session?.tabs[0];
+  const path = tab?.path;
+  const directory = useDirectoryListing(path, revision);
+  const { listing } = directory;
+  const listRef = useRef<HTMLDivElement>(null);
+  const anchor = useRef<{ tab: string; path: string } | null>(null);
+  const reveal = useRef<string | null>(null);
+  const entries = useMemo(
+    () => (tab && listing ? visibleEntries(listing.entries, tab, hidden) : []),
+    [tab, listing, hidden],
+  );
 
   useLayoutEffect(() => {
     if (listRef.current && tab) listRef.current.scrollTop = tab.scroll;
@@ -59,10 +71,14 @@ export function useBrowsePane(
     const selected = reveal.current;
     if (!listing || !tab || !list || !selected) return;
     reveal.current = null;
-    if (tab.view === "list") {
+    if (tab.view !== "grid") {
+      const height = tab.view === "columns" ? 34 : 44;
       const index = entries.findIndex((entry) => entry.path === selected);
       if (index >= 0)
-        list.scrollTop = Math.max(0, index * 44 - (list.clientHeight - 44) / 2);
+        list.scrollTop = Math.max(
+          0,
+          index * height - (list.clientHeight - height) / 2,
+        );
     } else {
       list
         .querySelector(`[data-path="${CSS.escape(selected)}"]`)
@@ -71,11 +87,9 @@ export function useBrowsePane(
   }, [listing, tab?.selected]);
 
   return {
+    ...directory,
     tab,
     entries,
-    listing,
-    loading: loading || (!!path && !current),
-    error: current?.error,
     listRef,
     anchor,
     reveal,

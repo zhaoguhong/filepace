@@ -107,23 +107,6 @@ hr {
   align-items: center;
   gap: 6px;
 }
-.theme-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-}
-.theme-control select {
-  height: 29px;
-  max-width: 88px;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 11px;
-}
 .window-action {
   height: 30px;
   padding: 0 9px;
