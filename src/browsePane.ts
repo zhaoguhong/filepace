@@ -21,6 +21,7 @@ export function useBrowsePane(
   const [loading, setLoading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ tab: string; path: string } | null>(null);
+  const reveal = useRef<string | null>(null);
   const current = result?.path === path ? result : undefined;
   const listing = current?.listing;
   const entries = useMemo(
@@ -53,6 +54,22 @@ export function useBrowsePane(
     if (listRef.current && tab) listRef.current.scrollTop = tab.scroll;
   }, [tab?.id, tab?.view, tab?.gridSize, path, listing]);
 
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const selected = reveal.current;
+    if (!listing || !tab || !list || !selected) return;
+    reveal.current = null;
+    if (tab.view === "list") {
+      const index = entries.findIndex((entry) => entry.path === selected);
+      if (index >= 0)
+        list.scrollTop = Math.max(0, index * 44 - (list.clientHeight - 44) / 2);
+    } else {
+      list
+        .querySelector(`[data-path="${CSS.escape(selected)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    }
+  }, [listing, tab?.selected]);
+
   return {
     tab,
     entries,
@@ -61,5 +78,6 @@ export function useBrowsePane(
     error: current?.error,
     listRef,
     anchor,
+    reveal,
   };
 }

@@ -79,10 +79,10 @@ export function visibleEntries(entries: Entry[], tab: Tab, hidden: boolean) {
             : a[tab.sort] - b[tab.sort]),
     );
 }
-export function formatSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
-  if (size < 1024 ** 4) return `${(size / 1024 ** 3).toFixed(1)} GB`;
-  return `${(size / 1024 ** 4).toFixed(1)} TB`;
+export function formatSize(size: number, base = 1024) {
+  if (size < base) return `${size} B`;
+  if (size < base ** 2) return `${(size / base).toFixed(1)} KB`;
+  if (size < base ** 3) return `${(size / base ** 2).toFixed(1)} MB`;
+  if (size < base ** 4) return `${(size / base ** 3).toFixed(1)} GB`;
+  return `${(size / base ** 4).toFixed(1)} TB`;
 }

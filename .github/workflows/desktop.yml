@@ -44,7 +44,8 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
       - name: Verify installed Windows app
         if: ${{ runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
-        run: node tests/windows-installer-smoke.mjs
+        shell: powershell
+        run: ./tests/windows-installer-smoke.ps1
       - uses: actions/upload-artifact@v7
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
         with:

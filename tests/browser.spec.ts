@@ -75,6 +75,12 @@ test("shows storage volumes, filters scan results, and locates a file", async ({
   await page.getByRole("button", { name: /数据备份\.zip/ }).click();
   await expect(page.getByRole("heading", { name: "存储概览" })).toHaveCount(0);
   await expect(page.getByRole("option", { name: /数据备份\.zip/, selected: true })).toBeVisible();
+  await page.getByRole("button", { name: "存储概览", exact: true }).click();
+  await page.getByRole("button", { name: /^项目 0 个文件/ }).click();
+  await expect(page.getByText("这个文件夹还是空的")).toBeVisible();
+  await page.getByRole("button", { name: "存储概览", exact: true }).click();
+  await expect(page.getByLabel("扫描范围", { exact: true })).toHaveValue("/Users/demo");
+  await expect(page.getByRole("heading", { name: "最大的文件 · 压缩包" })).toBeVisible();
 });
 test("new folder errors are visible and navigation can be typed", async ({
   page,

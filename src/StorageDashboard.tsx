@@ -12,6 +12,7 @@ import {
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
 import FileIcon from "./FileIcon";
+import { isMac } from "./fileDrag";
 import { formatSize, type Place } from "./model";
 import "./storage.css";
 
@@ -54,6 +55,7 @@ const categories: Record<string, { label: string; color: string }> = {
 };
 const emptyCounts: ScanCounts = { files: 0, folders: 0, bytes: 0, skipped: 0 };
 const number = new Intl.NumberFormat("zh-CN");
+const volumeUnit = isMac ? 1000 : 1024;
 
 function ItemList({
   title,
@@ -235,7 +237,10 @@ export default function StorageDashboard({
 
   if (!visible) return null;
   const locations = new Map<string, string>();
-  for (const location of [...places, ...volumes]) {
+  for (const location of [
+    ...places.filter((place) => place.kind !== "disk"),
+    ...volumes,
+  ]) {
     if (location.path !== currentPath)
       locations.set(location.path, location.name);
   }
@@ -258,6 +263,10 @@ export default function StorageDashboard({
     setScanError("");
     setFilter("");
     onChoose(next);
+  };
+  const browseResult = (parent: string, selected?: string) => {
+    onChoose(path);
+    onBrowse(parent, selected);
   };
 
   return (
@@ -354,8 +363,10 @@ export default function StorageDashboard({
                       <span style={{ width: `${percent}%` }} />
                     </div>
                     <div className="storage-volume-values">
-                      <b>{formatSize(volume.available!)} 可用</b>
-                      <span>总容量 {formatSize(volume.total!)}</span>
+                      <b>{formatSize(volume.available!, volumeUnit)} 可用</b>
+                      <span>
+                        总容量 {formatSize(volume.total!, volumeUnit)}
+                      </span>
                     </div>
                   </>
                 ) : (
@@ -513,14 +524,14 @@ export default function StorageDashboard({
                     : "最大的文件"
                 }
                 items={largest}
-                onBrowse={onBrowse}
+                onBrowse={browseResult}
                 onChoose={choose}
               />
               <ItemList
                 title="占用最多的子目录"
                 items={report.folders}
                 folders
-                onBrowse={onBrowse}
+                onBrowse={browseResult}
                 onChoose={choose}
               />
             </div>

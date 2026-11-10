@@ -217,6 +217,7 @@ export default function App() {
     }));
   }
   function go(path: string, side = focused, selectedPath?: string) {
+    (side === "left" ? left : right).reveal.current = selectedPath ?? null;
     updatePane(side, (group) => ({
       ...group,
       tabs: group.tabs.map((t) =>
