@@ -26,7 +26,7 @@
 - Scans run on request and report logical sizes per file path. They skip symbolic links, Windows reparse points, and unreadable items. Traversal stays on the selected file system. The overview ranks the largest items in each category and direct subfolders.
 - Rust tests check volume capacities, category totals, ranking, cancellation, and symlink handling. Browser tests cover scan controls, classification filters, and navigating from results.
 - The macOS app reported both the system disk and a mounted test image. A disposable directory scan matched the expected counts, bytes, category filter, and link exclusion. The macOS shortcuts and system actions opened Finder Get Info, an associated app selected from the Open With list, and Disk Utility.
-- On a Windows GitHub Actions runner, the installed app displayed live volume data, scanned a temporary directory, filtered a category, and opened the native Properties sheet. Split-pane move and Ctrl-copy checks verified the resulting source and destination bytes.
+- On Windows Server 2025 in GitHub Actions, the installed app displayed live volume data, scanned a temporary directory, and filtered a category. Split-pane move and Ctrl-copy checks verified the resulting source and destination bytes. The native Properties sheet and Open With chooser opened, and Copy Name put the selected file name on the system clipboard.
 
 ## v0.1.0 installer preview
 
@@ -38,7 +38,7 @@
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
-- Verify native drags across separate windows and Explorer/Finder interoperability. A macOS UI automation attempt at a separate-window drop did not transfer the test file. Verify the copy modifier in native drags and the properties dialog on Windows. Test cut clipboard feedback with external applications.
+- Verify native drags across separate windows and Explorer/Finder interoperability. A macOS UI automation attempt at a separate-window drop did not transfer the test file. Verify the copy modifier in native drags and test cut clipboard feedback with external applications.
 - Complete session geometry, per-history scroll/selection restoration, tab overflow menu, name disambiguation and focus restoration.
 - Enrich conflicts with both source and destination metadata; add task completion notifications, clear task history and open-location actions.
 - Harden races and failure recovery, filesystem metadata fidelity, special files, symlinks, restricted folders and unavailable network/removable volumes.

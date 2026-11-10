@@ -15,6 +15,19 @@ public static class FilepaceSmokeMouse {
     private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll", SetLastError=true)]
     private static extern bool PostMessage(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int process);
+    public static int ForegroundProcess() {
+        int process;
+        GetWindowThreadProcessId(GetForegroundWindow(), out process);
+        return process;
+    }
+    public static void PressKey(byte key) {
+        keybd_event(key, 0, 0, UIntPtr.Zero);
+        keybd_event(key, 0, 2, UIntPtr.Zero);
+    }
     public static void Close(IntPtr window) {
         if (!PostMessage(window, 0x0010, UIntPtr.Zero, IntPtr.Zero)) {
             throw new System.ComponentModel.Win32Exception();
@@ -101,7 +114,7 @@ function Click-Element($element, [switch]$Right) {
     [FilepaceSmokeMouse]::Click(($bounds.Left + $bounds.Width / 2), ($bounds.Top + $bounds.Height / 2), $Right.IsPresent)
 }
 
-function Close-NativeDialog([string]$kind) {
+function Close-Properties {
     $desktop = [System.Windows.Automation.AutomationElement]::RootElement
     $deadline = (Get-Date).AddSeconds(15)
     do {
@@ -111,10 +124,8 @@ function Close-NativeDialog([string]$kind) {
         )
         foreach ($window in $windows) {
             $name = $window.Current.Name
-            $process = (Get-Process -Id $window.Current.ProcessId -ErrorAction SilentlyContinue).ProcessName
-            if (($kind -eq 'properties' -and $name -match '^copy(?:\.txt)? Properties$') -or
-                ($kind -eq 'open-with' -and ($name -match 'Open With|Select an app|How do you want to open' -or $process -eq 'OpenWith'))) {
-                Write-Host "Observed native $kind window: $name ($process)"
+            if ($name -match '^copy(?:\.txt)? Properties$') {
+                Write-Host "Observed native properties window: $name"
                 $pattern = $null
                 if ($window.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {
                     $pattern.Close()
@@ -127,7 +138,17 @@ function Close-NativeDialog([string]$kind) {
         Start-Sleep -Milliseconds 200
     } while ((Get-Date) -lt $deadline)
     $windows | ForEach-Object { Write-Host "Window: $($_.Current.Name)" }
-    throw "Did not observe the native $kind window"
+    throw 'Did not observe the native properties window'
+}
+
+function Wait-ForForegroundProcess([string]$name) {
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $process = Get-Process -Id ([FilepaceSmokeMouse]::ForegroundProcess()) -ErrorAction SilentlyContinue
+        if ($process.ProcessName -eq $name) { return }
+        Start-Sleep -Milliseconds 150
+    } while ((Get-Date) -lt $deadline)
+    throw "Did not observe $name in the foreground"
 }
 
 $app = $null
@@ -173,14 +194,18 @@ try {
     $leftPane = Wait-ForElement $window '左栏'
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '属性')
-    Close-NativeDialog 'properties'
+    Close-Properties
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '复制名称')
     $null = Wait-ForElement $window '已复制名称'
     if ((Get-Clipboard -Raw) -ne 'copy.txt') { throw 'Unexpected copied file name' }
     Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
     Click-Element (Wait-ForElement $window '打开方式')
-    Close-NativeDialog 'open-with'
+    # The Shell chooser is hosted outside Filepace and may be absent from the UIA tree.
+    Wait-ForForegroundProcess 'OpenWith'
+    [FilepaceSmokeMouse]::PressKey(27)
+    Wait-ForForegroundProcess 'filepace'
+    Write-Host 'Verified the native Open With chooser.'
 } finally {
     if ($app -and -not $app.HasExited) {
         $null = $app.CloseMainWindow()
