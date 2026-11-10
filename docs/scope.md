@@ -42,6 +42,13 @@
 - Compression uses system tar when its output matches the selection and uses the ZIP library as a fallback. Extraction accepts regular files and folders, validates entry paths, and stages the result before committing it. A ZIP can contain up to 250,000 entries.
 - Tests cover undo conflicts and retry, replaced identities, nested search, ZIP round trips, and path traversal rejection. Browser tests cover search result navigation, system light and dark mode, and saved themes.
 
+## v0.4.0 column browsing and updates
+
+- Browser tests cover opening a folder in the next column, switching branches, previewing a file, setting a default view for new tabs, and choosing the display mode and theme separately.
+- The installed macOS app rejected an update whose announced version differed from its signature. It installed the verified v0.4.0 archive, relaunched, and previewed the fixture file from the restored directory. [macOS update verification](https://github.com/zhaoguhong/filepace/actions/runs/42767485790/job/129667272922)
+- The Windows installer passed current-user installation with and without a preinstalled WebView2 runtime. The installed app moved and Ctrl-copied files between separate windows with the destination in column view. [Installer checks](https://github.com/zhaoguhong/filepace/actions/runs/42767422205)
+- On Windows, the updater rejected a mismatched signed version, installed the verified v0.4.0 package, and relaunched with the saved directory and fixture file intact. [Windows update verification](https://github.com/zhaoguhong/filepace/actions/runs/42769047016)
+
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
