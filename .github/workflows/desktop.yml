@@ -54,3 +54,37 @@ jobs:
         if: ${{ runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
         shell: powershell
         run: ./tests/windows-installer-smoke.ps1
+      - name: Verify Windows standard-user installation
+        if: ${{ runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          ./tests/windows-standard-user-smoke.ps1 -Installer $installer.FullName
+
+  first-windows-install:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_installers }}
+    needs: desktop
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: Filepace-windows-latest
+          path: installer
+      - name: Verify Windows installation without WebView2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application"
+          $setup = Get-ChildItem "$runtime\*\Installer\setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($setup) {
+              Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force
+              $null = Start-Process $setup.FullName -ArgumentList '--uninstall --msedgewebview --system-level --force-uninstall' -Wait -PassThru
+              if (Get-ChildItem "$runtime\*\msedgewebview2.exe" -ErrorAction SilentlyContinue) {
+                  throw 'The disposable runner still has a WebView2 executable'
+              }
+          }
+          $installer = Get-ChildItem installer -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          ./tests/windows-standard-user-smoke.ps1 -Installer $installer.FullName -RequireEmptyRuntime

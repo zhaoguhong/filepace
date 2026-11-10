@@ -6,14 +6,14 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.2.0) 下载适合你的 v0.2.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.3.0) 下载适合你的 v0.3.0 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
 | macOS（Apple 芯片） | [下载 .dmg][mac-download] | 打开磁盘映像，将 Filepace 拖到「应用程序」。 |
 | Windows（x64） | [下载 .exe][windows-download] | 运行安装程序，为当前用户安装。如果系统缺少 WebView2，安装程序需要联网下载。 |
 
-安装包为预览版。macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁」提示。Windows 版尚未签名，运行时可能出现 SmartScreen 提示。[Apple 支持](https://support.apple.com/zh-cn/102445) · [Microsoft SmartScreen 文档](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁」提示。Windows 版尚未签名，运行时可能出现 SmartScreen 提示。[Apple 支持](https://support.apple.com/zh-cn/102445) · [Microsoft SmartScreen 文档](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
 
 ## 同时整理两个目录
 
@@ -34,11 +34,20 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 文件列表和图标视图区分 Word、Excel、PowerPoint、PDF、图片及其他常见类型。工具栏可切换列表和小、中、大、超大图标。拖动时会显示文件图标、名称和多选数量。
 
+窗口顶部可以切换主题，默认跟随系统的浅色或深色设置。也可以固定为浅色、深色、雾蓝或暖砂。
+
 右键「打开方式」可选用系统提供的应用。右键「属性」或按 macOS 的 **⌘I**、Windows 的 **Alt+Enter**，可查看选中项目的系统简介或属性。系统窗口无法打开时会显示基本信息。「复制名称」可复制所选项目的名称，存储概览可直达 macOS 磁盘工具或 Windows 存储设置。
+
+## 跨目录搜索
+
+点窗口顶部的「搜索」，或按 macOS 的 **⌘F**、Windows 的 **Ctrl+F**，在当前文件夹和子文件夹里按名称和类型查找。Filepace 优先查询 Spotlight 或 Windows Search。索引不可用时会扫描目录，也可从索引结果切换到「扫描全部子目录」。点结果可直接定位项目。
 
 ## 文件操作
 
 文件任务会显示进度，遇到同名文件时会询问如何处理。移动时先在目标位置写入文件，再移除源文件。删除和替换的文件会进入系统废纸篓或回收站。关闭最后一个窗口时，如果还有文件任务在运行，Filepace 会询问是继续任务，还是取消任务并关闭窗口。
+
+- 从状态栏的「撤销」或按 **⌘Z** / **Ctrl+Z**，撤销本次会话最近一次移动或改名。原位置被占用或文件已被替换时会停下来。被替换的旧项目可从系统废纸篓或回收站恢复。
+- 右键「压缩为 ZIP」会把选中的项目归档到当前目录，优先使用系统工具。右键 ZIP 可「解压到同名文件夹」。解压会检查包内路径，验证完成后才提交目标文件夹。
 
 Filepace 保存各窗口的标签页和分栏打开的目录，并使用当前用户的文件系统权限。可以浏览符号链接，文件传输暂不支持符号链接。[平台验证和已知限制](docs/scope.md)
 
@@ -78,5 +87,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_x64-setup.exe

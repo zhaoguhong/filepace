@@ -6,14 +6,14 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.2.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.2.0).
+Download the v0.3.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.3.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
 | macOS (Apple Silicon) | [Download .dmg][mac-download] | Open the disk image and drag Filepace to Applications. |
 | Windows (x64) | [Download .exe][windows-download] | Run the installer for the current user. If WebView2 is missing, the installer needs an internet connection to download it. |
 
-The installers are a preview. The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a prompt. Windows may show a SmartScreen warning because the installer has no publisher signature. [Apple support](https://support.apple.com/en-us/102445) · [Microsoft SmartScreen documentation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a prompt. Windows may show a SmartScreen warning because the installer has no publisher signature. [Apple support](https://support.apple.com/en-us/102445) · [Microsoft SmartScreen documentation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
 
 ## Work with two folders
 
@@ -34,11 +34,20 @@ Right-click a file, folder, or blank space in the file list to copy its full pat
 
 List and icon views distinguish Word, Excel, PowerPoint, PDF, images, and other common file types. The toolbar offers list view and four icon sizes. The drag preview shows the item icon, name, and selection count.
 
+The theme picker follows the system's light or dark appearance by default. You can also choose Light, Dark, Mist Blue, or Warm Sand.
+
 Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
+
+## Search subfolders
+
+Use **Search (搜索)**, **Command+F** on macOS, or **Ctrl+F** on Windows to look for file and folder names in the current directory and its subfolders. Choose a file type to narrow the search. Filepace queries Spotlight or Windows Search first and can scan the directory when the index is unavailable or incomplete. Click a result to locate it.
 
 ## File operations
 
 File tasks show progress and ask how to handle name conflicts. A move completes the destination copy before removing the source. Deletions and replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue the task or cancel it and close the window.
+
+- Use **Undo (撤销)** in the status bar or press **Command+Z** / **Ctrl+Z** to undo the most recent move or rename in the current session. Filepace stops if the original location is occupied or the item has been replaced. Replaced items can be recovered through the system trash.
+- Use **Compress to ZIP (压缩为 ZIP)** in the context menu to archive selected items with the system tool where available. **Extract to matching folder (解压到同名文件夹)** validates entry paths and prepares the contents in a temporary folder before committing the result.
 
 Filepace saves tabs and pane locations for each window and uses the signed-in user's filesystem permissions. You can browse symbolic links. File transfers involving symbolic links are currently unsupported. [Platform verification and known gaps](docs/scope.md)
 
@@ -78,5 +87,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.2.0/Filepace_0.2.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.3.0/Filepace_0.3.0_x64-setup.exe

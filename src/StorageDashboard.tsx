@@ -13,6 +13,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
 import FileIcon from "./FileIcon";
 import { isMac } from "./fileDrag";
+import { fileCategoryLabels } from "./fileTypes";
 import { formatSize, type Place } from "./model";
 import "./storage.css";
 
@@ -44,14 +45,14 @@ export type StorageReport = {
 };
 
 const categories: Record<string, { label: string; color: string }> = {
-  documents: { label: "文档", color: "#4978cb" },
-  images: { label: "图片", color: "#288678" },
-  videos: { label: "视频", color: "#8359b8" },
-  audio: { label: "音频", color: "#ba618a" },
-  archives: { label: "压缩包", color: "#b77b38" },
-  code: { label: "代码", color: "#6370ac" },
-  apps: { label: "应用与安装包", color: "#416f87" },
-  other: { label: "其他", color: "#8292a9" },
+  documents: { label: fileCategoryLabels.documents, color: "#4978cb" },
+  images: { label: fileCategoryLabels.images, color: "#288678" },
+  videos: { label: fileCategoryLabels.videos, color: "#8359b8" },
+  audio: { label: fileCategoryLabels.audio, color: "#ba618a" },
+  archives: { label: fileCategoryLabels.archives, color: "#b77b38" },
+  code: { label: fileCategoryLabels.code, color: "#6370ac" },
+  apps: { label: fileCategoryLabels.apps, color: "#416f87" },
+  other: { label: fileCategoryLabels.other, color: "#8292a9" },
 };
 const emptyCounts: ScanCounts = { files: 0, folders: 0, bytes: 0, skipped: 0 };
 const number = new Intl.NumberFormat("zh-CN");

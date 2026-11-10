@@ -1,6 +1,6 @@
 [package]
 name = "filepace"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 [build-dependencies]
@@ -20,6 +20,7 @@ drag = "2.1.1"
 tempfile = "3"
 filetime = "0.2"
 walkdir = "2"
+zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -20,3 +20,7 @@ A source preview can be published as a GitHub pre-release after the source check
 1. Build installers from the release commit on macOS and Windows and run the checks in the [README](../README.md).
 2. Run the [Windows standard-user matrix](windows-installation.md) and exercise native file dragging, clipboard interoperability, and window closing on both systems.
 3. Sign the Windows installer and sign and notarize the macOS distribution. Validate both downloads on clean machines before publishing. [Tauri distribution guide](https://v2.tauri.app/distribute/)
+
+## Regular releases
+
+Use the same build and asset checks as an installer preview. Verify the final installers on both platforms, including separate-window move and modifier-copy on macOS, an unelevated Windows installation, and a first installation without WebView2. Describe the observed coverage in the release notes and publish the checked tag as a regular GitHub release. Describe the current signing and notarization status on the download page.

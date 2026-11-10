@@ -35,6 +35,13 @@
 - The Windows x64 package installed into the runner account's profile, launched, and uninstalled on a Windows GitHub Actions runner. A standard-user session and installation on a machine without WebView2 still need testing. [Installer smoke test](https://github.com/zhaoguhong/filepace/actions/runs/42746015565)
 - The macOS preview has no Developer ID signature or notarization. The Windows preview has no publisher signature.
 
+## File organization
+
+- Undo keeps up to 20 move and rename records in the current session. It checks item identities and original locations before restoring files. A merged move records the items it actually moved and preserves the destination folder's unrelated items. Earlier replacement items remain in the system trash.
+- Search tries the platform index for the selected directory. It can scan the directory when the index is unavailable or misses items, and can stop between entries. Results are limited to 300 matches.
+- Compression uses system tar when its output matches the selection and uses the ZIP library as a fallback. Extraction accepts regular files and folders, validates entry paths, and stages the result before committing it. A ZIP can contain up to 250,000 entries.
+- Tests cover undo conflicts and retry, replaced identities, nested search, ZIP round trips, and path traversal rejection. Browser tests cover search result navigation, system light and dark mode, and saved themes.
+
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).

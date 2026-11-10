@@ -82,6 +82,39 @@ test("shows storage volumes, filters scan results, and locates a file", async ({
   await expect(page.getByLabel("扫描范围", { exact: true })).toHaveValue("/Users/demo");
   await expect(page.getByRole("heading", { name: "最大的文件 · 压缩包" })).toBeVisible();
 });
+
+test("searches by file name and type and reveals the result", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "跨目录搜索" }).click();
+  await page.getByRole("textbox", { name: "文件名关键词" }).fill("会议");
+  await page.getByRole("combobox", { name: "文件类型" }).selectOption("images");
+  await page.getByRole("button", { name: "开始搜索" }).click();
+  await expect(page.getByText("这个范围没有匹配的项目。")).toBeVisible();
+  await page.getByRole("combobox", { name: "文件类型" }).selectOption("documents");
+  await page.getByRole("textbox", { name: "文件名关键词" }).press("Enter");
+  await page.getByRole("button", { name: /会议纪要\.docx/ }).click();
+  await expect(page.getByRole("option", { name: /会议纪要\.docx/, selected: true })).toBeVisible();
+});
+
+test("follows system light and dark mode and keeps an explicit theme", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  const theme = page.getByRole("combobox", { name: "主题" });
+  await expect(theme).toHaveValue("system");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "存储概览", exact: true }).click();
+  await expect(page.getByRole("region", { name: "存储概览" })).toBeVisible();
+  await theme.selectOption("mist");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "mist");
+  await theme.selectOption("sand");
+  await page.reload();
+  await expect(theme).toHaveValue("sand");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "sand");
+  await theme.selectOption("light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
 test("new folder errors are visible and navigation can be typed", async ({
   page,
 }) => {
@@ -159,7 +192,7 @@ test("moves and copies files between panes and keeps both tabs when merging", as
         transformCallback: () => ++callback,
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
-          if (command === "tasks") return [];
+          if (command === "tasks") return { tasks: [], undo: null };
           if (command === "list_directory") {
             const path = String(args.path);
             return {

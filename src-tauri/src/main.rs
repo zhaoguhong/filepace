@@ -1,16 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod archives;
+mod fs_safety;
 mod native_drag;
+mod search;
 mod storage;
 mod system_actions;
+mod system_process;
+mod undo;
 
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
+use fs_safety::{entry_path, is_link, missing, rename_exclusive, Identity};
 use native_drag::start_file_drag;
 use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{BufReader, Read, Write},
+    io::{BufReader, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -20,6 +26,7 @@ use storage::{cancel_storage_scan, scan_storage, storage_volumes};
 use system_actions::{open_properties, open_system_storage, open_with};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use undo::Change;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +71,7 @@ struct Task {
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<HashMap<String, Task>>,
+    undo: Mutex<Vec<undo::UndoRecord>>,
     sessions: Mutex<HashMap<String, serde_json::Value>>,
     closing_windows: Mutex<HashSet<String>>,
     clipboard: Mutex<(Vec<String>, bool)>,
@@ -134,7 +142,7 @@ fn open_regular_file(path: &Path, follow_symlinks: bool) -> Result<fs::File, Str
         fs::symlink_metadata(path)
     }
     .map_err(|error| error.to_string())?;
-    if !metadata.is_file() {
+    if !metadata.is_file() || (!follow_symlinks && is_link(&metadata)) {
         return Err("只支持读取普通文件".into());
     }
 
@@ -149,15 +157,45 @@ fn open_regular_file(path: &Path, follow_symlinks: bool) -> Result<fs::File, Str
         }
         options.custom_flags(flags);
     }
+    #[cfg(windows)]
+    if !follow_symlinks {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let file = options.open(path).map_err(|error| error.to_string())?;
-    if !file
-        .metadata()
-        .map_err(|error| error.to_string())?
-        .is_file()
-    {
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || (!follow_symlinks && is_link(&metadata)) {
         return Err("只支持读取普通文件".into());
     }
     Ok(file)
+}
+
+fn entry_info(path: &Path, meta: &fs::Metadata) -> Entry {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let is_link = is_link(meta);
+    Entry {
+        hidden: is_hidden(&name, meta),
+        name,
+        path: strpath(path),
+        is_dir: if is_link {
+            path.is_dir()
+        } else {
+            meta.is_dir()
+        },
+        is_link,
+        size: meta.len(),
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    }
 }
 #[tauri::command]
 async fn list_directory(path: String, app: tauri::AppHandle) -> Result<Listing, String> {
@@ -168,26 +206,7 @@ async fn list_directory(path: String, app: tauri::AppHandle) -> Result<Listing, 
             let item = item.map_err(|e| e.to_string())?;
             let path = item.path();
             let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            let name = item.file_name().to_string_lossy().into_owned();
-            let is_link = meta.file_type().is_symlink();
-            entries.push(Entry {
-                name: name.clone(),
-                path: strpath(&path),
-                is_dir: if is_link {
-                    path.is_dir()
-                } else {
-                    meta.is_dir()
-                },
-                is_link,
-                size: meta.len(),
-                modified: meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-                hidden: is_hidden(&name, &meta),
-            });
+            entries.push(entry_info(&path, &meta));
         }
         let shared = app.state::<Arc<Shared>>();
         let mut watched = shared.watched.lock().unwrap();
@@ -305,22 +324,44 @@ fn launch_terminal(_directory: &Path) -> Result<(), String> {
 #[tauri::command]
 fn make_directory(parent: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
     valid_name(&name)?;
+    let shared = app.state::<Arc<Shared>>();
+    let tasks = shared.tasks.lock().unwrap();
+    ensure_mutation_allowed(&tasks)?;
     fs::create_dir(canonical(&parent)?.join(name)).map_err(|e| e.to_string())?;
+    drop(tasks);
     let _ = app.emit("directory-changed", ());
     Ok(())
 }
 #[tauri::command]
 fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
     valid_name(&name)?;
-    let src = PathBuf::from(path);
+    let src = entry_path(Path::new(&path))?;
     let dst = src.parent().ok_or("不能重命名根目录")?.join(name);
     if src == dst {
         return Ok(());
     }
-    if dst.symlink_metadata().is_ok() {
-        return Err("同名文件已存在".into());
+    let shared = app.state::<Arc<Shared>>();
+    let tasks = shared.tasks.lock().unwrap();
+    ensure_mutation_allowed(&tasks)?;
+    rename_exclusive(&src, &dst).map_err(|error| {
+        if error.kind() == ErrorKind::AlreadyExists {
+            "同名文件已存在".into()
+        } else {
+            error.to_string()
+        }
+    })?;
+    if let Ok(identity) = Identity::at(&dst) {
+        undo::record(
+            &shared,
+            "撤销改名",
+            vec![Change::Moved {
+                from: src,
+                to: dst,
+                identity,
+            }],
+        );
     }
-    fs::rename(src, dst).map_err(|e| e.to_string())?;
+    drop(tasks);
     let _ = app.emit("directory-changed", ());
     Ok(())
 }
@@ -399,7 +440,7 @@ fn cancelled(shared: &Shared, id: &str) -> bool {
         .map(|t| t.cancelled)
         .unwrap_or(true)
 }
-fn unique_target(path: &Path) -> PathBuf {
+fn unique_target(path: &Path) -> Result<PathBuf, String> {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let ext = path
         .extension()
@@ -407,8 +448,8 @@ fn unique_target(path: &Path) -> PathBuf {
         .unwrap_or_default();
     for i in 2.. {
         let p = path.with_file_name(format!("{stem} ({i}){ext}"));
-        if p.symlink_metadata().is_err() {
-            return p;
+        if missing(&p).map_err(|error| error.to_string())? {
+            return Ok(p);
         }
     }
     unreachable!()
@@ -450,46 +491,87 @@ fn choose(shared: &Shared, id: &str, dst: &Path) -> Result<String, String> {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
-// Copies commit from a temporary sibling; cancellation never leaves a partial destination file.
+
+fn resolve_conflict(
+    shared: &Shared,
+    id: &str,
+    dst: PathBuf,
+) -> Result<Option<(PathBuf, Option<Identity>)>, String> {
+    if missing(&dst).map_err(|error| error.to_string())? {
+        return Ok(Some((dst, None)));
+    }
+    let before = Identity::at(&dst);
+    match choose(shared, id, &dst)?.as_str() {
+        "skip" => Ok(None),
+        "keep" => Ok(Some((unique_target(&dst)?, None))),
+        "replace" => {
+            let identity = before.map_err(|error| error.to_string())?;
+            Ok(Some((dst, Some(identity))))
+        }
+        _ => Err("无效的冲突处理".into()),
+    }
+}
+
+fn trash_existing(path: &Path, identity: &Identity) -> Result<(), String> {
+    if Identity::at(path).as_ref().ok() != Some(identity) {
+        return Err("目标在确认期间已变更，请重试".into());
+    }
+    trash::delete(path).map_err(|error| format!("无法将原项目移到回收站：{error}"))
+}
+
 fn copy_entry(
     src: &Path,
     dest: &Path,
     shared: &Shared,
     id: &str,
     moving: bool,
+    journal: &mut Vec<Change>,
 ) -> Result<bool, String> {
     if cancelled(shared, id) {
         return Err("任务已取消".into());
     }
     let meta = fs::symlink_metadata(src).map_err(|e| e.to_string())?;
-    if meta.file_type().is_symlink() {
-        return Err(format!("暂不复制符号链接：{}", strpath(src)));
+    if is_link(&meta) {
+        return Err(format!("暂不传输链接：{}", strpath(src)));
     }
     if !meta.is_file() && !meta.is_dir() {
         return Err(format!("暂不传输特殊文件：{}", strpath(src)));
     }
-    let mut dst = dest.to_path_buf();
-    let mut replace_file = false;
     update(shared, id, |t| t.current = strpath(src));
-    if dst.symlink_metadata().is_ok() && !(meta.is_dir() && dst.is_dir() && !dst.is_symlink()) {
-        match choose(shared, id, &dst)?.as_str() {
-            "skip" => return Ok(false),
-            "keep" => dst = unique_target(&dst),
-            "replace" => {
-                if meta.is_dir() {
-                    trash::delete(&dst).map_err(|e| format!("无法将原文件移到回收站：{e}"))?;
-                } else {
-                    replace_file = true;
+    let merge = meta.is_dir()
+        && dest
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata));
+    let Some((dst, replace)) = (if merge {
+        Some((dest.to_path_buf(), None))
+    } else {
+        resolve_conflict(shared, id, dest.to_path_buf())?
+    }) else {
+        return Ok(false);
+    };
+    if meta.is_dir() {
+        if let Some(identity) = &replace {
+            trash_existing(&dst, identity)?;
+        }
+        match fs::create_dir(&dst) {
+            Ok(()) => {
+                if moving {
+                    if let Ok(identity) = Identity::at(&dst) {
+                        journal.push(Change::MadeDirectory {
+                            path: dst.clone(),
+                            identity,
+                        });
+                    }
                 }
             }
-            _ => return Err("无效的冲突处理".into()),
+            Err(error)
+                if merge
+                    && error.kind() == ErrorKind::AlreadyExists
+                    && dst
+                        .symlink_metadata()
+                        .is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) => {}
+            Err(error) => return Err(error.to_string()),
         }
-    }
-    if meta.is_dir() {
-        if dst.is_symlink() {
-            return Err("目标不能是符号链接".into());
-        }
-        fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
         let mut all = true;
         for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -499,6 +581,7 @@ fn copy_entry(
                 shared,
                 id,
                 moving,
+                journal,
             ) {
                 Ok(copied) => all &= copied,
                 Err(error) => {
@@ -515,16 +598,38 @@ fn copy_entry(
         }
         if moving && all {
             fs::remove_dir(src).map_err(|e| e.to_string())?;
+            journal.push(Change::RemovedDirectory(src.to_path_buf()));
         }
         return Ok(all);
     }
+    if let Some(identity) = transfer_file(src, &dst, shared, id, moving, replace.as_ref())? {
+        journal.push(Change::Moved {
+            from: src.to_path_buf(),
+            to: dst,
+            identity,
+        });
+    }
+    Ok(true)
+}
+
+// Copies commit from a temporary sibling. Cancellation keeps the original file.
+fn transfer_file(
+    src: &Path,
+    dst: &Path,
+    shared: &Shared,
+    id: &str,
+    moving: bool,
+    replace: Option<&Identity>,
+) -> Result<Option<Identity>, String> {
+    let mut input = open_regular_file(src, false)?;
+    let meta = input.metadata().map_err(|error| error.to_string())?;
+    let original = Identity::from_file(&input).map_err(|error| error.to_string())?;
     let mut temp = tempfile::Builder::new()
         .prefix(".filepace-")
         .suffix(".partial")
         .tempfile_in(dst.parent().ok_or("目标路径无效")?)
         .map_err(|e| e.to_string())?;
     let result = (|| {
-        let mut input = open_regular_file(src, false)?;
         let output = temp.as_file_mut();
         let mut buf = vec![0u8; 1024 * 1024];
         loop {
@@ -554,7 +659,7 @@ fn copy_entry(
             }
         }
         let current = fs::symlink_metadata(src).map_err(|e| e.to_string())?;
-        if !current.is_file()
+        if Identity::at(src).as_ref().ok() != Some(&original)
             || current.len() != meta.len()
             || current.modified().ok() != meta.modified().ok()
         {
@@ -563,16 +668,24 @@ fn copy_entry(
         if cancelled(shared, id) {
             return Err("任务已取消".into());
         }
-        if replace_file {
-            trash::delete(&dst).map_err(|e| format!("无法将原文件移到回收站：{e}"))?;
+        if let Some(identity) = replace {
+            trash_existing(dst, identity)?;
         }
-        temp.persist_noclobber(&dst)
+        let output = temp
+            .persist_noclobber(dst)
             .map_err(|e| format!("无法提交目标文件（原文件保留）：{e}"))?;
-        if moving {
-            fs::remove_file(src).map_err(|e| e.to_string())?;
-        }
+        let identity = if moving {
+            let identity = Identity::from_file(&output).map_err(|error| error.to_string())?;
+            if Identity::at(src).as_ref().ok() != Some(&original) {
+                return Err("目标已写入，源文件发生变化并已保留".into());
+            }
+            fs::remove_file(src).map_err(|e| format!("目标已写入，无法移除源文件：{e}"))?;
+            Some(identity)
+        } else {
+            None
+        };
         update(shared, id, |t| t.completed += 1);
-        Ok(true)
+        Ok(identity)
     })();
     result
 }
@@ -583,6 +696,9 @@ fn start_task(
     destination: String,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    if matches!(kind.as_str(), "zip" | "unzip") {
+        return archives::start(kind, sources, app);
+    }
     if !["copy", "move", "trash"].contains(&kind.as_str()) {
         return Err("未知操作".into());
     }
@@ -600,7 +716,7 @@ fn start_task(
     };
     let mut transfers = Vec::with_capacity(sources.len());
     for source in &sources {
-        let path = PathBuf::from(source);
+        let path = entry_path(Path::new(source))?;
         let resolved = canonical(source)?;
         let target = if let Some(dst) = &destination_path {
             let name = path.file_name().ok_or("需要选择文件或文件夹")?;
@@ -618,43 +734,83 @@ fn start_task(
         };
         transfers.push((path, target));
     }
-    let id = uuid::Uuid::new_v4().to_string();
-    let state = app.state::<Arc<Shared>>().inner().clone();
-    state.tasks.lock().unwrap().insert(
-        id.clone(),
+    enqueue_task(
+        app,
         Task {
-            id: id.clone(),
             kind: kind.clone(),
             sources,
             destination,
-            status: "running".into(),
             ..Default::default()
         },
-    );
+        move |state, id, app| {
+            let mut journal = Vec::new();
+            for (src, dst) in transfers {
+                if cancelled(state, id) {
+                    break;
+                }
+                let source = strpath(&src);
+                update(state, id, |t| t.current = source.clone());
+                let result = if let Some(dst) = dst {
+                    copy_entry(&src, &dst, state, id, kind == "move", &mut journal)
+                } else {
+                    trash::delete(&src)
+                        .map(|_| {
+                            update(state, id, |t| t.completed += 1);
+                            true
+                        })
+                        .map_err(|e| e.to_string())
+                };
+                if let Err(e) = result {
+                    update(state, id, |t| t.errors.push(format!("{source}: {e}")));
+                }
+                let _ = app.emit("directory-changed", ());
+            }
+            undo::record(state, "撤销移动", journal);
+            Ok(())
+        },
+    )
+}
+
+fn active(task: &Task) -> bool {
+    matches!(task.status.as_str(), "running" | "conflict")
+}
+
+fn ensure_mutation_allowed(tasks: &HashMap<String, Task>) -> Result<(), String> {
+    if tasks
+        .values()
+        .any(|task| task.kind == "undo" && active(task))
+    {
+        return Err("正在撤销文件操作，请稍后重试".into());
+    }
+    Ok(())
+}
+
+fn enqueue_task(
+    app: tauri::AppHandle,
+    mut task: Task,
+    work: impl FnOnce(&Shared, &str, &tauri::AppHandle) -> Result<(), String> + Send + 'static,
+) -> Result<String, String> {
+    let state = app.state::<Arc<Shared>>().inner().clone();
+    let id = uuid::Uuid::new_v4().to_string();
+    {
+        let mut tasks = state.tasks.lock().unwrap();
+        ensure_mutation_allowed(&tasks)?;
+        if task.kind == "undo" {
+            if tasks.values().any(active) {
+                return Err("请等文件任务结束后再撤销".into());
+            }
+            if state.undo.lock().unwrap().is_empty() {
+                return Err("当前会话没有可撤销的操作".into());
+            }
+        }
+        task.id = id.clone();
+        task.status = "running".into();
+        tasks.insert(id.clone(), task);
+    }
     let task_id = id.clone();
     std::thread::spawn(move || {
-        for (src, dst) in transfers {
-            if cancelled(&state, &task_id) {
-                break;
-            }
-            let source = strpath(&src);
-            update(&state, &task_id, |t| t.current = source.clone());
-            let result = if let Some(dst) = dst {
-                copy_entry(&src, &dst, &state, &task_id, kind == "move")
-            } else {
-                trash::delete(&src)
-                    .map(|_| {
-                        update(&state, &task_id, |t| t.completed += 1);
-                        true
-                    })
-                    .map_err(|e| e.to_string())
-            };
-            if let Err(e) = result {
-                update(&state, &task_id, |t| {
-                    t.errors.push(format!("{source}: {e}"))
-                });
-            }
-            let _ = app.emit("directory-changed", ());
+        if let Err(error) = work(&state, &task_id, &app) {
+            update(&state, &task_id, |task| task.errors.push(error));
         }
         update(&state, &task_id, |t| {
             t.conflict = None;
@@ -671,11 +827,36 @@ fn start_task(
     });
     Ok(id)
 }
+
 #[tauri::command]
-fn tasks(state: tauri::State<Arc<Shared>>) -> Vec<Task> {
+fn undo_last(app: tauri::AppHandle) -> Result<String, String> {
+    enqueue_task(
+        app,
+        Task {
+            kind: "undo".into(),
+            ..Default::default()
+        },
+        |state, id, _| {
+            let mut record = state.undo.lock().unwrap().pop().ok_or("没有可撤销的操作")?;
+            let result = undo::reverse(&mut record, state, id);
+            undo::record(state, record.label, record.changes);
+            result
+        },
+    )
+}
+
+#[derive(Serialize)]
+struct Activity {
+    tasks: Vec<Task>,
+    undo: Option<&'static str>,
+}
+
+#[tauri::command]
+fn tasks(state: tauri::State<Arc<Shared>>) -> Activity {
     let mut t: Vec<_> = state.tasks.lock().unwrap().values().cloned().collect();
     t.sort_by(|a, b| a.id.cmp(&b.id));
-    t
+    let undo = state.undo.lock().unwrap().last().map(|entry| entry.label);
+    Activity { tasks: t, undo }
 }
 #[tauri::command]
 fn task_action(id: String, decision: String, apply_all: bool, state: tauri::State<Arc<Shared>>) {
@@ -782,12 +963,7 @@ fn load_session(
     state.sessions.lock().unwrap().get(window.label()).cloned()
 }
 fn has_active_tasks(state: &Shared) -> bool {
-    state
-        .tasks
-        .lock()
-        .unwrap()
-        .values()
-        .any(|task| matches!(task.status.as_str(), "running" | "conflict"))
+    state.tasks.lock().unwrap().values().any(active)
 }
 
 fn handle_window_close(window: &tauri::Window, event: &tauri::WindowEvent) {
@@ -928,6 +1104,8 @@ fn main() {
             storage_volumes,
             scan_storage,
             cancel_storage_scan,
+            search::search_files,
+            search::cancel_search,
             open_terminal,
             make_directory,
             rename_entry,
@@ -936,6 +1114,7 @@ fn main() {
             clipboard_copy_paths,
             start_file_drag,
             start_task,
+            undo_last,
             tasks,
             task_action,
             read_preview,
@@ -1008,7 +1187,7 @@ mod tests {
             .unwrap()
             .insert("t".into(), Task::default());
         let destination = dir.path().join("target.png");
-        assert!(copy_entry(&pipe, &destination, &shared, "t", true).is_err());
+        assert!(copy_entry(&pipe, &destination, &shared, "t", true, &mut Vec::new()).is_err());
         assert!(read_preview(strpath(&pipe)).is_err());
         assert!(read_image(strpath(&pipe)).is_err());
         assert!(open_regular_file(&pipe, true).is_err());
@@ -1027,11 +1206,11 @@ mod tests {
             .lock()
             .unwrap()
             .insert("t".into(), Task::default());
-        copy_entry(&src, &dst, &shared, "t", false).unwrap();
+        copy_entry(&src, &dst, &shared, "t", false, &mut Vec::new()).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), b"important bytes");
         assert!(src.exists());
         let moved = dir.path().join("moved");
-        copy_entry(&src, &moved, &shared, "t", true).unwrap();
+        copy_entry(&src, &moved, &shared, "t", true, &mut Vec::new()).unwrap();
         assert!(!src.exists());
         assert!(moved.exists());
     }
@@ -1048,7 +1227,15 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(copy_entry(&src, &dir.path().join("dest"), &shared, "t", true).is_err());
+        assert!(copy_entry(
+            &src,
+            &dir.path().join("dest"),
+            &shared,
+            "t",
+            true,
+            &mut Vec::new()
+        )
+        .is_err());
         assert!(src.exists());
         assert!(!dir.path().join("dest").exists());
     }
@@ -1067,7 +1254,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(!copy_entry(&src, &dst, &shared, "t", true).unwrap());
+        assert!(!copy_entry(&src, &dst, &shared, "t", true, &mut Vec::new()).unwrap());
         assert_eq!(fs::read(dst).unwrap(), b"old");
         assert!(src.exists());
     }
@@ -1091,7 +1278,7 @@ mod conflict_tests {
                 ..Default::default()
             },
         );
-        copy_entry(&src, &dst, &state, "t", false).unwrap();
+        copy_entry(&src, &dst, &state, "t", false, &mut Vec::new()).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), b"old");
         assert_eq!(fs::read(dir.path().join("target (2).txt")).unwrap(), b"new");
     }
@@ -1113,7 +1300,7 @@ mod conflict_tests {
                 ..Default::default()
             },
         );
-        assert!(!copy_entry(&src, &dst, &state, "t", true).unwrap());
+        assert!(!copy_entry(&src, &dst, &state, "t", true, &mut Vec::new()).unwrap());
         assert!(src.join("conflict").exists());
         assert!(!src.join("unique").exists());
         assert!(dst.join("unique").exists());
@@ -1134,7 +1321,15 @@ mod conflict_tests {
             .lock()
             .unwrap()
             .insert("t".into(), Task::default());
-        assert!(copy_entry(&link, &dir.path().join("copy"), &state, "t", true).is_err());
+        assert!(copy_entry(
+            &link,
+            &dir.path().join("copy"),
+            &state,
+            "t",
+            true,
+            &mut Vec::new()
+        )
+        .is_err());
         assert_eq!(fs::read(target).unwrap(), b"untouched");
         assert!(link.is_symlink());
     }

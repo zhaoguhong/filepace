@@ -1,0 +1,97 @@
+:root {
+  color-scheme: light;
+  --surface: #ffffff;
+  --chrome: #fafbfd;
+  --subtle: #f6f8fc;
+  --inset: #ebf0f7;
+  --border: #e1e7ef;
+  --hairline: #edf0f5;
+  --divider: #d7e0ec;
+  --text: #303742;
+  --strong: #26384f;
+  --muted: #5f6f85;
+  --accent: #3565b9;
+  --accent-hover: #2b559d;
+  --accent-text: #2e5ca7;
+  --accent-tint: #eaf1ff;
+  --accent-border: #a9c2ec;
+  --accent-ink: #ffffff;
+  --focus: #4677ce;
+  --success: #448865;
+  --warning: #78571d;
+  --warning-surface: #faf2df;
+  --danger: #a14246;
+  --danger-surface: #fceee9;
+  --overlay: #17274161;
+  --toast: #33425a;
+  --toast-ink: #f0f5ff;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #222a37;
+  --chrome: #19212e;
+  --subtle: #1c2533;
+  --inset: #303c4f;
+  --border: #364254;
+  --hairline: #2f394a;
+  --divider: #475773;
+  --text: #dce6f4;
+  --strong: #f2f6fd;
+  --muted: #afbed4;
+  --accent: #8cb5ff;
+  --accent-hover: #abc9ff;
+  --accent-text: #a6c8ff;
+  --accent-tint: #2b405f;
+  --accent-border: #5479b0;
+  --accent-ink: #16243a;
+  --focus: #a4c6ff;
+  --success: #91d6ae;
+  --warning: #f0cf8f;
+  --warning-surface: #453a27;
+  --danger: #ffacac;
+  --danger-surface: #492d37;
+  --overlay: #090e17a8;
+  --toast: #dfebfb;
+  --toast-ink: #192e49;
+}
+
+:root[data-theme="mist"] {
+  --surface: #f4f9ff;
+  --chrome: #e5effc;
+  --subtle: #eaf3fd;
+  --inset: #dae9fa;
+  --border: #cbdcee;
+  --hairline: #dce8f7;
+  --divider: #bdcfe6;
+  --text: #2a3c56;
+  --strong: #203958;
+  --muted: #536c8b;
+  --accent: #345eaa;
+  --accent-hover: #2c508f;
+  --accent-text: #315ca0;
+  --accent-tint: #dbeaff;
+  --accent-border: #9bbbe6;
+  --toast: #304c75;
+}
+
+:root[data-theme="sand"] {
+  --surface: #fffbf4;
+  --chrome: #f7edde;
+  --subtle: #f8f1e6;
+  --inset: #eee0cf;
+  --border: #e3d3be;
+  --hairline: #eee3d3;
+  --divider: #d4bea5;
+  --text: #413428;
+  --strong: #39291d;
+  --muted: #745e49;
+  --accent: #86512b;
+  --accent-hover: #6f4324;
+  --accent-text: #82512e;
+  --accent-tint: #f1dfc8;
+  --accent-border: #c7a27b;
+  --focus: #906033;
+  --toast: #654a36;
+  --toast-ink: #fff9ee;
+}

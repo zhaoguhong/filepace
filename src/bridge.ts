@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { describeFile } from "./fileTypes";
 import type { Entry } from "./model";
 import type { StorageReport, StorageVolume } from "./StorageDashboard";
+import type { SearchReport } from "./SearchPanel";
 export const desktop = isTauri();
 const root = "/Users/demo";
 const demo: Entry[] = [
@@ -46,7 +47,20 @@ export async function call<T>(
       parent: String(args.path).split("/").slice(0, -1).join("/") || null,
       entries: args.path === root ? demo : [],
     } as T;
-  if (command === "tasks") return [] as T;
+  if (command === "tasks") return { tasks: [], undo: null } as T;
+  if (command === "search_files") {
+    const query = String(args.query).toLowerCase();
+    const hits = (args.path === root || args.path === "/" ? demo : [])
+      .filter((entry) =>
+        (args.hidden || !entry.hidden) &&
+        entry.name.toLowerCase().includes(query) &&
+        (!args.category || describeFile(entry).category === args.category ||
+          (entry.isDir && args.category === "folder")),
+      )
+      .map((entry) => ({ entry, parent: root }));
+    return { hits, indexed: false, limited: false, skipped: 0 } satisfies SearchReport as T;
+  }
+  if (command === "cancel_search") return undefined as T;
   if (command === "storage_volumes") {
     return [
       {

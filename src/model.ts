@@ -34,6 +34,7 @@ export type Task = {
   errors: string[];
   conflict: string | null;
 };
+export type FileActivity = { tasks: Task[]; undo: string | null };
 export type Place = { name: string; path: string; kind: string };
 export const basename = (p: string) =>
   p

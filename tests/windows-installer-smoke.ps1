@@ -16,7 +16,9 @@ public static class FilepaceSmokeMouse {
     [DllImport("user32.dll", SetLastError=true)]
     private static extern bool PostMessage(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern bool MoveWindow(IntPtr window, int x, int y, int width, int height, bool repaint);
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int process);
     public static int ForegroundProcess() {
@@ -27,6 +29,11 @@ public static class FilepaceSmokeMouse {
     public static void PressKey(byte key) {
         keybd_event(key, 0, 0, UIntPtr.Zero);
         keybd_event(key, 0, 2, UIntPtr.Zero);
+    }
+    public static void ControlKey(byte key) {
+        keybd_event(17, 0, 0, UIntPtr.Zero);
+        try { PressKey(key); }
+        finally { keybd_event(17, 0, 2, UIntPtr.Zero); }
     }
     public static void Close(IntPtr window) {
         if (!PostMessage(window, 0x0010, UIntPtr.Zero, IntPtr.Zero)) {
@@ -45,15 +52,19 @@ public static class FilepaceSmokeMouse {
     public static void Drag(int x, int y, int targetX, int targetY, bool copy) {
         Move(x, y);
         Mouse(2u);
-        if (copy) keybd_event(17, 0, 0, UIntPtr.Zero);
         try {
             for (int i = 1; i <= 25; i++) {
+                if (copy && i == 12) keybd_event(17, 0, 0, UIntPtr.Zero);
                 Move(x + (targetX - x) * i / 25, y + (targetY - y) * i / 25);
                 Thread.Sleep(24);
             }
+            Thread.Sleep(250);
         } finally {
             Mouse(4u);
-            if (copy) keybd_event(17, 0, 2, UIntPtr.Zero);
+            if (copy) {
+                Thread.Sleep(160);
+                keybd_event(17, 0, 2, UIntPtr.Zero);
+            }
         }
     }
 }
@@ -63,11 +74,15 @@ $root = Join-Path $env:RUNNER_TEMP ('filepace-smoke-' + [Guid]::NewGuid().ToStri
 $source = Join-Path $root '整理前'
 $destination = Join-Path $root '整理后'
 $nested = Join-Path $source '图片'
-$null = New-Item -ItemType Directory -Path $nested, $destination -Force
+$detached = Join-Path $source '窗口目标'
+$null = New-Item -ItemType Directory -Path $nested, $destination, $detached -Force
 $content = 'Filepace installer fixture'
 [IO.File]::WriteAllText((Join-Path $source 'move.docx'), $content)
 [IO.File]::WriteAllText((Join-Path $source 'copy.txt'), $content)
 [IO.File]::WriteAllBytes((Join-Path $nested 'large.PNG'), [byte[]]::new(4096))
+[IO.File]::WriteAllText((Join-Path $nested '会议查找.txt'), $content)
+[IO.File]::WriteAllText((Join-Path $source 'detached-move.txt'), $content)
+[IO.File]::WriteAllText((Join-Path $source 'detached-copy.txt'), $content)
 $appDir = Join-Path $env:LOCALAPPDATA 'Filepace'
 $executable = Join-Path $appDir 'filepace.exe'
 $uninstaller = Join-Path $appDir 'uninstall.exe'
@@ -112,6 +127,19 @@ function Click-Element($element, [switch]$Right) {
     $bounds = $element.Current.BoundingRectangle
     if ($bounds.IsEmpty) { throw "Missing bounds for $($element.Current.Name)" }
     [FilepaceSmokeMouse]::Click(($bounds.Left + $bounds.Width / 2), ($bounds.Top + $bounds.Height / 2), $Right.IsPresent)
+}
+
+function Enter-Text($element, [string]$value) {
+    Click-Element $element
+    Set-Clipboard -Value $value
+    [FilepaceSmokeMouse]::ControlKey(65)
+    [FilepaceSmokeMouse]::ControlKey(86)
+}
+
+function Assert-Fixture([string]$path) {
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path $path) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if ([IO.File]::ReadAllText($path) -ne $content) { throw "Unexpected contents at $path" }
 }
 
 function Close-Properties {
@@ -206,6 +234,73 @@ try {
     [FilepaceSmokeMouse]::PressKey(27)
     Wait-ForForegroundProcess 'filepace'
     Write-Host 'Verified the native Open With chooser.'
+
+    Click-Element (Wait-ForElement $window '撤销移动')
+    Assert-Fixture (Join-Path $source 'move.docx')
+    if (Test-Path (Join-Path $destination 'move.docx')) { throw 'Undo left the moved file behind' }
+    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
+    Click-Element (Wait-ForElement $window '重命名')
+    Enter-Text (Wait-ForElement $window '新文件名') 'renamed.txt'
+    [FilepaceSmokeMouse]::PressKey(13)
+    Assert-Fixture (Join-Path $source 'renamed.txt')
+    Click-Element (Wait-ForElement $window '撤销改名')
+    Assert-Fixture (Join-Path $source 'copy.txt')
+    if (Test-Path (Join-Path $source 'renamed.txt')) { throw 'Undo left the renamed file behind' }
+    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Write-Host 'Verified undo of a move and a rename.'
+
+    Click-Element (Wait-ForElement $window '跨目录搜索')
+    Enter-Text (Wait-ForElement $window '文件名关键词') '会议查找'
+    Click-Element (Wait-ForElement $window '开始搜索')
+    Click-Element (Wait-ForElement $window '会议查找.txt*')
+    $null = Wait-ForElement $leftPane '会议查找.txt*'
+    Click-Element (Wait-ForElement $leftPane '后退')
+    Write-Host 'Verified searching a subfolder and revealing the result.'
+
+    Click-Element (Wait-ForElement $leftPane 'copy.txt*') -Right
+    Click-Element (Wait-ForElement $window '压缩为 ZIP')
+    $zip = Wait-ForElement $leftPane 'copy.zip*'
+    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Click-Element $zip -Right
+    Click-Element (Wait-ForElement $window '解压到同名文件夹')
+    Assert-Fixture (Join-Path $source 'copy\copy.txt')
+    Assert-Fixture (Join-Path $source 'copy.txt')
+    Click-Element (Wait-ForElement $window '关闭任务面板')
+    Write-Host 'Verified ZIP creation, extraction, and original contents.'
+
+    $mainHandle = [IntPtr]$window.Current.NativeWindowHandle
+    Click-Element (Wait-ForElement $leftPane '窗口目标*') -Right
+    Click-Element (Wait-ForElement $window '在新窗口打开')
+    $desktop = [System.Windows.Automation.AutomationElement]::RootElement
+    $deadline = (Get-Date).AddSeconds(12)
+    do {
+        $other = $desktop.FindAll('Children', [System.Windows.Automation.Condition]::TrueCondition) |
+            Where-Object { $_.Current.Name -eq 'Filepace' -and $_.Current.ProcessId -eq $app.Id -and $_.Current.NativeWindowHandle -ne $mainHandle.ToInt64() } |
+            Select-Object -First 1
+        if (-not $other) { Start-Sleep -Milliseconds 150 }
+    } while (-not $other -and (Get-Date) -lt $deadline)
+    if (-not $other) { throw 'No second Filepace window' }
+    $null = Wait-ForElement $other '文件列表'
+    if (-not [FilepaceSmokeMouse]::MoveWindow($mainHandle, 8, 16, 780, 680, $true)) { throw 'Could not place source window' }
+    if (-not [FilepaceSmokeMouse]::MoveWindow([IntPtr]$other.Current.NativeWindowHandle, 233, 36, 780, 680, $true)) { throw 'Could not place destination window' }
+    $list = (Wait-ForElement $other '文件列表').Current.BoundingRectangle
+    foreach ($file in @('detached-copy.txt', 'detached-move.txt')) {
+        [FilepaceSmokeMouse]::Click(130, 30, $false)
+        Start-Sleep -Milliseconds 300
+        if ([FilepaceSmokeMouse]::GetForegroundWindow() -ne $mainHandle) { throw 'Source window did not activate' }
+        $from = (Wait-ForElement $leftPane "$file*").Current.BoundingRectangle
+        [FilepaceSmokeMouse]::Drag(
+            ($from.Left + [Math]::Min(25, $from.Width / 2)), ($from.Top + $from.Height / 2),
+            ($list.Right - 75), ($list.Top + 65), ($file -eq 'detached-copy.txt')
+        )
+        Assert-Fixture (Join-Path $detached $file)
+        Click-Element (Wait-ForElement $other '关闭任务面板')
+    }
+    if (Test-Path (Join-Path $source 'detached-move.txt')) { throw 'Separate-window move left its source behind' }
+    Assert-Fixture (Join-Path $source 'detached-copy.txt')
+    [FilepaceSmokeMouse]::Close([IntPtr]$other.Current.NativeWindowHandle)
+    Write-Host 'Verified separate-window move and Ctrl-copy.'
 } finally {
     if ($app -and -not $app.HasExited) {
         $null = $app.CloseMainWindow()

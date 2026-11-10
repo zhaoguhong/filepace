@@ -3,6 +3,18 @@ import fileKinds from "./fileKinds.json";
 
 export type FileKind = keyof typeof fileKinds;
 
+export const fileCategoryLabels = {
+  folder: "文件夹",
+  documents: "文档",
+  images: "图片",
+  videos: "视频",
+  audio: "音频",
+  archives: "压缩包",
+  code: "代码",
+  apps: "应用与安装包",
+  other: "其他",
+};
+
 const byExtension = new Map<string, FileKind>(
   (Object.keys(fileKinds) as FileKind[]).flatMap((kind) =>
     fileKinds[kind][1]

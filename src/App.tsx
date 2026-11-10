@@ -1,5 +1,7 @@
 import FileIcon from "./FileIcon";
 import StorageDashboard from "./StorageDashboard";
+import SearchPanel from "./SearchPanel";
+import ThemeControl from "./ThemeControl";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -12,6 +14,7 @@ import {
   X,
   Search,
   Folder,
+  FolderSearch,
   FolderPlus,
   FileText,
   Image as ImageIcon,
@@ -38,6 +41,7 @@ import {
   ArrowDownToLine,
   MoreHorizontal,
   Command,
+  Undo2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -55,7 +59,7 @@ import {
   type Entry,
   type GridSize,
   type Tab,
-  type Task,
+  type FileActivity,
   type Place,
 } from "./model";
 type Session = PaneSession & { right?: PaneSession; focused?: PaneSide };
@@ -116,7 +120,7 @@ export default function App() {
     [editingPath, setEditingPath] = useState<PaneSide | null>(null),
     [address, setAddress] = useState(""),
     [menu, setMenu] = useState<Menu | null>(null),
-    [tasks, setTasks] = useState<Task[]>([]),
+    [activity, setActivity] = useState<FileActivity>({ tasks: [], undo: null }),
     [taskPanel, setTaskPanel] = useState(false),
     [preview, setPreview] = useState<Entry | null>(null),
     [properties, setProperties] = useState<Entry | null>(null),
@@ -126,6 +130,7 @@ export default function App() {
     } | null>(null),
     [storageVisible, setStorageVisible] = useState(false),
     [storageScope, setStorageScope] = useState(""),
+    [searchScope, setSearchScope] = useState<{ path: string; pane: PaneSide } | null>(null),
     [previewContent, setPreviewContent] = useState(""),
     [imageUrl, setImageUrl] = useState(""),
     [rename, setRename] = useState<{ pane: PaneSide; path: string } | null>(
@@ -166,6 +171,7 @@ export default function App() {
     onStart: () => setMenu(null),
     onError: setNotice,
   });
+  const { tasks, undo } = activity;
   const running = tasks.filter((t) =>
     ["running", "conflict"].includes(t.status),
   );
@@ -230,9 +236,17 @@ export default function App() {
       ),
     }));
     setStorageVisible(false);
+    setSearchScope(null);
     setMenu(null);
     setEditingPath(null);
     setRename(null);
+  }
+  function openSearch(path = listing?.path ?? tab?.path) {
+    if (!path) return;
+    setMenu(null);
+    setTaskPanel(false);
+    setStorageVisible(false);
+    setSearchScope({ path, pane: focused });
   }
   function travel(delta: number, side = focused) {
     const current = (side === "left" ? left : right).tab;
@@ -370,21 +384,15 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [session, focused]);
   useEffect(() => {
-    const poll = () =>
-      call<Task[]>("tasks")
-        .then(setTasks)
-        .catch(() => {});
-    poll();
-    const timer = setInterval(poll, 650);
+    void refreshActivity();
+    const timer = setInterval(refreshActivity, 650);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
     if (!desktop) return;
     const stop = listen("exit-blocked", () => {
       setClosePrompt(true);
-      call<Task[]>("tasks")
-        .then(setTasks)
-        .catch(() => {});
+      void refreshActivity();
     });
     return () => {
       stop.then((f) => f());
@@ -531,8 +539,22 @@ export default function App() {
     try {
       await call("start_task", { kind, sources: paths, destination });
       if (showTasks) setTaskPanel(true);
+      void refreshActivity();
     } catch (e) {
       setNotice(String(e));
+    }
+  }
+  function refreshActivity() {
+    return call<FileActivity>("tasks").then(setActivity).catch(() => {});
+  }
+  async function undoLast() {
+    if (!undo || running.length || conflict || !desktop) return;
+    try {
+      await call("undo_last");
+      setTaskPanel(true);
+      await refreshActivity();
+    } catch (error) {
+      setNotice(String(error));
     }
   }
   async function open(entry: Entry, side = focused) {
@@ -601,6 +623,7 @@ export default function App() {
       } else if (rename) {
         await call("rename_entry", { path: rename.path, name: editName });
         setRename(null);
+        void refreshActivity();
       }
       refresh();
     } catch (e) {
@@ -619,12 +642,19 @@ export default function App() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!tab || fileDrag.preview) return;
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (searchScope) {
+        if (key === "escape") {
+          e.preventDefault();
+          setSearchScope(null);
+        }
+        return;
+      }
       const typing = (e.target as HTMLElement).closest(
         'input,textarea,select,[contenteditable="true"]',
       );
       if (typing) return;
-      const mod = e.metaKey || e.ctrlKey;
-      const key = e.key.toLowerCase();
       if (openWith) {
         if (key === "escape") setOpenWith(null);
         return;
@@ -645,6 +675,16 @@ export default function App() {
       }
       if (storageVisible) {
         if (key === "escape") setStorageVisible(false);
+        return;
+      }
+      if (mod && !e.shiftKey && key === "f") {
+        e.preventDefault();
+        openSearch();
+        return;
+      }
+      if (mod && !e.shiftKey && key === "z" && !closePrompt && !newFolder) {
+        e.preventDefault();
+        void undoLast();
         return;
       }
       if (
@@ -1186,6 +1226,7 @@ export default function App() {
                       {rename?.pane === side && rename.path === entry.path ? (
                         <input
                           autoFocus
+                          aria-label="新文件名"
                           value={editName}
                           onFocus={(e) =>
                             e.target.setSelectionRange(
@@ -1282,12 +1323,19 @@ export default function App() {
             <Folder size={18} />
           </span>
           <b>Filepace</b>
-          <span className="version">PREVIEW</span>
         </div>
         <span className="window-location">
-          {storageVisible ? "存储概览" : basename(tab.path)}
+          {storageVisible ? "存储概览" : searchScope ? "跨目录搜索" : basename(tab.path)}
         </span>
         <div className="title-actions">
+          <button
+            className="window-action"
+            aria-label="跨目录搜索"
+            aria-pressed={Boolean(searchScope)}
+            onClick={() => searchScope ? setSearchScope(null) : openSearch()}
+          >
+            <FolderSearch size={16} /> 搜索
+          </button>
           <button
             className="window-action"
             aria-label="存储概览"
@@ -1295,6 +1343,7 @@ export default function App() {
             onClick={() => {
               setMenu(null);
               setTaskPanel(false);
+              setSearchScope(null);
               setStorageVisible(!storageVisible);
             }}
           >
@@ -1315,6 +1364,7 @@ export default function App() {
             <ExternalLink size={15} />
             新建窗口
           </button>
+          <ThemeControl />
           <Tool label="切换侧边栏" onClick={() => setSidebar(!sidebar)}>
             <PanelLeft size={16} />
           </Tool>
@@ -1419,7 +1469,7 @@ export default function App() {
         <main>
           <div
             className={`pane-stack${split ? " split" : ""}`}
-            hidden={storageVisible}
+            hidden={storageVisible || Boolean(searchScope)}
           >
             {renderPane("left")}
             {split && renderPane("right")}
@@ -1440,12 +1490,20 @@ export default function App() {
             onBrowse={(path, selectedPath) => go(path, focused, selectedPath)}
             onClose={() => setStorageVisible(false)}
           />
+          {searchScope && (
+            <SearchPanel
+              path={searchScope.path}
+              hidden={hidden}
+              onBrowse={(path, selectedPath) => go(path, searchScope.pane, selectedPath)}
+              onClose={() => setSearchScope(null)}
+            />
+          )}
         </main>
       </div>
       <footer className="statusbar">
         <span>
-          {storageVisible ? "本地存储概览" : `${entries.length} 个项目`}
-          {!storageVisible && selected.length > 0 && (
+          {storageVisible ? "本地存储概览" : searchScope ? "跨目录搜索" : `${entries.length} 个项目`}
+          {!storageVisible && !searchScope && selected.length > 0 && (
             <>
               {" "}
               <span className="status-dot">·</span> 已选择 {selected.length} 项{" "}
@@ -1458,18 +1516,24 @@ export default function App() {
             </>
           )}
         </span>
-        <button
-          className={running.length ? "task-active" : ""}
-          onClick={() => setTaskPanel(!taskPanel)}
-        >
-          {running.length ? (
-            <LoaderCircle size={14} className="spin" />
-          ) : (
-            <Check size={14} />
-          )}{" "}
-          {running.length ? `${running.length} 个文件任务` : "文件任务"}
-          <ChevronRight size={13} />
-        </button>
+        <div className="status-actions">
+          <button aria-label={undo ?? "撤销上一步"} title={undo ?? "撤销上一步"}
+            disabled={!undo || running.length > 0} onClick={() => void undoLast()}>
+            <Undo2 size={14} /> 撤销
+          </button>
+          <button
+            className={running.length ? "task-active" : ""}
+            onClick={() => setTaskPanel(!taskPanel)}
+          >
+            {running.length ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              <Check size={14} />
+            )}{" "}
+            {running.length ? `${running.length} 个文件任务` : "文件任务"}
+            <ChevronRight size={13} />
+          </button>
+        </div>
       </footer>
       {dragPreview && (
         <div
@@ -1690,16 +1754,30 @@ export default function App() {
                   <button onClick={() => openProperties(menu.entry!)}>
                     属性
                   </button>
-                  {menu.entry.isDir && (
-                    <button
-                      onClick={() => {
-                        setStorageScope(menuPath);
-                        setMenu(null);
-                        setStorageVisible(true);
-                      }}
-                    >
-                      分析占用空间
+                  {!menu.entry.isLink && (
+                    <button onClick={() => start("zip", selected.includes(menuPath) ? selected : [menuPath])}>
+                      压缩为 ZIP
                     </button>
+                  )}
+                  {!menu.entry.isDir && !menu.entry.isLink && /\.zip$/i.test(menu.entry.name) && (
+                    <button onClick={() => start("unzip", [menuPath])}>
+                      解压到同名文件夹
+                    </button>
+                  )}
+                  {menu.entry.isDir && (
+                    <>
+                      <button onClick={() => openSearch(menuPath)}>在此文件夹内搜索</button>
+                      <button
+                        onClick={() => {
+                          setStorageScope(menuPath);
+                          setMenu(null);
+                          setSearchScope(null);
+                          setStorageVisible(true);
+                        }}
+                      >
+                        分析占用空间
+                      </button>
+                    </>
                   )}
                   <hr />
                   <button
@@ -1721,6 +1799,7 @@ export default function App() {
                     新建文件夹
                   </button>
                   <button onClick={() => paste()}>粘贴</button>
+                  <button onClick={() => openSearch(menuPath)}>在此文件夹内搜索</button>
                   <button onClick={() => favorite()}>收藏当前目录</button>
                   <button
                     onClick={() => {
@@ -1763,6 +1842,9 @@ export default function App() {
                           copy: "复制",
                           move: "移动",
                           trash: "移到回收站",
+                          zip: "压缩",
+                          unzip: "解压",
+                          undo: "撤销",
                         } as Record<string, string>
                       )[t.kind]
                     }
@@ -1774,7 +1856,7 @@ export default function App() {
                           running: "进行中",
                           conflict: "等待处理",
                           done: "已完成",
-                          error: "部分失败",
+                          error: t.kind === "undo" ? "未能撤销" : "部分失败",
                           cancelled: "已取消",
                         } as Record<string, string>
                       )[t.status]
@@ -1804,7 +1886,7 @@ export default function App() {
                   </div>
                 )}
                 {t.errors.length > 0 && (
-                  <details>
+                  <details open={t.kind === "undo" || undefined}>
                     <summary>{t.errors.length} 个问题</summary>
                     {t.errors.map((e, i) => (
                       <p className="task-error" key={i}>

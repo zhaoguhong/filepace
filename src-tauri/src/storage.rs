@@ -215,7 +215,7 @@ pub struct StorageReport {
     folders: Vec<RankedItem>,
 }
 
-fn category_for(path: &Path) -> &'static str {
+pub(crate) fn category_for(path: &Path) -> &'static str {
     static BY_EXTENSION: OnceLock<HashMap<String, String>> = OnceLock::new();
     let types = BY_EXTENSION.get_or_init(|| {
         let kinds: HashMap<String, [String; 3]> =
@@ -238,15 +238,7 @@ fn category_for(path: &Path) -> &'static str {
 }
 
 fn skip_entry(metadata: &Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    !metadata.is_file() && !metadata.is_dir()
+    crate::fs_safety::is_link(metadata) || (!metadata.is_file() && !metadata.is_dir())
 }
 
 fn scan(
@@ -355,7 +347,44 @@ pub struct ScanState(Mutex<HashMap<String, ScanJob>>);
 
 impl ScanState {
     pub(crate) fn stop_window(&self, label: &str) {
-        if let Some(job) = self.0.lock().unwrap().get(label) {
+        let jobs = self.0.lock().unwrap();
+        for key in [label, &format!("search:{label}")] {
+            if let Some(job) = jobs.get(key) {
+                job.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub(crate) async fn run<T: Send + 'static>(
+        &self,
+        key: String,
+        id: String,
+        work: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        if uuid::Uuid::parse_str(&id).is_err() {
+            return Err("任务编号无效".into());
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut jobs = self.0.lock().unwrap();
+            if jobs.contains_key(&key) {
+                return Err("当前窗口已有同类任务，请等它结束".into());
+            }
+            jobs.insert(
+                key.clone(),
+                ScanJob {
+                    id,
+                    cancelled: cancelled.clone(),
+                },
+            );
+        }
+        let result = tauri::async_runtime::spawn_blocking(move || work(&cancelled)).await;
+        self.0.lock().unwrap().remove(&key);
+        result.map_err(|error| error.to_string())?
+    }
+
+    pub(crate) fn cancel(&self, key: &str, id: &str) {
+        if let Some(job) = self.0.lock().unwrap().get(key).filter(|job| job.id == id) {
             job.cancelled.store(true, Ordering::Relaxed);
         }
     }
@@ -374,46 +403,24 @@ pub async fn scan_storage(
     path: PathBuf,
     id: String,
 ) -> Result<Option<StorageReport>, String> {
-    if !path.is_absolute() || uuid::Uuid::parse_str(&id).is_err() {
+    if !path.is_absolute() {
         return Err("扫描参数无效".into());
     }
     let label = window.label().to_owned();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    {
-        let mut jobs = state.0.lock().unwrap();
-        if jobs.contains_key(&label) {
-            return Err("当前窗口已有扫描，请等扫描结束".into());
-        }
-        jobs.insert(
-            label.clone(),
-            ScanJob {
-                id: id.clone(),
-                cancelled: cancelled.clone(),
-            },
-        );
-    }
     let target = EventTarget::labeled(label.clone());
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        scan(&path, &cancelled, |counts| {
-            let _ = window.emit_to(target.clone(), PROGRESS_EVENT, Progress { id: &id, counts });
+    state
+        .run(label, id.clone(), move |cancelled| {
+            scan(&path, cancelled, |counts| {
+                let _ =
+                    window.emit_to(target.clone(), PROGRESS_EVENT, Progress { id: &id, counts });
+            })
         })
-    })
-    .await;
-    state.0.lock().unwrap().remove(&label);
-    result.map_err(|error| error.to_string())?
+        .await
 }
 
 #[tauri::command]
 pub fn cancel_storage_scan(window: Window, state: State<'_, ScanState>, id: String) {
-    if let Some(job) = state
-        .0
-        .lock()
-        .unwrap()
-        .get(window.label())
-        .filter(|job| job.id == id)
-    {
-        job.cancelled.store(true, Ordering::Relaxed);
-    }
+    state.cancel(window.label(), &id);
 }
 
 #[cfg(test)]
