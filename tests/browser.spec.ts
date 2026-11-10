@@ -122,6 +122,10 @@ test("follows system light and dark mode and keeps an explicit theme", async ({ 
 test("opens new tabs in columns and follows a branch until the file preview", async ({ page }) => {
   await page.goto("/");
   const current = page.getByLabel("文件列表", { exact: true });
+  await expect(current).toBeVisible();
+  const strip = await page.locator(".column-browser").boundingBox();
+  const area = await current.boundingBox();
+  expect(area!.x + area!.width).toBeCloseTo(strip!.x + strip!.width - 1, 0);
   await current.getByRole("option", { name: /项目/ }).click();
   const ancestor = page.getByLabel("文件夹 · demo", { exact: true });
   await expect(ancestor.getByRole("option", { name: /项目/ })).toHaveAttribute("aria-selected", "true");

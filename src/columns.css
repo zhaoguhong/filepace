@@ -16,6 +16,9 @@
   border-right: 1px solid var(--divider);
   background: var(--surface);
 }
+.active-column:last-child {
+  max-width: none;
+}
 .column-heading {
   display: flex;
   align-items: center;
