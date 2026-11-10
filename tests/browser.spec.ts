@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" })));
   await page.goto("/");
@@ -206,10 +206,11 @@ test("shows path and system actions for a file, a folder and an empty list", asy
   await expect(terminal).toBeVisible();
 });
 
-test("moves and copies files between panes and keeps both tabs when merging", async ({ page }) => {
-  const home = "/Users/demo";
-  await page.addInitScript((home) => {
-    localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView: "list" }));
+const home = "/Users/demo";
+
+async function mockDesktop(page: Page, defaultView: "list" | "columns") {
+  await page.addInitScript(({ home, defaultView }) => {
+    localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView }));
     const writes: { command: string; args: Record<string, unknown> }[] = [];
     const listings: Record<string, [string, boolean][]> = {
       [home]: [["项目", true], ["左栏文件.txt", false], ["补充文档.DOCX", false]],
@@ -226,7 +227,7 @@ test("moves and copies files between panes and keeps both tabs when merging", as
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
           if (command === "tasks") return { tasks: [], undo: null };
-          if (command === "update_status") return { current: "0.4.0", phase: "current" };
+          if (command === "update_status") return { current: "0.4.1", phase: "current" };
           if (command === "list_directory") {
             const path = String(args.path);
             return {
@@ -237,13 +238,17 @@ test("moves and copies files between panes and keeps both tabs when merging", as
               })),
             };
           }
-          if (command === "start_task" || command === "new_window" || command === "start_file_drag") writes.push({ command, args });
+          if (["start_task", "new_window", "start_file_drag", "clipboard_set"].includes(command)) writes.push({ command, args });
           if (command === "plugin:event|listen") return ++callback;
           return null;
         },
       },
     });
-  }, home);
+  }, { home, defaultView });
+}
+
+test("moves and copies files between panes and keeps both tabs when merging", async ({ page }) => {
+  await mockDesktop(page, "list");
   await page.goto("/");
   const nativeRow = page.getByRole("option", { name: /补充文档/ });
   await expect(nativeRow.locator('[data-file-kind="word"]')).toBeVisible();
@@ -336,4 +341,137 @@ test("moves and copies files between panes and keeps both tabs when merging", as
   await expect.poll(() => page.evaluate(() => (
     window as Window & { filepaceWrites: { command: string }[] }
   ).filepaceWrites.at(-1)?.command)).toBe("new_window");
+});
+
+test("moves between columns of one pane and copies a marquee selection", async ({ page }) => {
+  await mockDesktop(page, "columns");
+  await page.goto("/");
+  await expect(page.locator(".titlebar")).not.toContainText("Filepace");
+  await page.getByRole("option", { name: "项目" }).click();
+  const ancestor = page.getByLabel("文件夹 · demo", { exact: true });
+  const current = page.getByLabel("文件列表", { exact: true });
+  const source = ancestor.getByRole("option", { name: "左栏文件.txt" });
+  const copySource = current.getByRole("option", { name: "右栏文件.txt" });
+  await expect(copySource).toBeVisible();
+  const from = (await source.boundingBox())!;
+  const other = (await ancestor.getByRole("option", { name: "补充文档.DOCX" }).boundingBox())!;
+  const to = (await current.boundingBox())!;
+  const earlier = (await ancestor.boundingBox())!;
+  const second = (await copySource.boundingBox())!;
+  const copyKey = await page.evaluate(() => navigator.platform.includes("Mac")) ? "Alt" : "Control";
+
+  await page.mouse.move(from.x + 25, from.y + 16);
+  await page.mouse.down();
+  await page.mouse.move(to.x + 40, to.y + 105, { steps: 12 });
+  await expect(page.getByRole("status").filter({ hasText: "移动到 项目" })).toBeVisible();
+  await page.mouse.up();
+
+  await page.mouse.move(second.x + 25, second.y + 16);
+  await page.mouse.down();
+  await page.mouse.move(earlier.x + 40, earlier.y + 130, { steps: 12 });
+  await page.keyboard.down(copyKey);
+  await expect(page.getByRole("status").filter({ hasText: "复制到 demo" })).toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up(copyKey);
+
+  await page.mouse.move(earlier.x + earlier.width - 5, earlier.y + 114);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 16, Math.min(from.y, other.y) + 3, { steps: 12 });
+  await expect(page.locator(".selection-marquee")).toBeVisible();
+  await expect(ancestor.getByRole("option", { selected: true })).toHaveCount(2);
+  await page.mouse.up();
+  await expect(page.locator(".selection-marquee")).toHaveCount(0);
+  await expect(current.getByRole("option", { selected: true })).toHaveCount(2);
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toEqual([
+    { command: "start_task", args: { kind: "move", sources: [`${home}/左栏文件.txt`], destination: `${home}/项目` } },
+    { command: "start_task", args: { kind: "copy", sources: [`${home}/项目/右栏文件.txt`], destination: home } },
+    { command: "clipboard_set", args: { paths: [`${home}/补充文档.DOCX`, `${home}/左栏文件.txt`], cut: false } },
+  ]);
+});
+
+test("marquee selects folders and supports keyboard ranges and cancellation", async ({ page }) => {
+  await page.goto("/");
+  const files = page.getByLabel("文件列表", { exact: true });
+  await page.getByRole("button", { name: "列表视图", exact: true }).click();
+  const rows = files.getByRole("option");
+  const selected = files.getByRole("option", { selected: true });
+  await rows.nth(2).click();
+  await page.keyboard.press("Shift+ArrowUp");
+  await page.keyboard.press("Shift+ArrowUp");
+  await expect(selected).toHaveCount(3);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(selected).toHaveCount(2);
+  await page.keyboard.press("Escape");
+
+  const list = (await files.boundingBox())!;
+  const first = (await rows.first().boundingBox())!;
+  const third = (await rows.nth(2).boundingBox())!;
+  await page.mouse.move(list.x + await files.evaluate((element) => element.clientWidth) - 5, first.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(first.x + 20, third.y + 10, { steps: 12 });
+  await expect(selected).toHaveCount(3);
+  await page.mouse.up();
+  await expect(selected).toHaveCount(3);
+
+  await page.getByRole("button", { name: "图标视图", exact: true }).click();
+  await page.keyboard.press("Escape");
+  const grid = (await files.boundingBox())!;
+  const tile = (await rows.nth(2).boundingBox())!;
+  await page.mouse.move(grid.x + 5, grid.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(tile.x + 10, tile.y + 45, { steps: 12 });
+  await expect(selected).toHaveCount(3);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(selected).toHaveCount(0);
+  await page.mouse.move(grid.x + 5, grid.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(tile.x + 10, tile.y + 45, { steps: 12 });
+  await page.mouse.up();
+  await expect(selected).toHaveCount(3);
+  await page.keyboard.press("ArrowRight");
+  await expect(rows.nth(3)).toHaveAttribute("aria-selected", "true");
+  await expect(selected).toHaveCount(1);
+});
+
+test("remembers sidebar groups and edits common locations while retaining saved favorites", async ({ page, context }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("filepace-favorites", JSON.stringify(["/Users/demo/设计素材"]));
+  });
+  await page.goto("/");
+  const common = page.getByRole("region", { name: "常用位置" });
+  const favorites = page.getByRole("region", { name: "收藏目录" });
+  const menu = page.locator(".context-menu");
+  const commonToggle = common.getByRole("button", { name: "常用位置", exact: true });
+  const favoritesToggle = favorites.getByRole("button", { name: "收藏目录", exact: true });
+  await expect(favorites.getByRole("button", { name: "设计素材" })).toBeVisible();
+  await page.getByRole("option", { name: "项目" }).click({ button: "right" });
+  await menu.getByRole("button", { name: "添加到常用位置", exact: true }).click();
+  const project = common.getByRole("button", { name: "项目" });
+  await expect(common.locator(".place").last()).toHaveText("项目");
+  await project.click({ button: "right" });
+  await menu.getByRole("button", { name: "上移", exact: true }).click();
+  await expect(common.locator(".place").last()).toHaveText("图片");
+  await common.getByRole("button", { name: "下载", exact: true }).click({ button: "right" });
+  await menu.getByRole("button", { name: "从常用位置移除" }).click();
+  await expect(common.getByRole("button", { name: "下载", exact: true })).toHaveCount(0);
+  await commonToggle.press("Enter");
+  await favoritesToggle.press("Space");
+  await expect(commonToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(favoritesToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(project).toBeHidden();
+  await page.reload();
+  await expect(commonToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(favoritesToggle).toHaveAttribute("aria-expanded", "false");
+
+  const secondWindow = await context.newPage();
+  await secondWindow.goto("/");
+  await secondWindow.getByRole("button", { name: "常用位置", exact: true }).click();
+  await expect(commonToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(common.locator(".place").nth(3)).toHaveText("项目");
+  await expect(common.getByRole("button", { name: "下载", exact: true })).toHaveCount(0);
+  await favoritesToggle.click();
+  await expect(favorites.getByRole("button", { name: "设计素材" })).toBeVisible();
+  await secondWindow.close();
 });

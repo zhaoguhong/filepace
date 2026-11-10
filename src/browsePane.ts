@@ -55,7 +55,9 @@ export function useBrowsePane(
   const directory = useDirectoryListing(path, revision);
   const { listing } = directory;
   const listRef = useRef<HTMLDivElement>(null);
-  const anchor = useRef<{ tab: string; path: string } | null>(null);
+  const anchor = useRef<{ tab: string; path: string; lead: string } | null>(
+    null,
+  );
   const reveal = useRef<string | null>(null);
   const entries = useMemo(
     () => (tab && listing ? visibleEntries(listing.entries, tab, hidden) : []),

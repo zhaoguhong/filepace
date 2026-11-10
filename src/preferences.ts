@@ -1,13 +1,17 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { viewLabels, type View } from "./model";
+import { viewLabels, type Place, type View } from "./model";
 
 export const modeLabels = { system: "跟随系统", light: "浅色", dark: "深色" };
 export const themeLabels = { default: "默认", mist: "雾蓝", sand: "暖砂" };
+export type SidebarSection = "common" | "favorites";
+export type Shortcut = Pick<Place, "name" | "path">;
 export type Preferences = {
   mode: keyof typeof modeLabels;
   theme: keyof typeof themeLabels;
   defaultView: View;
   autoUpdate: boolean;
+  commonPlaces: Shortcut[] | null;
+  collapsedSidebar: SidebarSection[];
 };
 
 const key = "filepace-preferences";
@@ -16,6 +20,8 @@ const defaults: Preferences = {
   theme: "default",
   defaultView: "columns",
   autoUpdate: true,
+  commonPlaces: null,
+  collapsedSidebar: [],
 };
 
 function readPreferences(): Preferences {
@@ -40,6 +46,20 @@ function readPreferences(): Preferences {
           typeof value.autoUpdate === "boolean"
             ? value.autoUpdate
             : defaults.autoUpdate,
+        commonPlaces: Array.isArray(value.commonPlaces)
+          ? value.commonPlaces.filter(
+              (place) =>
+                place &&
+                typeof place.name === "string" &&
+                typeof place.path === "string" &&
+                place.path,
+            )
+          : null,
+        collapsedSidebar: Array.isArray(value.collapsedSidebar)
+          ? value.collapsedSidebar.filter(
+              (section) => section === "common" || section === "favorites",
+            )
+          : [],
       };
     }
     const legacy = localStorage.getItem("filepace-theme");
@@ -75,8 +95,15 @@ export function usePreferences() {
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [preferences.mode, preferences.theme]);
-  function change(value: Partial<Preferences>) {
-    const next = { ...readPreferences(), ...value };
+  function change(
+    value:
+      Partial<Preferences> | ((current: Preferences) => Partial<Preferences>),
+  ) {
+    const current = readPreferences();
+    const next = {
+      ...current,
+      ...(typeof value === "function" ? value(current) : value),
+    };
     localStorage.setItem(key, JSON.stringify(next));
     setPreferences(next);
   }

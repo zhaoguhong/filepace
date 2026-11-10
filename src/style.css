@@ -102,6 +102,10 @@ hr {
   font-size: 12px;
   color: var(--muted);
 }
+.window-location:first-child {
+  margin-left: 0;
+  text-align: left;
+}
 .title-actions {
   display: flex;
   align-items: center;
@@ -155,6 +159,27 @@ hr {
 .section-label button {
   color: var(--muted);
   padding: 0;
+}
+.sidebar-group + .sidebar-group {
+  margin-top: 22px;
+}
+.sidebar-group-label {
+  padding: 0 7px 0 3px;
+  margin-bottom: 5px;
+}
+.sidebar-group-label button {
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 5px;
+}
+.sidebar-group-label button:hover:not(:disabled) {
+  background: var(--inset);
+}
+.sidebar-disclosure {
+  flex: 1;
+  justify-content: flex-start;
+  font: inherit;
+  letter-spacing: inherit;
 }
 .place {
   width: 100%;
@@ -526,6 +551,18 @@ main {
   overflow: auto;
   outline: none;
   position: relative;
+}
+.file-area.list,
+.file-area.column-list {
+  padding-inline-end: 10px;
+}
+.selection-marquee {
+  position: fixed;
+  border: 1px solid var(--focus);
+  background: color-mix(in srgb, var(--accent) 19%, transparent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 60;
 }
 .file-area.list {
   display: block;

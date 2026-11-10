@@ -13,14 +13,15 @@ import type { Entry } from "./model";
 export const isMac = navigator.platform.includes("Mac");
 type FileTransfer = "copy" | "move";
 type Position = { x: number; y: number };
-type Target = { pane: PaneSide; path: string; folder?: string };
+type DragOrigin = { pane: PaneSide; directory: string };
+type Target = DragOrigin & { path: string; folder?: string };
 type DropHint = Target & { kind: FileTransfer };
 type NativeDrag =
   | {
       type: "hover";
       position: Position;
       kind: FileTransfer;
-      sourcePane?: PaneSide;
+      source?: DragOrigin;
     }
   | {
       type: "drop";
@@ -28,12 +29,12 @@ type NativeDrag =
       kind: FileTransfer;
       paths: string[];
       betweenWindows: boolean;
-      sourcePane?: PaneSide;
+      source?: DragOrigin;
     }
   | { type: "leave" };
 
 type DragSelection = { entry: Entry; paths: string[] };
-type Source = DragSelection & { pane: PaneSide; directory: string };
+type Source = DragSelection & DragOrigin;
 type Preview = { entry: Entry; pane: PaneSide; paths: Set<string> };
 type Gesture = Source & {
   pointerId: number;
@@ -47,11 +48,21 @@ function targetAt({ x, y }: Position): Target | null {
   const element = document.elementFromPoint(x, y);
   const list = element?.closest<HTMLElement>("[data-drop-path]");
   const pane = list?.dataset.pane;
-  const path = list?.dataset.dropPath;
-  if (!path || (pane !== "left" && pane !== "right")) return null;
+  const directory = list?.dataset.dropPath;
+  if (!directory || (pane !== "left" && pane !== "right")) return null;
   const folder =
     element?.closest<HTMLElement>("[data-directory]")?.dataset.directory;
-  return { pane, path: folder ?? path, folder };
+  return { pane, directory, path: folder ?? directory, folder };
+}
+
+function dropKind(
+  target: Target,
+  source: DragOrigin | undefined,
+  kind: FileTransfer,
+) {
+  return target.pane === source?.pane && target.directory === source.directory
+    ? "copy"
+    : kind;
 }
 
 function pointerTarget(
@@ -65,9 +76,8 @@ function pointerTarget(
     gesture.paths.includes(target.path)
   )
     return null;
-  const copy =
-    target.pane === gesture.pane || (isMac ? event.altKey : event.ctrlKey);
-  return { ...target, kind: copy ? "copy" : "move" };
+  const copy = isMac ? event.altKey : event.ctrlKey;
+  return { ...target, kind: dropKind(target, gesture, copy ? "copy" : "move") };
 }
 
 function positionPreview(element: HTMLElement, { x, y }: Position) {
@@ -152,21 +162,17 @@ export function useFileDrag(options: {
   const [preview, setPreview] = useState<Preview | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
-  function nativeDrag(
-    selection: DragSelection,
-    row: HTMLElement,
-    sourcePane?: PaneSide,
-  ) {
+  function nativeDrag(selection: Gesture) {
     latest.current.onStart();
     let previewImage: number[] | undefined;
     try {
-      previewImage = nativePreview(row, selection);
+      previewImage = nativePreview(selection.row, selection);
     } catch {
       // The native command has a bundled fallback if the image cannot be captured.
     }
     call("start_file_drag", {
       paths: selection.paths,
-      sourcePane,
+      source: { pane: selection.pane, directory: selection.directory },
       previewImage,
     }).catch((error) => latest.current.onError(String(error)));
   }
@@ -186,20 +192,32 @@ export function useFileDrag(options: {
           return;
         }
         const target = targetAt(event.position);
-        const kind =
-          event.sourcePane && target?.pane === event.sourcePane
-            ? "copy"
-            : event.kind;
+        const kind = target
+          ? dropKind(target, event.source, event.kind)
+          : event.kind;
         if (event.type === "hover") {
-          setHint(target ? { ...target, kind } : null);
+          setHint(
+            target && target.path !== event.source?.directory
+              ? { ...target, kind }
+              : null,
+          );
           return;
         }
         setHint(null);
-        const internal = event.betweenWindows || Boolean(event.sourcePane);
+        const internal = event.betweenWindows || Boolean(event.source);
         const path =
           target?.path ?? (!internal ? latest.current.focusedPath : undefined);
-        if (path)
-          latest.current.transfer(kind, event.paths, path, !event.sourcePane);
+        if (
+          path &&
+          path !== event.source?.directory &&
+          !event.paths.includes(path)
+        )
+          latest.current.transfer(
+            kind,
+            event.paths,
+            path,
+            !event.source || !latest.current.split,
+          );
       },
     );
     return () => {
@@ -245,11 +263,7 @@ export function useFileDrag(options: {
           event.clientY >= window.innerHeight)
       ) {
         clear();
-        nativeDrag(
-          gesture,
-          gesture.row,
-          latest.current.split ? gesture.pane : undefined,
-        );
+        nativeDrag(gesture);
         return;
       }
       if (previewRef.current)

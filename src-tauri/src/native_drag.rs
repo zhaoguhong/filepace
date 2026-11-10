@@ -18,10 +18,16 @@ pub enum PaneSide {
     Right,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct DragOrigin {
+    pane: PaneSide,
+    directory: String,
+}
+
 struct DragSession {
     id: Uuid,
     source_window: String,
-    source_pane: Option<PaneSide>,
+    source: Option<DragOrigin>,
     paths: Vec<PathBuf>,
     copy_at_end: Option<bool>,
 }
@@ -62,7 +68,7 @@ enum FileDragEvent {
         position: LogicalPosition<f64>,
         kind: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        source_pane: Option<PaneSide>,
+        source: Option<DragOrigin>,
     },
     Drop {
         position: LogicalPosition<f64>,
@@ -70,7 +76,7 @@ enum FileDragEvent {
         paths: Vec<PathBuf>,
         between_windows: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        source_pane: Option<PaneSide>,
+        source: Option<DragOrigin>,
     },
     Leave,
 }
@@ -109,17 +115,17 @@ fn received_drop(
 ) -> FileDragEvent {
     let origin = active.filter(|drag| drag.matches(paths));
     let between_windows = origin.is_some_and(|drag| drag.source_window != destination_window);
-    let source_pane = origin
+    let source = origin
         .filter(|_| !between_windows)
-        .and_then(|drag| drag.source_pane);
+        .and_then(|drag| drag.source.clone());
     FileDragEvent::Drop {
         position,
         kind: origin
-            .filter(|_| between_windows || source_pane.is_some())
+            .filter(|_| between_windows || source.is_some())
             .map_or("copy", operation),
         paths: origin.map_or_else(|| paths.to_vec(), |drag| drag.paths.clone()),
         between_windows,
-        source_pane,
+        source,
     }
 }
 
@@ -166,7 +172,7 @@ fn drag_image(preview: Option<Vec<u8>>) -> drag::Image {
 pub async fn start_file_drag(
     window: Window,
     paths: Vec<PathBuf>,
-    source_pane: Option<PaneSide>,
+    source: Option<DragOrigin>,
     preview_image: Option<Vec<u8>>,
 ) -> Result<(), String> {
     if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
@@ -197,7 +203,7 @@ pub async fn start_file_drag(
             *active = Some(DragSession {
                 id,
                 source_window: window.label().into(),
-                source_pane,
+                source,
                 paths: paths.clone(),
                 copy_at_end: None,
             });
@@ -217,7 +223,7 @@ pub async fn start_file_drag(
                         image,
                         move |_, _| finish_drag(&source, id),
                         // External apps receive a native copy drag. Filepace runs its
-                        // own move task after a drop into a different Filepace window.
+                        // own file task after a drop inside Filepace.
                         drag::Options::default(),
                     )
                     .map_err(|error| error.to_string())
@@ -248,13 +254,17 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
         DragDropEvent::Enter { position, .. } | DragDropEvent::Over { position } => {
             let Some(drag) = active.as_ref() else { return };
             let same_window = drag.source_window == window.label();
-            if same_window && drag.source_pane.is_none() {
+            if same_window && drag.source.is_none() {
                 return;
             }
             FileDragEvent::Hover {
                 position: position.to_logical(scale),
                 kind: operation(drag),
-                source_pane: if same_window { drag.source_pane } else { None },
+                source: if same_window {
+                    drag.source.clone()
+                } else {
+                    None
+                },
             }
         }
         DragDropEvent::Drop { paths, position } if !paths.is_empty() => received_drop(
@@ -296,14 +306,14 @@ mod tests {
     }
 
     #[test]
-    fn moves_only_a_matching_drag_from_another_window_without_the_copy_key() {
+    fn reports_the_origin_and_copy_key_for_a_matching_filepace_drag() {
         let paths = vec![PathBuf::from("file.txt"), PathBuf::from("folder")];
         let reversed_paths = vec![paths[1].clone(), paths[0].clone()];
         let external_paths = vec![PathBuf::from("other.txt"), paths[0].clone()];
         let mut drag = DragSession {
             id: Uuid::new_v4(),
             source_window: "source".into(),
-            source_pane: None,
+            source: None,
             paths: paths.clone(),
             copy_at_end: Some(false),
         };
@@ -339,16 +349,19 @@ mod tests {
                 ..
             }
         ));
-        drag.source_pane = Some(PaneSide::Left);
+        drag.source = Some(DragOrigin {
+            pane: PaneSide::Left,
+            directory: "source-directory".into(),
+        });
         drag.copy_at_end = Some(false);
         assert!(matches!(
             received_drop(point, &paths, "source", Some(&drag)),
             FileDragEvent::Drop {
                 kind: "move",
                 between_windows: false,
-                source_pane: Some(PaneSide::Left),
+                source: Some(DragOrigin { pane: PaneSide::Left, directory }),
                 ..
-            }
+            } if directory == "source-directory"
         ));
     }
 }

@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.4.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.0).
+Download the v0.4.1 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.1).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a
 
 - Press **Command+N** on macOS or **Ctrl+N** on Windows to open a separate window at the current location. Use the tab context menu to move a tab to a new window.
 - **Split View (左右分栏)** opens a right pane in the current window. Each pane has its own tabs, selection, and navigation history. Sidebar navigation and keyboard shortcuts apply to the active pane.
-- Drag a file or folder to the other pane or another Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the pane's current directory.
+- Drag a file or folder to another directory column, pane, or Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the directory displayed there.
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
 
 Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
@@ -35,6 +35,10 @@ Right-click a file, folder, or blank space in the file list to copy its full pat
 List and icon views distinguish Word, Excel, PowerPoint, PDF, images, and other common file types. The toolbar offers list view and four icon sizes. The drag preview shows the item icon, name, and selection count.
 
 New tabs use Column View by default. Click a folder to open its contents in the next column. Select a file to see its preview or details. The toolbar switches each tab between Column, List, and Icon views.
+
+Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
+
+Click the sidebar's **Common Locations (常用位置)** or **Favorites (收藏目录)** heading to collapse or expand it. Use the plus button beside Common Locations to add the current folder. Right-click a shortcut to reorder or remove it. The sidebar remembers your changes.
 
 Open **Settings (设置)** at the bottom of the sidebar to set the default view. Choose appearance and theme separately. Appearance follows the system by default. Default, Mist Blue, and Warm Sand each support light and dark mode.
 
@@ -93,5 +97,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_x64-setup.exe

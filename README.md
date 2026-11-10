@@ -6,7 +6,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.0) 下载适合你的 v0.4.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.4.1) 下载适合你的 v0.4.1 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 - 按 macOS 的 **⌘N** 或 Windows 的 **Ctrl+N**，在当前位置打开独立窗口。也可通过标签页右键菜单将标签移到新窗口。
 - 点「左右分栏」会在当前窗口内打开右侧窗格。两侧各有独立的标签页、选区和浏览历史。侧栏导航和键盘快捷键作用于当前窗格。
-- 把文件或文件夹拖到另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入当前目录。
+- 把文件或文件夹拖到另一列、另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入该处显示的目录。
 - 点「合并分栏」会回到单栏，并保留两边的标签页。
 
 右键单击文件、文件夹或文件列表的空白处，可以复制完整路径、在 Finder 或资源管理器中显示，或打开命令行。macOS 使用终端，Windows 使用 PowerShell。右键单击文件时，命令行会在文件所在目录启动。
@@ -35,6 +35,10 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 文件列表和图标视图区分 Word、Excel、PowerPoint、PDF、图片及其他常见类型。工具栏可切换列表和小、中、大、超大图标。拖动时会显示文件图标、名称和多选数量。
 
 新标签默认使用列视图。单击文件夹会在右侧展开下一列，选中文件会显示预览或基本信息。每个标签可用工具栏切换列视图、列表和图标。
+
+在三种视图中，都可以从空白处按住鼠标拖出选框，一次选中文件和文件夹。也可以按住 **Shift** 选取连续项目，或按住 macOS 的 **⌘**、Windows 的 **Ctrl** 逐个增减选区。
+
+点击侧栏的「常用位置」或「收藏目录」标题可折叠和展开。点击「常用位置」旁的加号可加入当前文件夹，右键快捷入口可调整顺序或移除。侧栏会记住这些设置。
 
 从侧栏底部打开「设置」，在「浏览」中可选择新标签的默认视图。在「外观」中分别选显示模式与主题。显示模式默认跟随系统，默认、雾蓝和暖砂主题各有浅色和深色版本。
 
@@ -93,5 +97,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.0/Filepace_0.4.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.4.1/Filepace_0.4.1_x64-setup.exe

@@ -3,7 +3,7 @@ import StorageDashboard from "./StorageDashboard";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
 import Settings, { type SettingsSection } from "./Settings";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -45,6 +45,7 @@ import {
   MoreHorizontal,
   Command,
   Undo2,
+  type LucideIcon,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -53,9 +54,14 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { call, desktop } from "./bridge";
 import { useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
+import { useMarquee } from "./marquee";
 import { describeFile } from "./fileTypes";
 import { useFilePreview } from "./filePreview";
-import { usePreferences } from "./preferences";
+import {
+  usePreferences,
+  type Shortcut,
+  type SidebarSection,
+} from "./preferences";
 import { useUpdates } from "./updates";
 import {
   basename,
@@ -77,9 +83,17 @@ type Menu = {
   entry?: Entry;
   tab?: Tab;
   viewPane?: PaneSide;
+  shortcut?: SidebarSection;
 };
 type OpenWithApp = { name: string; path: string; default: boolean };
 const iconSize = 17;
+const placeIcons: Record<string, LucideIcon> = {
+  个人目录: Home,
+  桌面: Monitor,
+  下载: Download,
+  文档: FileText,
+  图片: ImageIcon,
+};
 const gridSizes: { value: GridSize; label: string }[] = [
   { value: "small", label: "小图标" },
   { value: "medium", label: "中图标" },
@@ -89,6 +103,52 @@ const gridSizes: { value: GridSize; label: string }[] = [
 
 function cleanPane({ tabs, active }: PaneSession): PaneSession {
   return { tabs: tabs.map((tab) => ({ ...tab, selected: [] })), active };
+}
+
+function readFavorites(): string[] {
+  try {
+    const stored: unknown = JSON.parse(
+      localStorage.getItem("filepace-favorites") || "[]",
+    );
+    if (Array.isArray(stored))
+      return stored.filter((path) => typeof path === "string" && path);
+  } catch {}
+  return [];
+}
+
+function SidebarGroup({
+  label,
+  collapsed,
+  onToggle,
+  action,
+  children,
+}: {
+  label: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  action: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const id = useId();
+  const Chevron = collapsed ? ChevronRight : ChevronDown;
+  return (
+    <section className="sidebar-group" aria-label={label}>
+      <div className="section-label sidebar-group-label">
+        <button
+          className="sidebar-disclosure"
+          aria-expanded={!collapsed}
+          aria-controls={id}
+          onClick={onToggle}
+        >
+          <Chevron size={13} /> {label}
+        </button>
+        {action}
+      </div>
+      <div id={id} hidden={collapsed}>
+        {children}
+      </div>
+    </section>
+  );
 }
 function Tool({
   label,
@@ -155,13 +215,7 @@ export default function App() {
     [revision, setRevision] = useState(0),
     [closePrompt, setClosePrompt] = useState(false),
     [applyAll, setApplyAll] = useState(false);
-  const [favorites, setFavorites] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("filepace-favorites") || "[]");
-    } catch {
-      return [];
-    }
-  });
+  const [favorites, setFavorites] = useState(readFavorites);
   const [cutPaths, setCutPaths] = useState<string[]>([]);
   const closed = useRef<Record<PaneSide, Tab[]>>({ left: [], right: [] }),
     pathRef = useRef<HTMLInputElement>(null),
@@ -173,6 +227,8 @@ export default function App() {
   const right = useBrowsePane(session.right, hidden, revision);
   const pane = focused === "left" ? left : right;
   const { tab, listing, entries, listRef } = pane;
+  const systemPlaces = places.filter((place) => place.kind === "favorite");
+  const commonPlaces = preferences.commonPlaces ?? systemPlaces;
   const { tabs, active } =
     (focused === "right" ? session.right : session) ?? session;
   const stateRef = useRef(session);
@@ -185,6 +241,7 @@ export default function App() {
     onStart: () => setMenu(null),
     onError: setNotice,
   });
+  const marquee = useMarquee(fileDrag.suppressClick);
   const { tasks, undo } = activity;
   const { text: previewContent, image: imageUrl } =
     useFilePreview(preview) ?? {};
@@ -475,12 +532,8 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    function sync() {
-      try {
-        setFavorites(
-          JSON.parse(localStorage.getItem("filepace-favorites") || "[]"),
-        );
-      } catch {}
+    function sync(event: StorageEvent) {
+      if (event.key === "filepace-favorites") setFavorites(readFavorites());
     }
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
@@ -598,11 +651,11 @@ export default function App() {
     const { tab, entries, anchor } = side === "left" ? left : right;
     if (!tab) return;
     const selected = tab.selected;
-    const anchorIndex =
-      anchor.current?.tab === tab.id
-        ? entries.findIndex((x) => x.path === anchor.current?.path)
-        : -1;
-    if (e.shiftKey && anchorIndex >= 0) {
+    const current = anchor.current?.tab === tab.id ? anchor.current : null;
+    const anchorIndex = entries.findIndex(
+      (item) => item.path === current?.path,
+    );
+    if (e.shiftKey && current && anchorIndex >= 0) {
       const index = entries.findIndex((x) => x.path === entry.path);
       patch(
         {
@@ -615,6 +668,7 @@ export default function App() {
         },
         side,
       );
+      anchor.current = { ...current, lead: entry.path };
     } else if (e.metaKey || e.ctrlKey) {
       patch(
         {
@@ -624,11 +678,18 @@ export default function App() {
         },
         side,
       );
-      anchor.current = { tab: tab.id, path: entry.path };
+      anchor.current = { tab: tab.id, path: entry.path, lead: entry.path };
     } else {
       patch({ selected: [entry.path] }, side);
-      anchor.current = { tab: tab.id, path: entry.path };
+      anchor.current = { tab: tab.id, path: entry.path, lead: entry.path };
     }
+  }
+  function setSelection(paths: string[], side = focused) {
+    const { tab, anchor } = side === "left" ? left : right;
+    if (!tab) return;
+    const path = paths.at(-1);
+    anchor.current = path ? { tab: tab.id, path, lead: path } : null;
+    patch({ selected: paths }, side);
   }
   function renameSelected(
     entry = listing?.entries.find((e) => e.path === selected[0]),
@@ -655,16 +716,55 @@ export default function App() {
   }
   function favorite(path = tab?.path) {
     if (!path) return;
-    const next = favorites.includes(path)
-      ? favorites.filter((p) => p !== path)
-      : [...favorites, path];
+    const current = readFavorites();
+    const next = current.includes(path)
+      ? current.filter((p) => p !== path)
+      : [...current, path];
     setFavorites(next);
     localStorage.setItem("filepace-favorites", JSON.stringify(next));
     setMenu(null);
   }
+  function toggleSidebarGroup(section: SidebarSection) {
+    changePreferences(({ collapsedSidebar }) => ({
+      collapsedSidebar: collapsedSidebar.includes(section)
+        ? collapsedSidebar.filter((value) => value !== section)
+        : [...collapsedSidebar, section],
+    }));
+  }
+  function addCommonPlace(path: string, name = basename(path)) {
+    changePreferences((current) => {
+      const places = current.commonPlaces ?? systemPlaces;
+      return {
+        commonPlaces: places.some((place) => place.path === path)
+          ? places
+          : [...places, { path, name }],
+        collapsedSidebar: current.collapsedSidebar.filter(
+          (section) => section !== "common",
+        ),
+      };
+    });
+    setMenu(null);
+  }
+  function editCommonPlaces(edit: (places: Shortcut[]) => Shortcut[]) {
+    changePreferences((current) => ({
+      commonPlaces: edit(current.commonPlaces ?? systemPlaces),
+    }));
+    setMenu(null);
+  }
+  function shiftCommonPlace(path: string, delta: number) {
+    editCommonPlaces((places) => {
+      const index = places.findIndex((place) => place.path === path);
+      if (index < 0 || index + delta < 0 || index + delta >= places.length)
+        return places;
+      const next = places.slice();
+      const [place] = next.splice(index, 1);
+      next.splice(index + delta, 0, place);
+      return next;
+    });
+  }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!tab || fileDrag.preview) return;
+      if (!tab || fileDrag.preview || marquee.frame) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       if (mod && key === ",") {
@@ -709,6 +809,13 @@ export default function App() {
         if (key === "escape") setStorageVisible(false);
         return;
       }
+      if (
+        !mod &&
+        !e.altKey &&
+        ["enter", " "].includes(key) &&
+        (e.target as HTMLElement).closest("button, [role=tab]")
+      )
+        return;
       if (mod && !e.shiftKey && key === "f") {
         e.preventDefault();
         openSearch();
@@ -736,7 +843,7 @@ export default function App() {
         if (key === "n") windowFor(makeTab(tab.path, preferences.defaultView));
         if (key === "w") closeTab(tab.id);
         if (key === "l") editPath(focused);
-        if (key === "a") patch({ selected: entries.map((x) => x.path) });
+        if (key === "a") setSelection(entries.map((x) => x.path));
         if (key === "c") copy();
         if (key === "x") copy(true);
         if (key === "v") paste();
@@ -777,6 +884,17 @@ export default function App() {
         e.preventDefault();
         travel(1);
       }
+      if (key === "arrowup" && (e.altKey || (isMac && e.metaKey))) {
+        e.preventDefault();
+        if (listing?.parent) go(listing.parent);
+        return;
+      }
+      if (isMac && e.metaKey && key === "arrowdown") {
+        e.preventDefault();
+        const entry = entries.find((item) => item.path === selected[0]);
+        if (entry) void open(entry);
+        return;
+      }
       if (tab.view === "columns" && !e.altKey && !mod) {
         const columns = columnPaths(tab);
         if (key === "arrowleft" && columns.length > 1) {
@@ -800,19 +918,34 @@ export default function App() {
           return;
         }
       }
-      if (!e.altKey && ["arrowup", "arrowdown"].includes(key)) {
+      const horizontal = key === "arrowleft" || key === "arrowright";
+      if (
+        !e.altKey &&
+        !mod &&
+        (["arrowup", "arrowdown"].includes(key) ||
+          (tab.view === "grid" && horizontal))
+      ) {
         e.preventDefault();
-        const index = entries.findIndex(
-          (x) => x.path === selected[selected.length - 1],
-        );
+        const range = pane.anchor.current;
+        const lead =
+          range?.tab === tab.id && selected.includes(range.lead)
+            ? range.lead
+            : selected.at(-1);
+        const index = entries.findIndex((x) => x.path === lead);
+        const gridColumns =
+          tab.view === "grid" && listRef.current
+            ? getComputedStyle(listRef.current)
+                .gridTemplateColumns.trim()
+                .split(/\s+/).length
+            : 1;
+        const step =
+          (horizontal ? 1 : gridColumns) *
+          (key === "arrowdown" || key === "arrowright" ? 1 : -1);
         const next =
           entries[
             Math.max(
               0,
-              Math.min(
-                entries.length - 1,
-                index + (key === "arrowdown" ? 1 : -1),
-              ),
+              Math.min(entries.length - 1, index < 0 ? 0 : index + step),
             )
           ];
         if (next) {
@@ -832,12 +965,16 @@ export default function App() {
                 top + height > list.scrollTop + list.clientHeight)
             )
               list.scrollTo({ top: Math.max(0, top - 150) });
+          } else {
+            listRef.current
+              ?.querySelector(`[data-path="${CSS.escape(next.path)}"]`)
+              ?.scrollIntoView({ block: "nearest", inline: "nearest" });
           }
         }
       }
       if (key === "escape") {
         setMenu(null);
-        patch({ selected: [] });
+        setSelection([]);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -852,9 +989,50 @@ export default function App() {
       </div>
     );
   const menuPath = menu?.entry?.path ?? tab.path;
+  const commonIndex = commonPlaces.findIndex(
+    (place) => place.path === menuPath,
+  );
+  const currentPath = listing?.path ?? tab.path;
   const viewPane = menu?.viewPane;
   const viewTab = viewPane === "left" ? left.tab : right.tab;
   const dragPreview = fileDrag.preview;
+
+  function renderShortcut(
+    place: Shortcut,
+    Icon: LucideIcon,
+    shortcut: SidebarSection,
+  ) {
+    return (
+      <button
+        key={place.path}
+        className={`place ${currentPath === place.path ? "selected" : ""}`}
+        title={place.path}
+        onClick={() => go(place.path)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({
+            x: event.clientX,
+            y: event.clientY,
+            shortcut,
+            entry: {
+              ...place,
+              isDir: true,
+              isLink: false,
+              modified: 0,
+              size: 0,
+              hidden: false,
+            },
+          });
+        }}
+      >
+        <Icon size={17} />
+        <span>{place.name}</span>
+        {shortcut === "common" && currentPath === place.path && (
+          <span className="place-dot" />
+        )}
+      </button>
+    );
+  }
 
   function renderPane(side: PaneSide) {
     const { tab, listing, entries, loading, error, listRef } =
@@ -904,9 +1082,13 @@ export default function App() {
       if (!tab) return null;
       const type = describeFile(entry);
       const current = !columns || columns.at(-1) === tab.path;
-      const marked = current
-        ? selected.includes(entry.path)
-        : child === entry.path;
+      const frame = marquee.frame;
+      const marked =
+        frame?.pane === side && frame.directory === directory
+          ? frame.paths.has(entry.path)
+          : current
+            ? selected.includes(entry.path)
+            : child === entry.path;
       const dragSource =
         dragPreview?.pane === side && dragPreview.paths.has(entry.path);
       return (
@@ -1018,10 +1200,21 @@ export default function App() {
           tab.view === "grid" ? (tab.gridSize ?? "medium") : undefined
         }
         data-drop-path={listing?.path}
+        onPointerDown={(event) => {
+          if (listing)
+            marquee.begin(event, {
+              pane: side,
+              directory: listing.path,
+              entries,
+              rowHeight: tab.view === "grid" ? undefined : rowHeight,
+              selected,
+              commit: (paths) => setSelection(paths, side),
+            });
+        }}
         onScroll={(e) => patchPane({ scroll: e.currentTarget.scrollTop })}
         onClick={(e) => {
           if (!(e.target as Element).closest("button, input"))
-            patchPane({ selected: [] });
+            setSelection([], side);
         }}
         onContextMenu={(e) => {
           if ((e.target as Element).closest("button, input")) return;
@@ -1420,6 +1613,19 @@ export default function App() {
               go(columns.at(-1)!, side, undefined, columns);
               setMenu({ x: event.clientX, y: event.clientY });
             }}
+            onMarquee={(event, columns, directory, entries) =>
+              marquee.begin(event, {
+                pane: side,
+                directory,
+                entries,
+                rowHeight: 34,
+                selected: [],
+                commit: (paths) => {
+                  go(columns.at(-1)!, side, undefined, columns);
+                  setSelection(paths, side);
+                },
+              })
+            }
             onOpen={(entry) => open(entry, side)}
           />
         ) : (
@@ -1460,12 +1666,14 @@ export default function App() {
       onClick={() => menu && setMenu(null)}
     >
       <header className="titlebar">
-        <div className="brand">
-          <span className="brand-mark">
-            <Folder size={18} />
-          </span>
-          <b>Filepace</b>
-        </div>
+        {!desktop && (
+          <div className="brand">
+            <span className="brand-mark">
+              <Folder size={18} />
+            </span>
+            <b>Filepace</b>
+          </div>
+        )}
         <span className="window-location">
           {settingsSection
             ? "设置"
@@ -1513,81 +1721,67 @@ export default function App() {
       </header>
       <div className="workspace">
         {sidebar && (
-          <aside className="sidebar">
-            <div className="section-label">常用位置</div>
-            {places
-              .filter((p) => p.kind === "favorite")
-              .map((p, i) => {
-                const Icon =
-                  [Home, Monitor, Download, FileText, ImageIcon][i] || Folder;
-                return (
-                  <button
-                    key={p.path}
-                    className={`place ${tab.path === p.path ? "selected" : ""}`}
-                    onClick={() => go(p.path)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      setMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        entry: {
-                          name: p.name,
-                          path: p.path,
-                          isDir: true,
-                          isLink: false,
-                          modified: 0,
-                          size: 0,
-                          hidden: false,
-                        },
-                      });
-                    }}
-                  >
-                    <Icon size={17} />
-                    <span>{p.name}</span>
-                    {tab.path === p.path && <span className="place-dot" />}
-                  </button>
-                );
-              })}
-            <div className="section-label section-spaced">
-              收藏目录{" "}
-              <button
-                aria-label="收藏当前目录"
-                title="收藏当前目录"
-                onClick={() => favorite()}
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-            {favorites.length ? (
-              favorites.map((path) => (
+          <aside className="sidebar" aria-label="位置侧栏">
+            <SidebarGroup
+              label="常用位置"
+              collapsed={preferences.collapsedSidebar.includes("common")}
+              onToggle={() => toggleSidebarGroup("common")}
+              action={
                 <button
-                  key={path}
-                  className={`place ${path === tab.path ? "selected" : ""}`}
-                  onClick={() => go(path)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      entry: {
-                        name: basename(path),
-                        path,
-                        isDir: true,
-                        isLink: false,
-                        modified: 0,
-                        size: 0,
-                        hidden: false,
-                      },
-                    });
-                  }}
+                  aria-label="添加当前目录到常用位置"
+                  title="添加当前目录到常用位置"
+                  disabled={
+                    !listing ||
+                    commonPlaces.some((place) => place.path === currentPath)
+                  }
+                  onClick={() => addCommonPlace(currentPath)}
                 >
-                  <Star size={16} />
-                  <span>{basename(path)}</span>
+                  <Plus size={14} />
                 </button>
-              ))
-            ) : (
-              <div className="sidebar-hint">把常去的文件夹放在这里</div>
-            )}
+              }
+            >
+              {commonPlaces.length ? (
+                commonPlaces.map((place) => {
+                  const system = systemPlaces.find(
+                    (item) => item.path === place.path,
+                  );
+                  return renderShortcut(
+                    place,
+                    placeIcons[system?.name ?? ""] ?? Folder,
+                    "common",
+                  );
+                })
+              ) : (
+                <div className="sidebar-hint">用加号添加当前文件夹</div>
+              )}
+            </SidebarGroup>
+            <SidebarGroup
+              label="收藏目录"
+              collapsed={preferences.collapsedSidebar.includes("favorites")}
+              onToggle={() => toggleSidebarGroup("favorites")}
+              action={
+                <button
+                  aria-label="收藏当前目录"
+                  title="收藏当前目录"
+                  disabled={!listing || favorites.includes(currentPath)}
+                  onClick={() => favorite(currentPath)}
+                >
+                  <Plus size={14} />
+                </button>
+              }
+            >
+              {favorites.length ? (
+                favorites.map((path) =>
+                  renderShortcut(
+                    { name: basename(path), path },
+                    Star,
+                    "favorites",
+                  ),
+                )
+              ) : (
+                <div className="sidebar-hint">把常去的文件夹放在这里</div>
+              )}
+            </SidebarGroup>
             <div className="section-label section-spaced">磁盘与位置</div>
             {places
               .filter((p) => p.kind === "disk")
@@ -1630,7 +1824,8 @@ export default function App() {
             currentPath={listing?.path ?? tab.path}
             scope={storageScope}
             places={[
-              ...places,
+              ...places.filter((place) => place.kind === "disk"),
+              ...commonPlaces.map((place) => ({ ...place, kind: "favorite" })),
               ...favorites.map((path) => ({
                 name: basename(path),
                 path,
@@ -1747,6 +1942,13 @@ export default function App() {
           )}
         </div>
       )}
+      {marquee.frame && (
+        <div
+          className="selection-marquee"
+          aria-hidden="true"
+          style={marquee.frame.style}
+        />
+      )}
       {notice && (
         <div className="toast" role="status">
           {notice}
@@ -1823,6 +2025,34 @@ export default function App() {
             </>
           ) : (
             <>
+              {menu.shortcut === "common" && (
+                <>
+                  <button
+                    disabled={commonIndex <= 0}
+                    onClick={() => shiftCommonPlace(menuPath, -1)}
+                  >
+                    上移
+                  </button>
+                  <button
+                    disabled={
+                      commonIndex < 0 || commonIndex === commonPlaces.length - 1
+                    }
+                    onClick={() => shiftCommonPlace(menuPath, 1)}
+                  >
+                    下移
+                  </button>
+                  <button
+                    onClick={() =>
+                      editCommonPlaces((places) =>
+                        places.filter((place) => place.path !== menuPath),
+                      )
+                    }
+                  >
+                    从常用位置移除
+                  </button>
+                  <hr />
+                </>
+              )}
               {menu.entry && (
                 <button
                   onClick={() => {
@@ -1852,6 +2082,13 @@ export default function App() {
                       ? "移除收藏"
                       : "添加到收藏"}
                   </button>
+                  {commonIndex < 0 && (
+                    <button
+                      onClick={() => addCommonPlace(menuPath, menu.entry!.name)}
+                    >
+                      添加到常用位置
+                    </button>
+                  )}
                 </>
               )}
               {menu.entry && !menu.entry.isDir && (
@@ -1930,29 +2167,33 @@ export default function App() {
               <hr />
               {menu.entry ? (
                 <>
-                  <button
-                    onClick={() => {
-                      copy();
-                      setMenu(null);
-                    }}
-                  >
-                    复制
-                  </button>
-                  <button
-                    onClick={() => {
-                      copy(true);
-                      setMenu(null);
-                    }}
-                  >
-                    剪切
-                  </button>
-                  <button onClick={() => renameSelected(menu.entry)}>
-                    重命名
-                  </button>
+                  {!menu.shortcut && (
+                    <>
+                      <button
+                        onClick={() => {
+                          copy();
+                          setMenu(null);
+                        }}
+                      >
+                        复制
+                      </button>
+                      <button
+                        onClick={() => {
+                          copy(true);
+                          setMenu(null);
+                        }}
+                      >
+                        剪切
+                      </button>
+                      <button onClick={() => renameSelected(menu.entry)}>
+                        重命名
+                      </button>
+                    </>
+                  )}
                   <button onClick={() => openProperties(menu.entry!)}>
                     属性
                   </button>
-                  {!menu.entry.isLink && (
+                  {!menu.shortcut && !menu.entry.isLink && (
                     <button
                       onClick={() =>
                         start(
@@ -1989,13 +2230,17 @@ export default function App() {
                       </button>
                     </>
                   )}
-                  <hr />
-                  <button
-                    className="danger-text"
-                    onClick={() => start("trash")}
-                  >
-                    移到回收站
-                  </button>
+                  {!menu.shortcut && (
+                    <>
+                      <hr />
+                      <button
+                        className="danger-text"
+                        onClick={() => start("trash")}
+                      >
+                        移到回收站
+                      </button>
+                    </>
+                  )}
                 </>
               ) : (
                 <>
@@ -2013,6 +2258,11 @@ export default function App() {
                     在此文件夹内搜索
                   </button>
                   <button onClick={() => favorite()}>收藏当前目录</button>
+                  {commonIndex < 0 && listing && (
+                    <button onClick={() => addCommonPlace(currentPath)}>
+                      添加当前目录到常用位置
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       restore();

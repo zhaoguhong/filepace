@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import { Folder, LoaderCircle } from "lucide-react";
@@ -36,6 +37,12 @@ type Props = {
   ) => ReactNode;
   onChoose: (columns: string[]) => void;
   onContext: (event: MouseEvent, columns: string[]) => void;
+  onMarquee: (
+    event: PointerEvent<HTMLDivElement>,
+    columns: string[],
+    directory: string,
+    entries: Entry[],
+  ) => void;
   onOpen: (entry: Entry) => void;
 };
 
@@ -51,6 +58,7 @@ function Ancestor({
   renderRow,
   onChoose,
   onContext,
+  onMarquee,
 }: Omit<Props, "active" | "preview" | "onOpen"> & {
   path: string;
   child: string;
@@ -101,6 +109,10 @@ function Ancestor({
         data-pane={side}
         data-drop-path={listing?.path}
         ref={list}
+        tabIndex={-1}
+        onPointerDown={(event) =>
+          onMarquee(event, columns, listing?.path ?? path, entries)
+        }
         onScroll={(event) => setScroll(event.currentTarget.scrollTop)}
         onClick={() => onChoose(columns)}
         onContextMenu={(event) => onContext(event, columns)}
