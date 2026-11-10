@@ -1,6 +1,6 @@
 # Contributing to Filepace
 
-Set up the project and run the checks in the [README](README.md). The desktop app is the entry point for testing real file operations. The browser preview is suitable for layout and navigation changes.
+Set up the project and run the checks in the [README](README.en.md). The desktop app is the entry point for testing real file operations. The browser preview is suitable for layout and navigation changes.
 
 ## Report a problem
 

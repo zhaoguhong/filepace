@@ -17,11 +17,18 @@
 - Rust compile and filesystem unit tests cover copying and moving actual files, cancellation preserving the source, conflict handling, invalid names, preview size limits, and refusal to read or transfer named pipes.
 - Browser interaction tests cover browsing, tab recovery, right-click actions, independent pane navigation, move and modifier-copy gestures, drag cancellation, and merging panes.
 - Installed macOS app testing covered real file moves in both directions between panes, including a drop into a subfolder. The red close button closed an extra window and the final idle window. A pending conflict blocked closing the last window until the test task was cancelled.
-- The Windows GNU target passed a Rust compilation check. Native Windows installation and interaction tests remain part of the release matrix.
+- The Windows GNU target passed a Rust compilation check.
+
+## v0.1.0 installer preview
+
+- GitHub Actions ran the desktop test suite and built macOS (Apple Silicon) and Windows (x64) installers from the v0.1.0 tag. [Build run](https://github.com/zhaoguhong/filepace/actions/runs/42744647320)
+- The macOS preview disk image mounted successfully. The app copied from the image passed ad-hoc signature verification and launched on an Apple Silicon Mac.
+- The Windows x64 package installed into the runner account's profile, launched, and uninstalled on a Windows GitHub Actions runner. A standard-user session and installation on a machine without WebView2 still need testing. [Installer smoke test](https://github.com/zhaoguhong/filepace/actions/runs/42746015565)
+- The macOS preview has no Developer ID signature or notarization. The Windows preview has no publisher signature.
 
 ## Remaining release work
 
-- Run native Windows builds and the standard-user installation matrix in [windows-installation.md](windows-installation.md).
+- Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
 - Test native drags across separate windows, Option and Ctrl during real desktop drags, and Explorer/Finder interoperability. Test cut clipboard feedback with external applications.
 - Complete session geometry, per-history scroll/selection restoration, tab overflow menu, name disambiguation and focus restoration.
 - Enrich conflicts with both source and destination metadata; add task completion notifications, clear task history and open-location actions.

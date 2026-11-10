@@ -1,28 +1,47 @@
 # Filepace
 
-Filepace is a local desktop file manager for macOS and Windows. Browse folders in tabs or side by side, move and copy files with visible task progress, and open a location in Finder, File Explorer, or a command line. Filepace uses Tauri, Rust, React, and TypeScript.
+[English](README.en.md)
 
-## Work with two folders
+Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可以用标签页或左右分栏浏览目录，拖放整理文件，也可以从右键菜单打开系统文件管理器或命令行。项目使用 Tauri、Rust、React 和 TypeScript。
 
-- **New Window (新建窗口)** opens a separate desktop window at the current location. You can also move a tab into a new window from its context menu.
-- **Split View (左右分栏)** opens a right pane inside the current window. Each pane has its own folders, tabs, selection, and navigation history. The highlighted pane receives sidebar navigation and keyboard shortcuts.
-- Drag a file or folder to the other pane or another Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put the items inside it, or on blank space to use the pane's current directory.
-- **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
+## 下载安装
 
-Right-click a file, folder, or the file list background to copy its full path, show it in the system file manager, or open a command line at that location. For a file, the command line starts in its containing folder. Filepace opens Terminal on macOS and PowerShell on Windows.
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.1.0) 下载适合你的 v0.1.0 安装包。
 
-## Run from source
+| 系统 | 安装包 | 安装方式 |
+| --- | --- | --- |
+| macOS（Apple 芯片） | [下载 .dmg][mac-download] | 打开磁盘映像，将 Filepace 拖到「应用程序」。 |
+| Windows（x64） | [下载 .exe][windows-download] | 运行安装程序，为当前用户安装。如果系统缺少 WebView2，安装程序需要联网下载。 |
 
-Install Node.js 24 or later, stable Rust, and the build tools for your operating system. [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/)
+安装包为预览版。macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁」提示。Windows 版尚未签名，运行时可能出现 SmartScreen 提示。[Apple 支持](https://support.apple.com/zh-cn/102445) · [Microsoft SmartScreen 文档](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+
+## 同时整理两个目录
+
+- 点「新建窗口」会在当前位置打开一个独立窗口。也可以通过标签页的右键菜单把它移到新窗口。
+- 点「左右分栏」会在当前窗口内打开右侧窗格。两侧各有独立的标签页、选区和浏览历史。侧栏导航和键盘快捷键作用于当前窗格。
+- 把文件或文件夹拖到另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入当前目录。
+- 点「合并分栏」会回到单栏，并保留两边的标签页。
+
+右键单击文件、文件夹或文件列表的空白处，可以复制完整路径、在 Finder 或资源管理器中显示，或打开命令行。macOS 使用终端，Windows 使用 PowerShell。右键单击文件时，命令行会在文件所在目录启动。
+
+## 文件操作
+
+文件任务会显示进度，遇到同名文件时会询问如何处理。移动时先在目标位置写入文件，再移除源文件。删除和替换的文件会进入系统废纸篓或回收站。关闭最后一个窗口时，如果还有文件任务在运行，Filepace 会询问是继续任务，还是取消任务并关闭窗口。
+
+Filepace 保存各窗口的标签页和分栏打开的目录，并使用当前用户的文件系统权限。可以浏览符号链接，文件传输暂不支持符号链接。[平台验证和已知限制](docs/scope.md)
+
+## 从源码运行
+
+安装 Node.js 24 或更高版本、稳定版 Rust，以及对应系统的构建工具。[Tauri 环境要求](https://v2.tauri.app/start/prerequisites/)
 
 ```sh
 npm ci
 npm run tauri dev
 ```
 
-Use `npm run dev` for the read-only browser preview with sample files. Use the desktop app for real filesystem operations.
+`npm run dev` 启动的是使用示例文件的只读浏览器预览。验证真实文件操作时，请在桌面应用中使用临时目录。
 
-## Test and build
+## 测试与打包
 
 ```sh
 npm test
@@ -31,29 +50,21 @@ npm run test:e2e
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The browser tests use a local Google Chrome installation. In CI, the workflow installs Playwright's Chromium. Test real file operations on disposable folders in the desktop app. [Verification notes](docs/scope.md)
+本地浏览器测试使用 Google Chrome。CI 使用 Playwright 安装的 Chromium。
 
 ```sh
-# Run on macOS
+# macOS
 npm run tauri -- build --bundles app,dmg
 
-# Run on Windows
+# Windows
 npm run tauri -- build --bundles nsis
 ```
 
-Bundles appear under `src-tauri/target/release/bundle/`. The Windows NSIS installer uses the current-user install mode. GitHub Actions builds and checks both platforms. Installer artifact upload is available through a manual workflow run. [Windows installation](docs/windows-installation.md) · [Release checks](docs/releases.md)
+安装包生成在 `src-tauri/target/release/bundle/` 下。GitHub Actions 会在两个平台运行检查，手动运行工作流时可以上传安装包产物。[Windows 安装说明](docs/windows-installation.md) · [发布检查](docs/releases.md)
 
-## File operations and preview status
+## 贡献与许可证
 
-- File tasks show progress, support cancellation, and prompt for same-name conflicts. A move publishes the destination before removing the source. Deletion and replacement use the system trash.
-- Tabs and pane locations are saved for each window. If a file task is active, Filepace keeps the last window open and offers to continue or cancel the task.
-- The app runs with the permissions of the signed-in user. Browser previews use sample data, and the desktop app loads its packaged interface.
-- This is a development preview. The project still needs Windows installer and Explorer testing, native cross-window drag coverage, signed public installers, and more filesystem edge-case testing. Symbolic links can be browsed. The file transfer engine currently reports them as unsupported. [Verification notes](docs/scope.md)
+提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting issues and submitting changes, and [AGENTS.md](AGENTS.md) for repository rules.
-
-## License
-
-Filepace is available under the [MIT License](LICENSE). Dependencies retain their respective licenses. [Dependency and release notes](docs/releases.md)
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.1.0/Filepace_0.1.0_x64-setup.exe

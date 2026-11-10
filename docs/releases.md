@@ -8,11 +8,15 @@
 
 A source preview can be published as a GitHub pre-release after the source checks pass. Point the release tag at the checked commit and describe how to build it from source.
 
-## Before distributing installers
+## Installer previews
+
+1. Dispatch **Desktop checks and installers** on the release tag with **Upload installer artifacts** enabled. Confirm that both jobs passed and the run points to the tagged commit.
+2. Check the downloaded installers for the expected version and architecture. For an unsigned macOS preview, ad-hoc sign the app bundle before making the disk image. Mount the final image and launch the copied app. Record which Windows installation scenarios have been verified in [the platform notes](scope.md).
+3. Include SHA-256 checksums, the Filepace license, dependency notices, and source download information for any bundled MPL-covered components alongside the installers. Review the exact versions in both lockfiles. [Mozilla MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
+4. Publish the assets on the tagged GitHub pre-release. List the tested platforms and tell users about Gatekeeper and SmartScreen prompts when distributing installers without publisher signatures.
+
+## Before publishing a signed release
 
 1. Build installers from the release commit on macOS and Windows and run the checks in the [README](../README.md).
 2. Run the [Windows standard-user matrix](windows-installation.md) and exercise native file dragging, clipboard interoperability, and window closing on both systems.
-3. Review the licenses for the exact dependencies in `package-lock.json` and `src-tauri/Cargo.lock`. Include the Filepace license, the notices required by the bundled dependencies, and source availability information for any bundled MPL-covered components. [Mozilla MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
-4. Sign the Windows installer and sign and notarize the macOS distribution. Validate both downloads on clean machines before making a public release. [Tauri distribution guide](https://v2.tauri.app/distribute/)
-
-The desktop workflow builds installers on pushes and pull requests. To upload artifacts for a test run, select **Upload installer artifacts** when dispatching the workflow manually.
+3. Sign the Windows installer and sign and notarize the macOS distribution. Validate both downloads on clean machines before publishing. [Tauri distribution guide](https://v2.tauri.app/distribute/)
