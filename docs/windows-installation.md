@@ -11,7 +11,7 @@ Filepace must install and run without membership in the Administrators group.
 
 ## Release gate (requires a Windows machine or VM)
 
-The current implementation was developed on macOS. Windows compilation is configured in CI; the following scenarios are not yet verified on a real Windows system.
+CI verifies the installer and desktop workflows on Windows Server. The following scenarios still need a standard-user Windows 10 or 11 test. [Platform verification](scope.md)
 
 1. Sign in with a standard local user; start installer normally (not Run as administrator). No UAC or administrator credentials.
 2. Repeat on Windows 10/11 with and without WebView2; absent runtime should install per-user. Check offline failure messaging, then retry online.
