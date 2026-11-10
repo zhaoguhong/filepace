@@ -29,4 +29,6 @@ Use the same build and asset checks as an installer preview. Verify the final in
 
 The release build signs the Windows NSIS installer and the macOS app archive with the repository's `FILEPACE_UPDATE_SIGNING_KEY` secret. Keep the matching private key backed up outside version control. The app verifies the artifact signature and the signed version against its embedded public key.
 
+In-app updates use quiet NSIS installation under the current Windows user. The installer language selector is available when users run the installer manually.
+
 Copy both signed artifacts and their `.sig` files into the directory containing the release assets. Run `node scripts/update-manifest.mjs VERSION ASSET_DIRECTORY` to produce `latest.json`. Upload the manifest, Mac app archive, and both signatures alongside the DMG and NSIS installer before publishing the latest release. [Tauri updater](https://v2.tauri.app/plugin/updater/)
