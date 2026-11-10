@@ -292,7 +292,11 @@ try {
     $null = Wait-ForElement $other '文件列表'
     if (-not [FilepaceSmokeMouse]::MoveWindow($mainHandle, 8, 16, 780, 680, $true)) { throw 'Could not place source window' }
     if (-not [FilepaceSmokeMouse]::MoveWindow([IntPtr]$other.Current.NativeWindowHandle, 233, 36, 780, 680, $true)) { throw 'Could not place destination window' }
+    Start-Sleep -Milliseconds 500
     $list = (Wait-ForElement $other '文件列表').Current.BoundingRectangle
+    $sourceBounds = $window.Current.BoundingRectangle
+    $targetX = [Math]::Max($list.Right - 75, $sourceBounds.Right + 24)
+    if ($targetX -ge $list.Right - 10) { throw 'No visible drop area in the destination window' }
     foreach ($file in @('detached-copy.txt', 'detached-move.txt')) {
         [FilepaceSmokeMouse]::Click(130, 30, $false)
         Start-Sleep -Milliseconds 300
@@ -300,7 +304,7 @@ try {
         $from = (Wait-ForElement $leftPane "$file*").Current.BoundingRectangle
         [FilepaceSmokeMouse]::Drag(
             ($from.Left + [Math]::Min(25, $from.Width / 2)), ($from.Top + $from.Height / 2),
-            ($list.Right - 75), ($list.Top + 65), ($file -eq 'detached-copy.txt')
+            $targetX, ($list.Top + 65), ($file -eq 'detached-copy.txt')
         )
         Assert-Fixture (Join-Path $detached $file)
         Click-Element (Wait-ForElement $other '关闭任务面板')
