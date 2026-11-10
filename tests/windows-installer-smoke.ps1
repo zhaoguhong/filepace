@@ -191,9 +191,6 @@ try {
         $app.Refresh()
     } while ($app.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
     if ($app.MainWindowHandle -eq 0) { throw 'Filepace did not open a window' }
-    if (-not [FilepaceSmokeMouse]::MoveWindow($app.MainWindowHandle, 8, 12, 1000, 680, $true)) {
-        throw 'Could not fit the app into the test desktop'
-    }
     $window = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
 
     Click-Element (Wait-ForElement $window '存储概览')
@@ -241,6 +238,10 @@ try {
     Wait-ForForegroundProcess 'filepace'
     Write-Host 'Verified the native Open With chooser.'
 
+    if (-not [FilepaceSmokeMouse]::MoveWindow($app.MainWindowHandle, 8, 12, 1000, 680, $true)) {
+        throw 'Could not fit the app into the test desktop'
+    }
+    Start-Sleep -Milliseconds 350
     Click-Element (Wait-ForElement $window '撤销移动')
     Assert-Fixture (Join-Path $source 'move.docx')
     if (Test-Path (Join-Path $destination 'move.docx')) { throw 'Undo left the moved file behind' }
@@ -260,6 +261,7 @@ try {
     Enter-Text (Wait-ForElement $window '文件名关键词') '会议查找'
     Click-Element (Wait-ForElement $window '开始搜索')
     Click-Element (Wait-ForElement $window '会议查找.txt*')
+    $leftPane = Wait-ForElement $window '左栏'
     $null = Wait-ForElement $leftPane '会议查找.txt*'
     Click-Element (Wait-ForElement $leftPane '后退')
     Write-Host 'Verified searching a subfolder and revealing the result.'
