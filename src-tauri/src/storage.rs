@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fs::Metadata,
     path::{Path, PathBuf},
     sync::{
@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 use crate::{strpath, Place};
 
 const TOP_ITEMS: usize = 12;
+const RECENT_SCANS: usize = 8;
 const PROGRESS_EVENT: &str = "filepace-storage-progress";
 
 #[derive(Serialize)]
@@ -172,13 +173,13 @@ pub struct ScanCounts {
     skipped: u64,
 }
 
-#[derive(Serialize)]
-struct RankedItem {
-    path: String,
-    name: String,
-    parent: String,
-    size: u64,
-    files: u64,
+#[derive(Clone, Serialize)]
+pub(crate) struct RankedItem {
+    pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) parent: String,
+    pub(crate) size: u64,
+    pub(crate) files: u64,
 }
 
 impl RankedItem {
@@ -203,19 +204,19 @@ fn rank(items: &mut Vec<RankedItem>, item: RankedItem) {
     items.truncate(TOP_ITEMS);
 }
 
-#[derive(Default, Serialize)]
-struct Category {
-    files: u64,
-    bytes: u64,
-    largest: Vec<RankedItem>,
+#[derive(Clone, Default, Serialize)]
+pub(crate) struct Category {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
+    pub(crate) largest: Vec<RankedItem>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct StorageReport {
-    path: String,
-    counts: ScanCounts,
-    categories: BTreeMap<&'static str, Category>,
-    folders: Vec<RankedItem>,
+    pub(crate) path: String,
+    pub(crate) counts: ScanCounts,
+    pub(crate) categories: BTreeMap<&'static str, Category>,
+    pub(crate) folders: Vec<RankedItem>,
 }
 
 pub(crate) fn category_for(path: &Path) -> &'static str {
@@ -259,7 +260,7 @@ fn skip_entry(metadata: &Metadata) -> bool {
     crate::fs_safety::is_link(metadata) || (!metadata.is_file() && !metadata.is_dir())
 }
 
-fn scan(
+pub(crate) fn scan(
     root: &Path,
     cancelled: &AtomicBool,
     mut progress: impl FnMut(&ScanCounts),
@@ -369,15 +370,21 @@ struct ScanJob {
 }
 
 #[derive(Default)]
-pub struct ScanState(Mutex<HashMap<String, ScanJob>>);
+pub struct ScanState {
+    jobs: Mutex<HashMap<String, ScanJob>>,
+    reports: Mutex<HashMap<String, VecDeque<(String, Arc<StorageReport>)>>>,
+    pending_cancellations: Mutex<VecDeque<(String, String)>>,
+}
 
 impl ScanState {
     pub(crate) fn stop_window(&self, label: &str) {
-        let jobs = self.0.lock().unwrap();
+        self.reports.lock().unwrap().remove(label);
+        let jobs = self.jobs.lock().unwrap();
         for key in [
             label,
             &format!("search:{label}"),
             &format!("compare:{label}"),
+            &format!("diagnosis:{label}"),
         ] {
             if let Some(job) = jobs.get(key) {
                 job.cancelled.store(true, Ordering::Relaxed);
@@ -396,9 +403,17 @@ impl ScanState {
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         {
-            let mut jobs = self.0.lock().unwrap();
+            let mut jobs = self.jobs.lock().unwrap();
             if jobs.contains_key(&key) {
                 return Err("当前窗口已有同类任务，请等它结束".into());
+            }
+            let mut pending = self.pending_cancellations.lock().unwrap();
+            if let Some(index) = pending
+                .iter()
+                .position(|(owner, pending_id)| owner == &key && pending_id == &id)
+            {
+                pending.remove(index);
+                cancelled.store(true, Ordering::Relaxed);
             }
             jobs.insert(
                 key.clone(),
@@ -409,14 +424,46 @@ impl ScanState {
             );
         }
         let result = tauri::async_runtime::spawn_blocking(move || work(&cancelled)).await;
-        self.0.lock().unwrap().remove(&key);
+        self.jobs.lock().unwrap().remove(&key);
         result.map_err(|error| error.to_string())?
     }
 
     pub(crate) fn cancel(&self, key: &str, id: &str) {
-        if let Some(job) = self.0.lock().unwrap().get(key).filter(|job| job.id == id) {
-            job.cancelled.store(true, Ordering::Relaxed);
+        if uuid::Uuid::parse_str(id).is_err() {
+            return;
         }
+        let jobs = self.jobs.lock().unwrap();
+        if let Some(job) = jobs.get(key).filter(|job| job.id == id) {
+            job.cancelled.store(true, Ordering::Relaxed);
+        } else {
+            // IPC cancellation may arrive before the async command registers.
+            let mut pending = self.pending_cancellations.lock().unwrap();
+            if pending.len() >= 128 {
+                pending.pop_front();
+            }
+            pending.push_back((key.into(), id.into()));
+        }
+    }
+
+    fn remember_report(&self, label: String, id: String, report: StorageReport) {
+        let mut all = self.reports.lock().unwrap();
+        let reports = all.entry(label).or_default();
+        // A rescan supersedes the older snapshot of this canonical scope.
+        reports.retain(|(scan_id, previous)| scan_id != &id && previous.path != report.path);
+        reports.push_back((id, Arc::new(report)));
+        while reports.len() > RECENT_SCANS {
+            reports.pop_front();
+        }
+    }
+
+    pub(crate) fn report(&self, label: &str, id: &str) -> Result<Arc<StorageReport>, String> {
+        self.reports
+            .lock()
+            .unwrap()
+            .get(label)
+            .and_then(|reports| reports.iter().find(|(scan_id, _)| scan_id == id))
+            .map(|(_, report)| report.clone())
+            .ok_or_else(|| "扫描结果已失效，请先重新扫描当前范围".into())
     }
 }
 
@@ -438,14 +485,25 @@ pub async fn scan_storage(
     }
     let label = window.label().to_owned();
     let target = EventTarget::labeled(label.clone());
-    state
-        .run(label, id.clone(), move |cancelled| {
+    let progress_id = id.clone();
+    let result = state
+        .run(label.clone(), id.clone(), move |cancelled| {
             scan(&path, cancelled, |counts| {
-                let _ =
-                    window.emit_to(target.clone(), PROGRESS_EVENT, Progress { id: &id, counts });
+                let _ = window.emit_to(
+                    target.clone(),
+                    PROGRESS_EVENT,
+                    Progress {
+                        id: &progress_id,
+                        counts,
+                    },
+                );
             })
         })
-        .await
+        .await?;
+    if let Some(report) = &result {
+        state.remember_report(label, id, report.clone());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -459,11 +517,89 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn remembers_cancellation_that_arrives_before_job_registration() {
+        let state = ScanState::default();
+        let id = uuid::Uuid::new_v4().to_string();
+        let key = "diagnosis:pending-window".to_owned();
+        state.cancel(&key, &id);
+        let cancelled = tauri::async_runtime::block_on(
+            state.run(key, id, |cancelled| Ok(cancelled.load(Ordering::Relaxed))),
+        )
+        .unwrap();
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn diagnosis_snapshots_belong_to_one_window_and_scan() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("original.txt"), b"preserve me").unwrap();
+        let report = Arc::new(
+            scan(root.path(), &AtomicBool::new(false), |_| {})
+                .unwrap()
+                .unwrap(),
+        );
+        let state = ScanState::default();
+        state.remember_report("left".into(), "scan-1".into(), (*report).clone());
+        assert!(state.report("left", "scan-1").is_ok());
+        assert!(state.report("right", "scan-1").is_err());
+        assert!(state.report("left", "scan-2").is_err());
+        state.stop_window("left");
+        assert!(state.report("left", "scan-1").is_err());
+        assert_eq!(
+            fs::read(root.path().join("original.txt")).unwrap(),
+            b"preserve me"
+        );
+    }
+
+    #[test]
+    fn retains_recent_scopes_but_replaces_rescans_and_bounds_history() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("original.txt"), b"preserve me").unwrap();
+        let original = scan(root.path(), &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let state = ScanState::default();
+        for index in 0..RECENT_SCANS {
+            let mut report = original.clone();
+            report.path = format!("scope-{index}");
+            state.remember_report("left".into(), format!("scan-{index}"), report);
+        }
+        assert!(state.report("left", "scan-0").is_ok());
+        assert!(state.report("left", "scan-7").is_ok());
+        let mut report = original.clone();
+        report.path = "scope-0".into();
+        state.remember_report("left".into(), "rescan-0".into(), report);
+        assert!(state.report("left", "scan-0").is_err());
+        assert!(state.report("left", "rescan-0").is_ok());
+        assert!(state.report("left", "scan-1").is_ok());
+        state.remember_report("left".into(), "new-scope".into(), original);
+        assert!(state.report("left", "scan-1").is_err());
+        assert!(state.report("right", "rescan-0").is_err());
+        assert_eq!(state.reports.lock().unwrap()["left"].len(), RECENT_SCANS);
+        assert_eq!(
+            fs::read(root.path().join("original.txt")).unwrap(),
+            b"preserve me"
+        );
+    }
+
+    #[test]
     fn classifies_code_and_extensionless_files_from_the_shared_icon_table() {
         for name in [
-            "main.PY", "Main.java", "app.JS", "App.TSX", "module.cts", "notebook.ipynb",
-            "run.ps1", "Dockerfile", "Dockerfile.dev", "Containerfile.prod", "Makefile",
-            ".gitignore", ".env", ".ENV.local", ".zshrc",
+            "main.PY",
+            "Main.java",
+            "app.JS",
+            "App.TSX",
+            "module.cts",
+            "notebook.ipynb",
+            "run.ps1",
+            "Dockerfile",
+            "Dockerfile.dev",
+            "Containerfile.prod",
+            "Makefile",
+            ".gitignore",
+            ".env",
+            ".ENV.local",
+            ".zshrc",
         ] {
             assert_eq!(category_for(Path::new(name)), "code", "{name}");
         }

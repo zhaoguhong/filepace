@@ -9,3 +9,9 @@ Include your operating system, Filepace build or commit, and the steps to reprod
 ## Submit a change
 
 Keep each change focused. In the pull request, describe the visible behavior and list the platforms and scenarios you tested. Use English Git commit messages and follow the filesystem and platform rules in [AGENTS.md](AGENTS.md).
+
+## Local macOS replacement
+
+Build and verify the new bundle before closing the installed app. Keep a recoverable backup of the previous app, stage the replacement, and leave application data in place.
+
+After closing Filepace through UI automation, check process termination without querying the closed app's accessibility tree. A stale app reference can return Launch Services `-600` (`procNotFound`) and may trigger an “application can no longer be opened” alert. After installation, acquire a fresh app reference using the full installed path; build and backup copies share the bundle identifier. Verify that the installed app opens and restores its session.

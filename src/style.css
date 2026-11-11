@@ -265,27 +265,26 @@ main {
   display: none;
 }
 .pane-divider {
+  position: relative;
+  z-index: 2;
   cursor: col-resize;
   touch-action: none;
-  background: var(--divider);
+  background: var(--border);
 }
-.pane-divider:hover,
-.pane-divider:focus-visible {
+.pane-divider::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+.pane-divider:hover {
   background: var(--accent-border);
+}
+.pane-divider:focus-visible,
+.pane-divider.dragging {
+  background: var(--accent);
 }
 .split .file-pane.focused .tab.current {
   border-color: var(--accent-border);
-}
-.split .file-pane.focused::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--accent);
-  pointer-events: none;
-  z-index: 1;
 }
 .pane-focus-badge {
   flex-shrink: 0;
@@ -1513,4 +1512,17 @@ main {
 .tab-picker option {
   color: var(--strong);
   background: var(--surface);
+}
+
+.pane-read-status {
+  position: absolute;
+  bottom: 6px;
+  right: 12px;
+  z-index: 3;
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+  pointer-events: none;
 }

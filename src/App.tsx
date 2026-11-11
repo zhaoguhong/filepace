@@ -1,8 +1,11 @@
 import FileIcon from "./FileIcon";
+import PaneDivider from "./PaneDivider";
+import TaskPanel, { activeTask } from "./TaskPanel";
 import BrowseOptions from "./BrowseOptions";
 import ListHeader, { listColumnStyle } from "./ListHeader";
 import MenuAction from "./MenuAction";
 import StorageDashboard from "./StorageDashboard";
+import DirectoryAnalysis from "./DirectoryAnalysis";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
 import BatchRename from "./BatchRename";
@@ -75,10 +78,8 @@ import {
   type Tab,
   type Place,
 } from "./model";
-type Session = PaneSession & { right?: PaneSession; focused?: PaneSide; splitRatio?: number };
+import { cleanPane, restoreSession, type Session } from "./session";
 const PdfPreview = lazy(() => import("./PdfPreview"));
-const activeTask = (task: { status: string }) =>
-  ["queued", "running", "conflict"].includes(task.status);
 type Menu = {
   x: number;
   y: number;
@@ -114,19 +115,6 @@ const placeIcons: Record<string, LucideIcon> = {
   图片: ImageIcon,
 };
 const commandKey = isMac ? "⌘" : "Ctrl+";
-
-function cleanPane({ tabs, active }: PaneSession): PaneSession {
-  return {
-    tabs: tabs.map((tab) => ({
-      ...tab,
-      selected: [],
-      locationState: tab.locationState && Object.fromEntries(
-        Object.entries(tab.locationState).map(([index, state]) => [index, { ...state, selected: [] }]),
-      ),
-    })),
-    active,
-  };
-}
 
 function readRecentDirectories(): string[] {
   try {
@@ -230,7 +218,7 @@ export default function App() {
       entry: Entry;
       apps: OpenWithApp[];
     } | null>(null),
-    [storageVisible, setStorageVisible] = useState(false),
+    [storagePage, setStoragePage] = useState<"" | "overview" | "analysis">(""),
     [storageScope, setStorageScope] = useState(""),
     [searchScope, setSearchScope] = useState<{
       path: string;
@@ -264,6 +252,7 @@ export default function App() {
     menuRef = useRef<HTMLDivElement>(null),
     submittedTasks = useRef(new Set<string>()),
     dragTab = useRef("");
+  const storageVisible = storagePage !== "";
   const split = Boolean(session.right);
   const focused = split ? (session.focused ?? "left") : "left";
   const left = useBrowsePane(session, hidden);
@@ -362,25 +351,35 @@ export default function App() {
           : t,
       ),
     }));
-    setStorageVisible(false);
+    setStoragePage("");
     setSearchScope(null);
     setSettingsSection(null);
     setMenu(null);
     setEditingPath(null);
     setRename(null);
   }
+  function openStoragePage(page: "overview" | "analysis", path?: string) {
+    setMenu(null);
+    setTaskPanel(false);
+    setSearchScope(null);
+    setSettingsSection(null);
+    if (page === "analysis") {
+      setStorageScope(path || storageScope || listing?.path || tab?.path || "");
+    }
+    setStoragePage(page);
+  }
   function openSearch(path = listing?.path ?? tab?.path) {
     if (!path) return;
     setMenu(null);
     setTaskPanel(false);
-    setStorageVisible(false);
+    setStoragePage("");
     setSettingsSection(null);
     setSearchScope({ path, pane: focused });
   }
   function openSettings(section: SettingsSection = "browse") {
     setMenu(null);
     setTaskPanel(false);
-    setStorageVisible(false);
+    setStoragePage("");
     setSearchScope(null);
     setSettingsSection(section);
   }
@@ -474,25 +473,7 @@ export default function App() {
         const saved = await call<Session | null>("load_session");
         if (disposed) return;
         setPlaces(ps);
-        const restored = saved?.tabs?.length
-          ? saved.tabs
-          : [makeTab(ps[0]?.path || "/", preferences.defaultView)];
-        setSession({
-          tabs: restored,
-          active:
-            restored.find((tab) => tab.id === saved?.active)?.id ??
-            restored[0].id,
-          right: saved?.right?.tabs?.length
-            ? {
-                tabs: saved.right.tabs,
-                active:
-                  saved.right.tabs.find((tab) => tab.id === saved.right?.active)
-                    ?.id ?? saved.right.tabs[0].id,
-              }
-            : undefined,
-          focused: saved?.focused === "right" ? "right" : "left",
-          splitRatio: typeof saved?.splitRatio === "number" && saved.splitRatio >= 0.25 && saved.splitRatio <= 0.75 ? saved.splitRatio : undefined,
-        });
+        setSession(restoreSession(saved, ps[0]?.path || "/", preferences.defaultView));
       } catch (e) {
         if (!disposed) setBootError(String(e));
       }
@@ -526,6 +507,13 @@ export default function App() {
     });
     await updates.install();
   }
+  const recoveryShown = useRef(false);
+  useEffect(() => {
+    if (recoveryShown.current || !tasks.some((task) => task.id.startsWith("recovery-"))) return;
+    recoveryShown.current = true;
+    setTaskPanel(true);
+    setNotice("上次文件操作中断，请在文件任务中核对保留位置。");
+  }, [tasks]);
   useEffect(() => {
     for (const task of tasks) {
       if (activeTask(task)) continue;
@@ -639,13 +627,13 @@ export default function App() {
   }, [editingPath, address]);
   useEffect(() => {
     for (const side of ["left", "right"] as const) {
-      const { tab, listing } = side === "left" ? left : right;
-      if (!listing || !tab?.selected.length) continue;
+      const { tab, listing, loading } = side === "left" ? left : right;
+      if (!listing || loading || !tab?.selected.length) continue;
       const present = new Set(listing.entries.map((entry) => entry.path));
       const selected = tab.selected.filter((path) => present.has(path));
       if (selected.length !== tab.selected.length) patch({ selected }, side);
     }
-  }, [left.listing, right.listing]);
+  }, [left.listing, right.listing, left.loading, right.loading]);
   function editPath(side: PaneSide) {
     const target = side === "left" ? left : right;
     if (!target.tab) return;
@@ -981,7 +969,7 @@ export default function App() {
         return;
       }
       if (storageVisible) {
-        if (key === "escape") setStorageVisible(false);
+        if (key === "escape") setStoragePage("");
         return;
       }
       if (
@@ -1513,10 +1501,12 @@ export default function App() {
         className={`file-pane${focused === side ? " focused" : ""}`}
         style={listColumnStyle(tab.columnWidths)}
         aria-label={split ? label : "文件浏览"}
+        aria-busy={loading}
         onPointerDownCapture={() => focusPane(side)}
         onFocusCapture={() => focusPane(side)}
       >
         <nav className="tabs" aria-label="文件标签">
+          {loading && listing && <span className="pane-read-status" title="正在读取文件夹">读取中 · {listing.entries.length.toLocaleString()} 项</span>}
           {split && (
             <span
               className={`pane-focus-badge${focused === side ? " current" : ""}`}
@@ -1893,7 +1883,9 @@ export default function App() {
           {settingsSection
             ? "设置"
             : storageVisible
-              ? "存储概览"
+              ? storagePage === "analysis"
+                ? "目录分析"
+                : "存储概览"
               : searchScope
                 ? "搜索子文件夹"
                 : basename(tab.path)}
@@ -1910,16 +1902,25 @@ export default function App() {
           <button
             className="window-action"
             aria-label="存储概览"
-            aria-pressed={storageVisible}
+            aria-pressed={storagePage === "overview"}
             onClick={() => {
-              setMenu(null);
-              setTaskPanel(false);
-              setSearchScope(null);
-              setSettingsSection(null);
-              setStorageVisible(!storageVisible);
+              if (storagePage === "overview") setStoragePage("");
+              else openStoragePage("overview");
             }}
           >
             <BarChart3 size={16} /> 存储概览
+          </button>
+          <button
+            className="window-action"
+            aria-label="目录分析"
+            aria-pressed={storagePage === "analysis"}
+            onClick={() =>
+              storagePage === "analysis"
+                ? setStoragePage("")
+                : openStoragePage("analysis")
+            }
+          >
+            <FolderSearch size={16} /> 目录分析
           </button>
           <button
             className="window-action"
@@ -2051,7 +2052,7 @@ export default function App() {
             style={
               split
                 ? {
-                    gridTemplateColumns: `minmax(0, ${splitRatio}fr) 6px minmax(0, ${1 - splitRatio}fr)`,
+                    gridTemplateColumns: `minmax(0, ${splitRatio}fr) 1px minmax(0, ${1 - splitRatio}fr)`,
                   }
                 : undefined
             }
@@ -2060,54 +2061,19 @@ export default function App() {
             }
           >
             {renderPane("left")}
-            {split && (
-              <div
-                className="pane-divider"
-                role="separator"
-                aria-label="调整左右栏宽度"
-                aria-orientation="vertical"
-                aria-valuemin={25}
-                aria-valuemax={75}
-                aria-valuenow={Math.round(splitRatio * 100)}
-                tabIndex={0}
-                onPointerDown={(event) => {
-                  if (event.button === 0)
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                }}
-                onPointerMove={(event) => {
-                  if (!event.currentTarget.hasPointerCapture(event.pointerId))
-                    return;
-                  const bounds =
-                    event.currentTarget.parentElement!.getBoundingClientRect();
-                  const ratio = Math.max(
-                    0.25,
-                    Math.min(
-                      0.75,
-                      (event.clientX - bounds.left) / bounds.width,
-                    ),
-                  );
-                  setSession((current) => ({ ...current, splitRatio: ratio }));
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
-                    return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  const ratio = Math.max(
-                    0.25,
-                    Math.min(
-                      0.75,
-                      splitRatio + (event.key === "ArrowLeft" ? -0.05 : 0.05),
-                    ),
-                  );
-                  setSession((current) => ({ ...current, splitRatio: ratio }));
-                }}
-              />
-            )}
+            {split && <PaneDivider ratio={splitRatio} onChange={(splitRatio) =>
+              setSession((current) => ({ ...current, splitRatio }))
+            } />}
             {split && renderPane("right")}
           </div>
           <StorageDashboard
-            visible={storageVisible}
+            visible={storagePage === "overview"}
+            onAnalyze={(path) => openStoragePage("analysis", path)}
+            onBrowse={(path) => go(path)}
+            onClose={() => setStoragePage("")}
+          />
+          <DirectoryAnalysis
+            visible={storagePage === "analysis"}
             currentPath={listing?.path ?? tab.path}
             scope={storageScope}
             places={[
@@ -2121,7 +2087,7 @@ export default function App() {
             ]}
             onChoose={setStorageScope}
             onBrowse={(path, selectedPath) => go(path, focused, selectedPath)}
-            onClose={() => setStorageVisible(false)}
+            onClose={() => setStoragePage("")}
           />
           {searchScope && (
             <SearchPanel
@@ -2153,7 +2119,7 @@ export default function App() {
           {settingsSection ? (
             "应用设置"
           ) : storageVisible ? (
-            "本地存储概览"
+            storagePage === "analysis" ? "目录分析 · 只读扫描" : "本地存储概览"
           ) : searchScope ? (
             "搜索子文件夹"
           ) : (
@@ -2617,14 +2583,10 @@ export default function App() {
                       </button>
                       <button
                         onClick={() => {
-                          setStorageScope(menuPath);
-                          setMenu(null);
-                          setSearchScope(null);
-                          setSettingsSection(null);
-                          setStorageVisible(true);
+                          openStoragePage("analysis", menuPath);
                         }}
                       >
-                        分析占用空间
+                        分析此目录
                       </button>
                     </>
                   )}
@@ -2646,6 +2608,9 @@ export default function App() {
                   <button onClick={() => openSearch(menuPath)}>
                     在此文件夹内搜索
                   </button>
+                  <button onClick={() => openStoragePage("analysis", menuPath)}>
+                    分析此目录
+                  </button>
                   <button onClick={() => favorite()}>收藏当前目录</button>
                   {commonIndex < 0 && listing && (
                     <button onClick={() => addCommonPlace(currentPath)}>
@@ -2666,134 +2631,13 @@ export default function App() {
           )}
         </div>
       )}
-      {taskPanel && (
-        <section className="task-panel" aria-label="文件任务">
-          <div className="panel-title">
-            <h3>
-              文件任务 <small>{tasks.length}</small>
-            </h3>
-            {desktop && tasks.some((task) => !activeTask(task)) && (
-              <button
-                onClick={() =>
-                  void runMenuAction(() => call("clear_task_history"))
-                }
-              >
-                清理已结束任务
-              </button>
-            )}
-            <Tool label="关闭任务面板" onClick={() => setTaskPanel(false)}>
-              <X size={17} />
-            </Tool>
-          </div>
-          {tasks.length === 0 ? (
-            <div className="task-empty">
-              <ArrowDownToLine size={30} />
-              <p>所有文件都已就绪</p>
-              <span>复制与移动的进度会显示在这里</span>
-            </div>
-          ) : (
-            tasks.map((t) => (
-              <div className="task" key={t.id}>
-                <div className="task-top">
-                  <b>
-                    {
-                      (
-                        {
-                          copy: "复制",
-                          move: "移动",
-                          trash: "移到回收站",
-                          zip: "压缩",
-                          unzip: "解压",
-                          undo: "撤销",
-                          rename: "批量重命名",
-                        } as Record<string, string>
-                      )[t.kind]
-                    }
-                  </b>
-                  <span>
-                    {
-                      (
-                        {
-                          queued: "排队中",
-                          running: "进行中",
-                          conflict: "等待处理",
-                          done: "已完成",
-                          error: t.kind === "undo" ? "未能撤销" : "部分失败",
-                          cancelled: "已取消",
-                        } as Record<string, string>
-                      )[t.status]
-                    }
-                  </span>
-                  {activeTask(t) && (
-                    <button
-                      onClick={() =>
-                        call("task_action", {
-                          id: t.id,
-                          decision: "cancel",
-                          applyAll: false,
-                        })
-                      }
-                    >
-                      取消
-                    </button>
-                  )}
-                </div>
-                <p title={t.current}>{basename(t.current)}</p>
-                <small>
-                  已完成 {t.completed} 项 · {formatSize(t.bytes)}
-                  {Boolean(t.skipped) && ` · 跳过 ${t.skipped} 项`}
-                  {t.status === "running" && t.phase && ` · ${t.phase}`}
-                </small>
-                {t.status === "running" && (
-                  <div className="progress">
-                    <i />
-                  </div>
-                )}
-                {t.errors.length > 0 && (
-                  <details open={t.kind === "undo" || undefined}>
-                    <summary>{t.errors.length} 个问题</summary>
-                    {t.errors.map((e, i) => (
-                      <p className="task-error" key={i}>
-                        {e}
-                      </p>
-                    ))}
-                  </details>
-                )}
-                {!activeTask(t) &&
-                  (t.destination || Boolean(t.failedSources?.length)) && (
-                    <div className="task-controls">
-                      {t.destination && (
-                        <button
-                          onClick={() => {
-                            setTaskPanel(false);
-                            go(t.destination, focused);
-                          }}
-                        >
-                          打开目标位置
-                        </button>
-                      )}
-                      {!!t.failedSources?.length && t.status === "error" && (
-                        <button
-                          onClick={() =>
-                            void runMenuAction(async () => {
-                              const id = await call<string>("retry_task", {
-                                id: t.id,
-                              });
-                              submittedTasks.current.add(id);
-                              void refreshActivity();
-                            })
-                          }
-                        >
-                          重试失败项目
-                        </button>
-                      )}
-                    </div>
-                  )}
-              </div>
-            ))
-          )}
-        </section>
-      )}
+      {taskPanel && <TaskPanel
+        tasks={tasks}
+        onClose={() => setTaskPanel(false)}
+        onBrowse={(path) => { setTaskPanel(false); go(path, focused); }}
+        onAction={runMenuAction}
+        onSubmitted={(id) => { submittedTasks.current.add(id); void refreshActivity(); }}
+      />}
       {openWith && (
         <div className="overlay" onClick={() => setOpenWith(null)}>
           <section

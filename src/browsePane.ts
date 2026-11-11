@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { call } from "./bridge";
+import { Channel } from "@tauri-apps/api/core";
+import { call, desktop } from "./bridge";
 import { filterEntries, sortEntries, type Listing, type Tab } from "./model";
 import { revealItem, useFileViewport } from "./fileViewport";
 
@@ -10,7 +11,8 @@ type DirectoryState = { listing?: Listing; error?: string; loading: boolean };
 type CachedDirectory = {
   state: DirectoryState;
   listeners: Set<(state: DirectoryState) => void>;
-  requested: boolean;
+  requested: string | null;
+  cancel?: () => void;
   stale: boolean;
   loadedAt: number;
 };
@@ -40,19 +42,75 @@ function publish(item: CachedDirectory, state: DirectoryState) {
 
 function requestDirectory(path: string, item: CachedDirectory) {
   if (item.requested) return;
-  item.requested = true;
+  const id = crypto.randomUUID();
+  item.requested = id;
   item.stale = false;
-  if (!item.state.loading)
-    publish(item, { ...item.state, error: undefined, loading: true });
-  void call<Listing>("list_directory", { path })
+  publish(item, { ...item.state, error: undefined, loading: true });
+  const existing = item.state.listing;
+  const onBatch = desktop ? new Channel<Listing>() : undefined;
+  let partial: Listing | undefined;
+  let succeeded = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    timer = undefined;
+    if (item.requested === id && partial)
+      publish(item, {
+        listing: { ...partial, entries: [...partial.entries] },
+        loading: true,
+      });
+  };
+  if (onBatch)
+    onBatch.onmessage = (batch) => {
+      // Keep an existing complete snapshot visible during refresh. First loads
+      // can show useful rows before the filesystem has enumerated everything.
+      if (item.requested !== id || existing) return;
+      if (!partial) partial = { ...batch, entries: [...batch.entries] };
+      else partial.entries.push(...batch.entries);
+      if (!item.state.listing) flush();
+      else timer ??= setTimeout(flush, 80);
+    };
+  item.cancel = () => {
+    if (item.requested !== id) return;
+    item.requested = null;
+    item.cancel = undefined;
+    item.stale = true;
+    clearTimeout(timer);
+    // A partial listing must never become a reusable complete snapshot.
+    item.state = { listing: existing, loading: false };
+    if (desktop) void call("cancel_directory_listing", { id }).catch(() => {});
+  };
+  void call<Listing | null>("list_directory", { path, id, onBatch })
     .then(
-      (listing) => publish(item, { listing, loading: false }),
-      (error) => publish(item, { error: String(error), loading: false }),
+      (listing) => {
+        if (item.requested !== id) return;
+        if (listing) {
+          succeeded = true;
+          publish(item, { listing, loading: false });
+          item.loadedAt = Date.now();
+        } else {
+          item.stale = true;
+          publish(item, { listing: existing, loading: false });
+        }
+      },
+      (error) => {
+        if (item.requested !== id) return;
+        publish(item, {
+          listing: existing,
+          error: String(error),
+          loading: false,
+        });
+        item.stale = true;
+      },
     )
     .finally(() => {
-      item.requested = false;
-      item.loadedAt = Date.now();
-      if (item.stale && item.listeners.size) requestDirectory(path, item);
+      clearTimeout(timer);
+      if (item.requested !== id) return;
+      item.requested = null;
+      item.cancel = undefined;
+      // A filesystem event during enumeration requests one fresh snapshot.
+      // Errors stay visible until an explicit refresh or a new subscription.
+      if (succeeded && item.stale && item.listeners.size)
+        requestDirectory(path, item);
       pruneCache();
     });
 }
@@ -94,7 +152,7 @@ export function useDirectoryListing(path: string | undefined) {
       item = {
         state: loadingDirectory,
         listeners: new Set(),
-        requested: false,
+        requested: null,
         stale: true,
         loadedAt: 0,
       };
@@ -107,6 +165,7 @@ export function useDirectoryListing(path: string | undefined) {
       requestDirectory(path, item);
     return () => {
       item.listeners.delete(onResult);
+      if (!item.listeners.size) item.cancel?.();
       pruneCache();
     };
   }, [path]);
@@ -151,8 +210,14 @@ export function useBrowsePane(
     () => filterEntries(sorted, tab?.query ?? ""),
     [sorted, tab?.query],
   );
-  const hiddenEntries = useMemo(() => listing?.entries.filter((entry) => entry.hidden) ?? [], [listing]);
-  const hiddenMatches = useMemo(() => filterEntries(hiddenEntries, tab?.query ?? "").length, [hiddenEntries, tab?.query]);
+  const hiddenEntries = useMemo(
+    () => listing?.entries.filter((entry) => entry.hidden) ?? [],
+    [listing],
+  );
+  const hiddenMatches = useMemo(
+    () => filterEntries(hiddenEntries, tab?.query ?? "").length,
+    [hiddenEntries, tab?.query],
+  );
   const selectedBytes = useMemo(
     () =>
       selected.size
@@ -175,9 +240,10 @@ export function useBrowsePane(
     if (!listing || !tab || !list || !selected) return;
     if (tab.view === "grid" && viewport.height === 0) return;
     const index = entries.findIndex((entry) => entry.path === selected);
+    if (index < 0 && directory.loading) return;
     reveal.current = null;
     if (index >= 0) revealItem(list, index, layout, true);
-  }, [entries, tab?.selected, viewport.height]);
+  }, [entries, tab?.selected, viewport.height, directory.loading]);
 
   return {
     ...directory,

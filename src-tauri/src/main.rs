@@ -1,14 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod agent_process;
 mod archives;
 mod batch_rename;
 mod compare;
 mod diagnostics;
+mod directory_listing;
 mod directory_watch;
 mod file_icon;
 mod fs_safety;
 mod native_drag;
+mod recovery;
 mod search;
 mod storage;
+mod storage_diagnosis;
 mod system_actions;
 mod system_process;
 mod task_feed;
@@ -141,6 +145,7 @@ struct TaskQueue {
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<HashMap<String, Task>>,
+    recovery: recovery::RecoveryLog,
     task_queue: Mutex<TaskQueue>,
     task_sequence: AtomicU64,
     task_wake: Condvar,
@@ -272,44 +277,11 @@ fn entry_info(path: &Path, meta: &fs::Metadata) -> Entry {
             .unwrap_or(0),
     }
 }
+#[cfg(all(test, windows))]
 fn read_directory(path: &Path) -> Result<(PathBuf, Vec<Entry>), Failure> {
-    let operation = "打开文件夹";
-    let directory = dunce::canonicalize(path)
-        .map_err(|error| Failure::io(operation, "解析路径", path, error))?;
-    let items = fs::read_dir(&directory)
-        .map_err(|error| Failure::io(operation, "打开目录", &directory, error))?;
-    let mut entries = Vec::new();
-    for item in items {
-        let item = item.map_err(|error| Failure::io(operation, "枚举目录项", &directory, error))?;
-        let path = item.path();
-        // Windows already provides metadata during enumeration. Opening a
-        // child by name could resolve an on-disk entry such as NUL as a device.
-        let meta = match item.metadata() {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(Failure::io(operation, "读取项目属性", &path, error)),
-        };
-        entries.push(entry_info(&path, &meta));
-    }
-    Ok((directory, entries))
-}
-
-#[tauri::command]
-async fn list_directory(path: String, app: tauri::AppHandle) -> Result<Listing, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let (p, entries) = read_directory(Path::new(&path)).map_err(|failure| {
-            let message = format!("{}失败：{}", failure.step, failure.message);
-            diagnostics::record(&app, failure);
-            message
-        })?;
-        Ok(Listing {
-            path: strpath(&p),
-            parent: p.parent().map(strpath),
-            entries,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let listing = directory_listing::read(path, &AtomicBool::new(false), |_| true)?
+        .expect("an uncancelled directory read returns a listing");
+    Ok((PathBuf::from(listing.path), listing.entries))
 }
 
 #[tauri::command]
@@ -812,17 +784,16 @@ fn plan_transfer(
                 return Err("目标位置已不在对比的文件夹内".into());
             }
         }
-        let directory = if let Some(previous) =
-            retry.and_then(|task| task.destination_folder.as_ref())
-        {
-            if previous.path != path {
-                return Err("目标位置已变更，请重新选择目标文件夹".into());
-            }
-            previous.check()?;
-            previous.clone()
-        } else {
-            Arc::new(Directory::at(&path).map_err(|error| error.to_string())?)
-        };
+        let directory =
+            if let Some(previous) = retry.and_then(|task| task.destination_folder.as_ref()) {
+                if previous.path != path {
+                    return Err("目标位置已变更，请重新选择目标文件夹".into());
+                }
+                previous.check()?;
+                previous.clone()
+            } else {
+                Arc::new(Directory::at(&path).map_err(|error| error.to_string())?)
+            };
         Some(directory)
     } else {
         None
@@ -857,9 +828,10 @@ fn plan_transfer(
             None
         };
         let item = Source::at(path)?;
-        if failed.as_ref().is_some_and(|failed| {
-            failed.get(source.as_str()).copied() != Some(item.identity())
-        }) {
+        if failed
+            .as_ref()
+            .is_some_and(|failed| failed.get(source.as_str()).copied() != Some(item.identity()))
+        {
             return Err(format!("源项目已替换，请重新选择：{source}"));
         }
         items.push((item, target));
@@ -1038,6 +1010,7 @@ fn clear_task_history(state: tauri::State<Arc<Shared>>) {
         if active(task) {
             return true;
         }
+        state.recovery.acknowledge(id);
         state.task_feed.change(Some(id));
         false
     });
@@ -1414,6 +1387,7 @@ fn main() {
         .manage(diagnostics::ErrorLog::default())
         .manage(native_drag::DragState::default())
         .manage(storage::ScanState::default())
+        .manage(directory_listing::Requests::default())
         .manage(updates::UpdateState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1421,6 +1395,10 @@ fn main() {
             handle_window_close(window, event);
             native_drag::handle_window_event(window, event);
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                agent_process::stop_window(window.label());
+                window
+                    .state::<directory_listing::Requests>()
+                    .close(window.label());
                 window
                     .state::<Arc<Shared>>()
                     .directory_watch
@@ -1434,6 +1412,14 @@ fn main() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            let shared = app.state::<Arc<Shared>>();
+            shared
+                .recovery
+                .initialize(
+                    handle.path().app_data_dir()?.join("transfer-recovery"),
+                    &shared,
+                )
+                .map_err(std::io::Error::other)?;
             app.state::<Arc<Shared>>().task_feed.start(handle.clone());
             app.state::<Arc<Shared>>()
                 .directory_watch
@@ -1490,7 +1476,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            list_directory,
+            directory_listing::list_directory,
+            directory_listing::cancel_directory_listing,
             suggest_directories,
             directory_watch::watch_directories,
             diagnostics::error_log,
@@ -1502,6 +1489,9 @@ fn main() {
             storage_volumes,
             scan_storage,
             cancel_storage_scan,
+            storage_diagnosis::diagnosis_agents,
+            storage_diagnosis::diagnose_storage,
+            storage_diagnosis::cancel_storage_diagnosis,
             search::search_files,
             search::cancel_search,
             compare::compare_directories,

@@ -1,8 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { describeFile } from "./fileTypes";
 import type { Entry } from "./model";
-import type { StorageReport, StorageVolume } from "./StorageDashboard";
+import type { StorageReport, StorageVolume } from "./storageTypes";
 import type { SearchReport } from "./SearchPanel";
+import type { DiagnosisAgentInfo } from "./StorageDiagnosis";
 export const desktop = isTauri();
 const root = "/Users/demo";
 const demo: Entry[] = [
@@ -122,6 +123,12 @@ export async function call<T>(
     return report as T;
   }
   if (command === "cancel_storage_scan") return undefined as T;
+  if (command === "diagnosis_agents") return [
+    { id: "codex", name: "Codex", path: null, error: null },
+    { id: "claude", name: "Claude Code", path: null, error: null },
+    { id: "opencode", name: "OpenCode", path: null, error: null },
+    { id: "deepseek", name: "DeepSeek Harness", path: null, error: null },
+  ] satisfies DiagnosisAgentInfo[] as T;
   if (command === "load_session") return null as T;
   if (command === "save_session") return undefined as T;
   if (command === "read_preview")
