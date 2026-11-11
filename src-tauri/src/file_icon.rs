@@ -97,9 +97,13 @@ fn platform_icon(path: &Path) -> Option<Vec<u8>> {
                 CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
                 COINIT_APARTMENTTHREADED,
             },
-            UI::Shell::{
-                IShellItemImageFactory, SHCreateItemFromParsingName, SHGetFileInfoW, SHFILEINFOW,
-                SHGFI_ICON, SHGFI_LARGEICON, SIIGBF_ICONONLY,
+            UI::{
+                Controls::{IImageList, ILD_TRANSPARENT},
+                Shell::{
+                    IShellItemImageFactory, SHCreateItemFromParsingName, SHGetFileInfoW,
+                    SHGetImageList, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_SYSICONINDEX,
+                    SHIL_EXTRALARGE, SHIL_JUMBO, SIIGBF_ICONONLY,
+                },
             },
         },
     };
@@ -137,9 +141,41 @@ fn platform_icon(path: &Path) -> Option<Vec<u8>> {
             if rgba.chunks_exact(4).all(|pixel| pixel[3] == 0) {
                 return None;
             }
+            let mut bitmap = image::RgbaImage::from_raw(width, height, rgba)?;
+            let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+            for (x, y, pixel) in bitmap.enumerate_pixels() {
+                if pixel[3] == 0 {
+                    continue;
+                }
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x);
+                bottom = bottom.max(y);
+            }
+            // A jumbo image list may pad an old 16/32-pixel icon onto a 256-pixel
+            // canvas. Remove that excess canvas so small icons remain visible.
+            if width >= 128
+                && height >= 128
+                && right - left + 1 <= width / 4
+                && bottom - top + 1 <= height / 4
+            {
+                bitmap = image::imageops::crop_imm(
+                    &bitmap,
+                    left,
+                    top,
+                    right - left + 1,
+                    bottom - top + 1,
+                )
+                .to_image();
+            }
             let mut png = Vec::new();
             image::codecs::png::PngEncoder::new(&mut png)
-                .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+                .write_image(
+                    bitmap.as_raw(),
+                    bitmap.width(),
+                    bitmap.height(),
+                    image::ExtendedColorType::Rgba8,
+                )
                 .ok()?;
             Some(png)
         }
@@ -154,6 +190,46 @@ fn platform_icon(path: &Path) -> Option<Vec<u8>> {
         let _apartment = ComApartment;
         let wic: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        // Explorer's per-item image index honors shortcut IconLocation. The
+        // image factory can successfully return only the generic .lnk class icon.
+        let from_shell = (|| {
+            let mut info = SHFILEINFOW::default();
+            if SHGetFileInfoW(
+                PCWSTR(name.as_ptr()),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_SYSICONINDEX | SHGFI_ICON | SHGFI_LARGEICON,
+            ) == 0
+            {
+                return None;
+            }
+            let legacy_icon = Owned::new(info.hIcon);
+            for size in [SHIL_JUMBO, SHIL_EXTRALARGE] {
+                let Ok(list) = SHGetImageList::<IImageList>(size as i32) else {
+                    continue;
+                };
+                let Ok(icon) = list.GetIcon(info.iIcon, ILD_TRANSPARENT.0) else {
+                    continue;
+                };
+                let icon = Owned::new(icon);
+                let Ok(source) = wic.CreateBitmapFromHICON(*icon) else {
+                    continue;
+                };
+                if let Some(png) = encode(&wic, &source) {
+                    return Some(png);
+                }
+            }
+            // Old handlers may only provide a mask-based 32-pixel icon.
+            if legacy_icon.is_invalid() {
+                return None;
+            }
+            let source = wic.CreateBitmapFromHICON(*legacy_icon).ok()?;
+            encode(&wic, &source)
+        })();
+        if from_shell.is_some() {
+            return from_shell;
+        }
         let high_resolution = (|| {
             let item: IShellItemImageFactory =
                 SHCreateItemFromParsingName(PCWSTR(name.as_ptr()), None).ok()?;
@@ -171,27 +247,7 @@ fn platform_icon(path: &Path) -> Option<Vec<u8>> {
                 .ok()?;
             encode(&wic, &source)
         })();
-        if high_resolution.is_some() {
-            return high_resolution;
-        }
-
-        // Legacy handlers and mask-based icons may not provide a usable ARGB bitmap.
-        // WIC converts the Shell HICON, including its transparency mask, for the fallback.
-        let mut info = SHFILEINFOW::default();
-        if SHGetFileInfoW(
-            PCWSTR(name.as_ptr()),
-            FILE_FLAGS_AND_ATTRIBUTES(0),
-            Some(&mut info),
-            std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
-        ) == 0
-            || info.hIcon.is_invalid()
-        {
-            return None;
-        }
-        let icon = Owned::new(info.hIcon);
-        let source = wic.CreateBitmapFromHICON(*icon).ok()?;
-        encode(&wic, &source)
+        high_resolution
     }
 }
 
@@ -260,9 +316,32 @@ mod tests {
         fs::write(&target, b"shortcut target stays untouched").unwrap();
         let first = fixture.path().join("First 快捷方式.LNK");
         let second = fixture.path().join("Second 快捷方式.lnk");
+        fn write_icon(path: &Path, color: [u8; 4]) {
+            // A 32x32 uncompressed ICO with an opaque BGRA bitmap and AND mask.
+            let mut bytes = vec![0, 0, 1, 0, 1, 0, 32, 32, 0, 0];
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&32_u16.to_le_bytes());
+            bytes.extend_from_slice(&(40_u32 + 32 * 32 * 4 + 32 * 4).to_le_bytes());
+            bytes.extend_from_slice(&22_u32.to_le_bytes());
+            bytes.extend_from_slice(&40_u32.to_le_bytes());
+            bytes.extend_from_slice(&32_i32.to_le_bytes());
+            bytes.extend_from_slice(&64_i32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&32_u16.to_le_bytes());
+            bytes.extend_from_slice(&[0; 24]);
+            for _ in 0..32 * 32 {
+                bytes.extend_from_slice(&color)
+            }
+            bytes.extend_from_slice(&[0; 32 * 4]);
+            fs::write(path, bytes).unwrap();
+        }
+        let red = fixture.path().join("red.ico");
+        let green = fixture.path().join("green.ico");
+        write_icon(&red, [0, 0, 240, 255]);
+        write_icon(&green, [0, 220, 0, 255]);
         // Generate fixtures through Unicode Shell interfaces, avoiding external
         // script encoding and argument parsing.
-        fn create_link(path: &Path, target: &Path, index: i32) {
+        fn create_link(path: &Path, target: &Path, icon: &Path) {
             use std::os::windows::ffi::OsStrExt;
             use windows::{
                 core::{Interface, PCWSTR},
@@ -286,23 +365,20 @@ mod tests {
                     .chain([0])
                     .collect::<Vec<_>>()
             };
-            let resource = Path::new(&std::env::var("WINDIR").unwrap())
-                .join("System32")
-                .join("shell32.dll");
             unsafe {
                 CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
                 let _apartment = Apartment;
                 let link: IShellLinkW =
                     CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
                 link.SetPath(PCWSTR(wide(target).as_ptr())).unwrap();
-                link.SetIconLocation(PCWSTR(wide(&resource).as_ptr()), index)
+                link.SetIconLocation(PCWSTR(wide(icon).as_ptr()), 0)
                     .unwrap();
                 let file: IPersistFile = link.cast().unwrap();
                 file.Save(PCWSTR(wide(path).as_ptr()), true).unwrap();
             }
         }
-        create_link(&first, &target, 3);
-        create_link(&second, &target, 4);
+        create_link(&first, &target, &red);
+        create_link(&second, &target, &green);
         let first_contents = fs::read(&first).unwrap();
         let second_contents = fs::read(&second).unwrap();
         let first_png = load(&first).unwrap();
@@ -315,6 +391,21 @@ mod tests {
             first_png, second_png,
             "custom shortcut icons must not collapse to the .lnk type icon"
         );
+        let first_image = image::load_from_memory(&first_png).unwrap().to_rgba8();
+        let second_image = image::load_from_memory(&second_png).unwrap().to_rgba8();
+        assert!(first_image
+            .pixels()
+            .any(|pixel| pixel[0] > 180 && pixel[1] < 60 && pixel[3] > 200));
+        assert!(second_image
+            .pixels()
+            .any(|pixel| pixel[1] > 180 && pixel[0] < 60 && pixel[3] > 200));
+        for bitmap in [&first_image, &second_image] {
+            let occupied = bitmap.pixels().filter(|pixel| pixel[3] > 200).count();
+            assert!(
+                occupied * 4 >= (bitmap.width() * bitmap.height()) as usize,
+                "small shortcut icons must remain visible in a jumbo image list"
+            );
+        }
         assert_eq!(fs::read(first).unwrap(), first_contents);
         assert_eq!(fs::read(second).unwrap(), second_contents);
         let url = fixture.path().join("Website.URL");
