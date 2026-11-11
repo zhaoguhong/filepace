@@ -5,7 +5,7 @@ type Subscriber = (image: Blob | null) => void;
 type Request = {
   key: string;
   path: string;
-  applicationIcon: boolean;
+  nativeIcon: boolean;
   subscribers: Set<Subscriber>;
 };
 const cache = new Map<string, Blob | null>();
@@ -24,7 +24,7 @@ function drain() {
     active++;
     void call<ArrayBuffer>("thumbnail", {
       path: request.path,
-      applicationIcon: request.applicationIcon,
+      nativeIcon: request.nativeIcon,
     })
       .then(
         (bytes) => new Blob([bytes], { type: "image/png" }),
@@ -48,8 +48,8 @@ function drain() {
   }
 }
 
-export function subscribeThumbnail(entry: Entry, subscriber: Subscriber, applicationIcon = false) {
-  const key = `${applicationIcon}:${entry.path}:${entry.modified}:${entry.size}`;
+export function subscribeThumbnail(entry: Entry, subscriber: Subscriber, nativeIcon = false) {
+  const key = `${nativeIcon}:${entry.path}:${entry.modified}:${entry.size}`;
   if (cache.has(key)) {
     const image = cache.get(key)!;
     cache.delete(key);
@@ -59,7 +59,7 @@ export function subscribeThumbnail(entry: Entry, subscriber: Subscriber, applica
   }
   let request = requests.get(key);
   if (!request) {
-    request = { key, path: entry.path, applicationIcon, subscribers: new Set() };
+    request = { key, path: entry.path, nativeIcon, subscribers: new Set() };
     requests.set(key, request);
     queue.push(request);
   }

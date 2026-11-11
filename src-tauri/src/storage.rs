@@ -234,10 +234,25 @@ pub(crate) fn category_for(path: &Path) -> &'static str {
             })
             .collect()
     });
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(|ext| types.get(&ext.to_ascii_lowercase()))
-        .map_or("other", String::as_str)
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    // @ keys in fileKinds.json match the full name rather than an extension.
+    let type_key = if name.starts_with(".env.") {
+        "@.env".to_owned()
+    } else if name.starts_with("dockerfile.") || name.starts_with("containerfile.") {
+        format!("@{}", name.split('.').next().unwrap_or(""))
+    } else {
+        match name.rsplit_once('.') {
+            Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+                extension.to_owned()
+            }
+            _ => format!("@{name}"),
+        }
+    };
+    types.get(&type_key).map_or("other", String::as_str)
 }
 
 fn skip_entry(metadata: &Metadata) -> bool {
@@ -442,6 +457,21 @@ pub fn cancel_storage_scan(window: Window, state: State<'_, ScanState>, id: Stri
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn classifies_code_and_extensionless_files_from_the_shared_icon_table() {
+        for name in [
+            "main.PY", "Main.java", "app.JS", "App.TSX", "module.cts", "notebook.ipynb",
+            "run.ps1", "Dockerfile", "Dockerfile.dev", "Containerfile.prod", "Makefile",
+            ".gitignore", ".env", ".ENV.local", ".zshrc",
+        ] {
+            assert_eq!(category_for(Path::new(name)), "code", "{name}");
+        }
+        assert_eq!(category_for(Path::new("LICENSE")), "documents");
+        for name in [".pdf", "unknown.xyz", "no extension"] {
+            assert_eq!(category_for(Path::new(name)), "other", "{name}");
+        }
+    }
 
     #[cfg(any(target_os = "macos", windows))]
     #[test]

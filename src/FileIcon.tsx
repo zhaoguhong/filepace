@@ -2,7 +2,8 @@ import Thumbnail from "./Thumbnail";
 import { describeFile, type FileKind } from "./fileTypes";
 import type { Entry } from "./model";
 
-const sheet = "M8 2.5h12l7.5 7.5v17.5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-23a2 2 0 0 1 2-2Z";
+const sheet =
+  "M8 2.5h12l7.5 7.5v17.5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-23a2 2 0 0 1 2-2Z";
 
 function page(accent: string, art = "", badge = "") {
   return `
@@ -30,6 +31,15 @@ const grid =
 const slide =
   '<rect x="11" y="13" width="12" height="10" rx="1"/><path d="M15 20v-3m3 3v-5m3 5v-2"/>';
 
+function codePage(color: string, label: string, ink = "#fff") {
+  return page(
+    color,
+    '<path d="m13 12-2.5 2.5L13 17m7-5 2.5 2.5L20 17"/>',
+    `<rect x="3" y="19" width="25" height="10" rx="2" fill="${color}"/>
+    <text x="15.5" y="26.6" fill="${ink}" font-family="system-ui,sans-serif" font-weight="750" font-size="${label.length > 3 ? 6.5 : 8.5}" text-anchor="middle">${label}</text>`,
+  );
+}
+
 const art: Record<FileKind, string> = {
   folder: folder("#70a3eb", "#a9cdfa", "#568cdb", "#d0e4ff"),
   word: page(
@@ -54,7 +64,10 @@ const art: Record<FileKind, string> = {
     <text x="14" y="24.7" fill="white" font-family="sans-serif" font-weight="700" font-size="6.8" text-anchor="middle">PDF</text>`,
   ),
   document: page("#607489", lines),
-  markdown: page("#397d96", '<path d="M10.5 22v-7l3.4 3.2 3.4-3.2v7m4-7v7m-2.6-2.5 2.6 2.5 2.6-2.5"/>'),
+  markdown: page(
+    "#397d96",
+    '<path d="M10.5 22v-7l3.4 3.2 3.4-3.2v7m4-7v7m-2.6-2.5 2.6 2.5 2.6-2.5"/>',
+  ),
   table: page("#378262", grid),
   slides: page("#be602e", slide),
   book: `<rect x="6.5" y="3" width="20" height="26" rx="3" fill="#7863a6" stroke="#5b4888"/>
@@ -82,6 +95,45 @@ const art: Record<FileKind, string> = {
     "#345eaa",
     '<path d="m13 15-3 3.5 3 3.5m8-7 3 3.5-3 3.5m-2.5-8-3 9"/>',
   ),
+  javascript: codePage("#f0cf49", "JS", "#383520"),
+  typescript: codePage("#3178c6", "TS"),
+  jsx: codePage("#237d96", "JSX"),
+  tsx: codePage("#3265b2", "TSX"),
+  python: codePage("#3979a5", "PY", "#ffe18a"),
+  notebook: codePage("#c06b24", "JUP"),
+  java: codePage("#b4473b", "JAVA"),
+  c: codePage("#596bb0", "C"),
+  cpp: codePage("#3865ac", "C++"),
+  csharp: codePage("#7751a8", "C#"),
+  rust: codePage("#9b593c", "RS"),
+  go: codePage("#187d94", "GO"),
+  kotlin: codePage("#8750be", "KT"),
+  swift: codePage("#ca542e", "SW"),
+  ruby: codePage("#ae3f48", "RB"),
+  php: codePage("#6b64a0", "PHP"),
+  lua: codePage("#444994", "LUA"),
+  dart: codePage("#21799a", "DART"),
+  r: codePage("#3a6fa9", "R"),
+  julia: codePage("#7851a0", "JL"),
+  perl: codePage("#476c89", "PL"),
+  scala: codePage("#b53c42", "SC"),
+  vue: codePage("#328361", "VUE"),
+  svelte: codePage("#c54d26", "SV"),
+  astro: codePage("#7e45aa", "AST"),
+  stylesheet: codePage("#4f64b4", "CSS"),
+  html: codePage("#bb592e", "HTML"),
+  sql: codePage("#447e91", "SQL"),
+  shell: codePage("#357262", "SH"),
+  powershell: codePage("#2d65ae", "PS"),
+  batch: codePage("#596b7b", "CMD"),
+  docker: codePage("#267eac", "DOCK"),
+  make: codePage("#876044", "MAKE"),
+  git: codePage("#bb563e", "GIT"),
+  env: codePage("#8a7540", "ENV"),
+  json: codePage("#877535", "JSON"),
+  yaml: codePage("#a04669", "YAML"),
+  toml: codePage("#8a584f", "TOML"),
+  xml: codePage("#a1642d", "XML"),
   script: `<rect x="3" y="6" width="26" height="20" rx="4" fill="#285c59" stroke="#1c4946"/>
     <path d="m8.5 12 4 4-4 4m7.5 0h6.5" fill="none" stroke="#d5fae9" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>`,
   web: page(
@@ -111,10 +163,7 @@ const art: Record<FileKind, string> = {
   disk: `<path d="M6.5 7h19l4 11v5a3 3 0 0 1-3 3h-21a3 3 0 0 1-3-3v-5Z" fill="#d7e4f2" stroke="#577495" stroke-width="1.4" stroke-linejoin="round"/>
     <path d="M3 18.5h26M7 22h9" stroke="#577495" stroke-width="1.5" stroke-linecap="round"/>
     <circle cx="24" cy="22" r="1.6" fill="#328e76"/>`,
-  shortcut: page(
-    "#55738f",
-    '<path d="M11 22v-2a4 4 0 0 1 4-4h7m-4-4 4 4-4 4"/>',
-  ),
+  shortcut: page("#55738f"),
   generic: page("#8995a3"),
 };
 
@@ -125,7 +174,9 @@ function iconUrl(markup: string) {
 const iconUrls = Object.fromEntries(
   Object.entries(art).map(([kind, markup]) => [kind, iconUrl(markup)]),
 ) as Record<FileKind, string>;
-const windowsFolder = iconUrl(folder("#dfa64b", "#ffd277", "#bf8b36", "#ffebad"));
+const windowsFolder = iconUrl(
+  folder("#dfa64b", "#ffd277", "#bf8b36", "#ffebad"),
+);
 
 export default function FileIcon({
   entry,
@@ -136,14 +187,38 @@ export default function FileIcon({
   type?: ReturnType<typeof describeFile>;
   showThumbnail?: boolean;
 }) {
-  const src = type.kind === "folder" && type.windows ? windowsFolder : iconUrls[type.kind];
+  const src =
+    type.kind === "folder" && type.windows
+      ? windowsFolder
+      : iconUrls[type.kind];
   const icon = <img src={src} alt="" draggable={false} />;
   return (
     <span className="entry-icon" data-file-kind={type.kind} aria-hidden="true">
-      {type.applicationIcon || (type.thumbnail && showThumbnail) ? (
-        <Thumbnail entry={entry} fallback={icon} applicationIcon={type.applicationIcon} />
+      {type.nativeIcon || (type.thumbnail && showThumbnail) ? (
+        <Thumbnail entry={entry} fallback={icon} nativeIcon={type.nativeIcon} />
       ) : (
         icon
+      )}
+      {type.shortcut && (
+        <svg className="shortcut-overlay" viewBox="0 0 12 12" focusable="false">
+          <rect
+            x=".5"
+            y=".5"
+            width="11"
+            height="11"
+            rx="2"
+            fill="white"
+            stroke="#667d94"
+          />
+          <path
+            d="M3 9V7a3 3 0 0 1 3-3h3M6.5 1.8 9 4 6.5 6.3"
+            fill="none"
+            stroke="#315d92"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       )}
     </span>
   );

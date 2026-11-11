@@ -274,7 +274,7 @@ try {
     Assert-TaskPanelClosed $window
     Write-Host 'Verified undo of a move and a rename.'
 
-    Click-Element (Wait-ForElement $window '跨目录搜索')
+    Click-Element (Wait-ForElement $window '搜索子文件夹')
     Enter-Text (Wait-ForElement $window '文件名关键词') '会议查找'
     Click-Element (Wait-ForElement $window '开始搜索')
     Click-Element (Wait-ForElement $window '会议查找.txt*')

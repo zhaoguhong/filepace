@@ -151,6 +151,8 @@ export function useBrowsePane(
     () => filterEntries(sorted, tab?.query ?? ""),
     [sorted, tab?.query],
   );
+  const hiddenEntries = useMemo(() => listing?.entries.filter((entry) => entry.hidden) ?? [], [listing]);
+  const hiddenMatches = useMemo(() => filterEntries(hiddenEntries, tab?.query ?? "").length, [hiddenEntries, tab?.query]);
   const selectedBytes = useMemo(
     () =>
       selected.size
@@ -181,6 +183,9 @@ export function useBrowsePane(
     ...directory,
     tab,
     entries,
+    total: sorted.length,
+    hiddenCount: hiddenEntries.length,
+    hiddenMatches,
     selected,
     selectedBytes,
     ...viewport,

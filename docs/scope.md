@@ -6,6 +6,7 @@
 - Single-pane and left/right split layouts inside each window. Each pane has independent tabs and navigation.
 - Tabs reorder within a window and can be moved to a new window. Cross-window tab drag is deferred.
 - New tabs and windows start at the current location. Closing the last tab of one split pane returns to a single pane. Closing the last tab of a single pane closes its window.
+- List View is the default for new tabs and windows unless changed in Settings. View controls are ordered List, Column, Icon. Restored tabs retain their saved views.
 - File operations belong to the application, not the originating tab.
 - Default delete means system trash, with no fallback to permanent deletion.
 - Windows installation must work as a standard user without administrator credentials.
@@ -17,6 +18,9 @@
 - Rust compile and filesystem unit tests cover copying and moving actual files, cancellation preserving the source, conflict handling, invalid names, preview size limits, and refusal to read or transfer named pipes.
 - Browser interaction tests cover browsing, tab recovery, right-click actions and the properties fallback, file type icons, four icon sizes, and independent pane settings. Drag tests check the moving preview, selection count, move and modifier-copy gestures, cancellation, and the PNG handed off to the native drag command.
 - Browser fixtures checked 27 icon categories in light and dark mode, the blue and gold folder designs, and the fallback after an icon request fails. The installed macOS app displayed the native icons for Filepace and system apps. The Windows Shell icon path passed the Windows GNU target compilation check.
+- Shared file-type tests cover language-specific icons, uppercase extensions, exact names such as Dockerfile and `.gitignore`, and `.env` variants. Native search and storage tests verify the same filename classification, including keeping an extensionless `.pdf` as an unknown file.
+- Browser fixtures verify language badges, per-path Windows shortcut icon requests, failed requests, corrupt image responses, and shortcut arrows on files and directory links in all three views. Light and dark screenshots were visually checked. Native macOS fixture tests load application, installer, and web shortcut icons without changing their contents. Windows Shell code and Windows-specific custom `.lnk` and `.url` fixture tests passed the Windows GNU compilation check; actual Windows icon extraction still needs runtime verification.
+- Browser tests verify List View as the fresh default and first choice, preserve an existing tab's view when the default changes, and keep file creation and file actions accessible through context menus and shortcuts after removing their toolbar buttons. Two-pane context-menu copy and move target the other pane. The duplicate bottom path and shortcut hint are removed; file counts, selection sizes, task controls, and drag destination feedback remain available.
 - Browser tests verify pure white surfaces in the default light theme, distinct file hover and selection states, and theme persistence across reloads. All eight themes were rendered in light and dark mode in Chrome on macOS. The checked text and background pairs, including selected file text, had at least 4.5:1 contrast. The updated macOS app launched from the user's Applications folder, restored four saved tabs, and listed all eight themes in Appearance.
 - A browser test checks that creating a text document from a column's background menu targets that directory. A macOS desktop test created an empty `.txt` file in the right pane and verified that a duplicate name preserved the existing file contents.
 - Column-view tests confirm that file lists start at the top of their columns and that returning through the path bar keeps earlier columns with Windows paths.
@@ -75,6 +79,13 @@
 - With 10,000 simulated text files and 20 trials in headless Chrome on macOS, the production frontend's p95 time to display the list was 36 ms. Selection took 37 ms and switching to the grid took 33 ms. The grid mounted 119 tiles at 1180 × 780. This measurement isolates frontend work.
 - An isolated macOS release build copied and moved temporary files between panes, copied a nested folder from comparison results, renamed and undid three items as a batch, and extracted a ZIP into a chosen folder. Source and destination bytes were checked, including the original and replacement files after a refused conflict. It also saved and ran a type-only search, restored its split session, and displayed both pages of a test PDF.
 - The locally signed macOS 0.4.2 build launched from the user's Applications folder and restored all four tabs and the active location from the previous installation.
+
+## v0.6.0 browsing and icon verification
+
+- Browser tests cover compact controls at full width and in an 800-pixel split window, distinct active-pane markers and selection preservation, sortable headers, per-tab column resizing and session restoration, long filename titles, and ancestor navigation from collapsed breadcrumbs.
+- Browser tests cover keyboard navigation in context menus, common actions ordered before system actions, Escape dismissing only the current menu, preview, rename field or path editor, and the new-folder shortcut. Filtering reports match counts, and hidden-only and empty directories offer the appropriate next action.
+- An isolated macOS 0.6.0 release build created a real folder from the empty-directory action and copied and moved temporary files through the two-pane context menu. Source and destination bytes were checked. Native UI checks covered Escape preserving selection, filter counts, hidden-only directories, language and system web shortcut icons, independent pane widths, and restoring the resized list columns after quitting and reopening.
+- macOS Rust tests and a Windows GNU test compilation check cover batch rename undo recording committed file identities and refusing to undo replaced files. Windows fixtures assign distinct creation times so the rename cycle exercises NTFS creation-time tunneling. Windows runtime coverage is recorded after the release build checks complete.
 
 ## Remaining release work
 

@@ -11,10 +11,11 @@ export type Entry = {
 };
 export type Listing = { path: string; parent: string | null; entries: Entry[] };
 export type GridSize = "small" | "medium" | "large" | "extra-large";
-export type View = "columns" | "list" | "grid";
+export type View = "list" | "columns" | "grid";
+export type ListColumnWidths = [number, number, number, number];
 export const viewLabels: Record<View, string> = {
-  columns: "列视图",
   list: "列表",
+  columns: "列视图",
   grid: "图标",
 };
 export type Tab = {
@@ -27,6 +28,7 @@ export type Tab = {
   view: View;
   columns?: string[];
   gridSize?: GridSize;
+  columnWidths?: ListColumnWidths;
   sort: "name" | "modified" | "size";
   group?: "kind" | "date";
   descending: boolean;
@@ -67,7 +69,7 @@ export const basename = (p: string) =>
     .replace(/[\\/]$/, "")
     .split(/[\\/]/)
     .pop() || p;
-export const makeTab = (path: string, view: View = "columns"): Tab => ({
+export const makeTab = (path: string, view: View = "list"): Tab => ({
   id: crypto.randomUUID(),
   path,
   history: [path],

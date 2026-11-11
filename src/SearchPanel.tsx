@@ -101,13 +101,13 @@ export default function SearchPanel({
   }
 
   return (
-    <section className="storage-dashboard search-panel" aria-label="跨目录搜索">
+    <section className="storage-dashboard search-panel" aria-label="搜索子文件夹">
       <header className="storage-heading">
         <span className="storage-heading-mark">
           <FolderSearch size={22} />
         </span>
         <div>
-          <h1>跨目录搜索</h1>
+          <h1>搜索子文件夹</h1>
           <p className="search-path" title={path}>
             {path}
           </p>

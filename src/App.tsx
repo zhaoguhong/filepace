@@ -1,4 +1,7 @@
 import FileIcon from "./FileIcon";
+import BrowseOptions from "./BrowseOptions";
+import ListHeader, { listColumnStyle } from "./ListHeader";
+import MenuAction from "./MenuAction";
 import StorageDashboard from "./StorageDashboard";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
@@ -19,7 +22,6 @@ import {
   Search,
   Folder,
   FolderSearch,
-  FolderPlus,
   FileText,
   Image as ImageIcon,
   HardDrive,
@@ -29,13 +31,6 @@ import {
   Star,
   LayoutGrid,
   List,
-  Eye,
-  EyeOff,
-  ArrowDownUp,
-  Copy,
-  Scissors,
-  Clipboard,
-  Trash2,
   PanelLeft,
   RefreshCw,
   ExternalLink,
@@ -46,7 +41,6 @@ import {
   LoaderCircle,
   ArrowDownToLine,
   MoreHorizontal,
-  Command,
   Undo2,
   type LucideIcon,
 } from "lucide-react";
@@ -78,7 +72,6 @@ import {
   formatSize,
   entryGroup,
   type Entry,
-  type GridSize,
   type Tab,
   type Place,
 } from "./model";
@@ -92,6 +85,8 @@ type Menu = {
   entry?: Entry;
   tab?: Tab;
   viewPane?: PaneSide;
+  ancestors?: { name: string; path: string }[];
+  pane?: PaneSide;
   shortcut?: SidebarSection;
 };
 type OpenWithApp = { name: string; path: string; default: boolean };
@@ -118,12 +113,7 @@ const placeIcons: Record<string, LucideIcon> = {
   文档: FileText,
   图片: ImageIcon,
 };
-const gridSizes: { value: GridSize; label: string }[] = [
-  { value: "small", label: "小图标" },
-  { value: "medium", label: "中图标" },
-  { value: "large", label: "大图标" },
-  { value: "extra-large", label: "超大图标" },
-];
+const commandKey = isMac ? "⌘" : "Ctrl+";
 
 function cleanPane({ tabs, active }: PaneSession): PaneSession {
   return {
@@ -197,7 +187,7 @@ function Tool({
   children,
   onClick,
   disabled = false,
-  active = false,
+  active,
   expanded,
 }: {
   label: string;
@@ -212,6 +202,7 @@ function Tool({
       className={`tool ${active ? "active" : ""}`}
       title={label}
       aria-label={label}
+      aria-pressed={active}
       aria-expanded={expanded}
       onClick={onClick}
       disabled={disabled}
@@ -278,6 +269,7 @@ export default function App() {
   const left = useBrowsePane(session, hidden);
   const right = useBrowsePane(session.right, hidden);
   const pane = focused === "left" ? left : right;
+  const otherFolder = (focused === "left" ? right : left).listing?.path;
   const splitRatio = session.splitRatio ?? 0.5;
   const { tab, listing, entries, listRef } = pane;
   const systemPlaces = places.filter((place) => place.kind === "favorite");
@@ -602,8 +594,11 @@ export default function App() {
       element.style.top = `${Math.max(5, Math.min(menu.y, window.innerHeight - element.offsetHeight - 5))}px`;
     };
     placeMenu();
+    element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    const observer = new ResizeObserver(placeMenu);
+    observer.observe(element);
     window.addEventListener("resize", placeMenu);
-    return () => window.removeEventListener("resize", placeMenu);
+    return () => { observer.disconnect(); window.removeEventListener("resize", placeMenu); };
   }, [menu]);
   useEffect(() => {
     if (!notice) return;
@@ -902,9 +897,15 @@ export default function App() {
   }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!tab || fileDrag.preview || marquee.frame) return;
+      if (e.defaultPrevented || e.isComposing || !tab || fileDrag.preview || marquee.frame) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (menu && key === "escape") {
+        e.preventDefault();
+        setMenu(null);
+        listRef.current?.focus();
+        return;
+      }
       if (batchEntries) {
         if (key === "escape" && !e.isComposing) setBatchEntries(null);
         return;
@@ -1013,6 +1014,11 @@ export default function App() {
       }
       if (mod && ["t", "n", "w", "l", "a", "c", "x", "v"].includes(key)) {
         e.preventDefault();
+        if (menu) setMenu(null);
+        if (key === "n" && e.shiftKey) {
+          promptCreate("folder", listing?.path ?? tab.path);
+          return;
+        }
         if (key === "t") e.shiftKey ? restore() : newTab();
         if (key === "n") windowFor(makeTab(tab.path, preferences.defaultView));
         if (key === "w") closeTab(tab.id);
@@ -1192,14 +1198,26 @@ export default function App() {
   }
 
   function renderPane(side: PaneSide) {
-    const { tab, listing, entries, loading, error, attachList, height, layout, selected: selection } =
-      side === "left" ? left : right;
+    const {
+      tab,
+      listing,
+      entries,
+      total,
+      hiddenCount,
+      hiddenMatches,
+      loading,
+      error,
+      attachList,
+      element,
+      height,
+      layout,
+      selected: selection,
+    } = side === "left" ? left : right;
     const group = side === "left" ? session : session.right;
     if (!tab || !group) return null;
     const { tabs, active } = group;
     const selected = tab.selected;
     const dropHint = fileDrag.hint?.pane === side ? fileDrag.hint : null;
-    const otherFolder = (side === "left" ? right : left).listing?.path;
     const patchPane = (value: Partial<Tab>) => patch(value, side);
     const dragSelection = (entry: Entry) => ({
       entry,
@@ -1222,6 +1240,7 @@ export default function App() {
       );
     }
     const label = side === "left" ? "左栏" : "右栏";
+    const onlyHidden = !hidden && hiddenCount > 0 && total === 0;
     function renderFileRow(
       entry: Entry,
       directory: string,
@@ -1242,13 +1261,21 @@ export default function App() {
       const dragSource =
         dragPreview?.pane === side && dragPreview.paths.has(entry.path);
       const group = tab.view === "list" ? tab.group : undefined;
-      const groupLabel = group && index !== undefined ? entryGroup(entry, group) : undefined;
+      const groupLabel =
+        group && index !== undefined ? entryGroup(entry, group) : undefined;
       const previous = group && index ? entries[index - 1] : undefined;
-      const groupStart = group && groupLabel && (!previous || entryGroup(previous, group) !== groupLabel);
+      const groupStart =
+        group &&
+        groupLabel &&
+        (!previous || entryGroup(previous, group) !== groupLabel);
       return (
         <div
           key={entry.path}
-          id={index === undefined ? undefined : `entry-${tab.id}-${encodeURIComponent(entry.path)}`}
+          id={
+            index === undefined
+              ? undefined
+              : `entry-${tab.id}-${encodeURIComponent(entry.path)}`
+          }
           data-path={entry.path}
           data-directory={entry.isDir ? entry.path : undefined}
           onPointerDown={(event) =>
@@ -1297,7 +1324,11 @@ export default function App() {
           }}
         >
           <div className="file-name">
-            {groupStart && <span className="file-group-label" title={groupLabel}>{groupLabel}</span>}
+            {groupStart && (
+              <span className="file-group-label" title={groupLabel}>
+                {groupLabel}
+              </span>
+            )}
             <FileIcon entry={entry} type={type} />
             {rename?.pane === side && rename.path === entry.path ? (
               <input
@@ -1317,11 +1348,16 @@ export default function App() {
                 onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") submitRename();
-                  if (e.key === "Escape") setRename(null);
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setRename(null);
+                  }
                 }}
               />
             ) : (
-              <span className="file-label">{entry.name}</span>
+              <span className="file-label" title={entry.name}>
+                {entry.name}
+              </span>
             )}
           </div>
           {columns && entry.isDir && (
@@ -1354,7 +1390,11 @@ export default function App() {
         tabIndex={0}
         role="listbox"
         aria-multiselectable="true"
-        aria-activedescendant={shown.some((entry) => entry.path === selected.at(-1)) ? `entry-${tab.id}-${encodeURIComponent(selected.at(-1)!)}` : undefined}
+        aria-activedescendant={
+          shown.some((entry) => entry.path === selected.at(-1))
+            ? `entry-${tab.id}-${encodeURIComponent(selected.at(-1)!)}`
+            : undefined
+        }
         aria-label="文件列表"
         data-pane={side}
         data-grid-size={
@@ -1407,14 +1447,36 @@ export default function App() {
         ) : !entries.length ? (
           <div className="empty">
             <Folder size={45} />
-            <h3>{tab.query ? "没有匹配的项目" : "这个文件夹还是空的"}</h3>
+            <h3>
+              {tab.query
+                ? "没有匹配的项目"
+                : onlyHidden
+                  ? "这个文件夹只有隐藏项目"
+                  : "这个文件夹还是空的"}
+            </h3>
             <p>
               {tab.query
-                ? "试试其他名称，或清除筛选。"
-                : "拖入文件，或新建一个文件夹。"}
+                ? !hidden && hiddenMatches
+                  ? `另有 ${hiddenMatches} 个匹配项被隐藏，可以显示隐藏文件。`
+                  : "试试其他名称，或清除筛选。"
+                : onlyHidden
+                  ? `有 ${hiddenCount} 个隐藏项目，显示后即可查看。`
+                  : "拖入文件，或新建一个文件夹。"}
             </p>
             {tab.query && (
               <button onClick={() => patchPane({ query: "" })}>清除筛选</button>
+            )}
+            {!hidden && (onlyHidden || (tab.query && hiddenMatches > 0)) && (
+              <button onClick={() => setHidden(true)}>显示隐藏文件</button>
+            )}
+            {!tab.query && !onlyHidden && (
+              <button
+                onClick={() =>
+                  promptCreate("folder", listing?.path ?? tab.path)
+                }
+              >
+                新建文件夹
+              </button>
             )}
           </div>
         ) : (
@@ -1423,7 +1485,13 @@ export default function App() {
             <div
               role="presentation"
               className={tab.view === "grid" ? "grid-items" : undefined}
-              style={tab.view === "grid" ? { gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))` } : undefined}
+              style={
+                tab.view === "grid"
+                  ? {
+                      gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
+                    }
+                  : undefined
+              }
             >
               {shown.map((entry, index) =>
                 renderFileRow(
@@ -1443,11 +1511,25 @@ export default function App() {
     return (
       <section
         className={`file-pane${focused === side ? " focused" : ""}`}
+        style={listColumnStyle(tab.columnWidths)}
         aria-label={split ? label : "文件浏览"}
         onPointerDownCapture={() => focusPane(side)}
         onFocusCapture={() => focusPane(side)}
       >
         <nav className="tabs" aria-label="文件标签">
+          {split && (
+            <span
+              className={`pane-focus-badge${focused === side ? " current" : ""}`}
+              title={
+                focused === side
+                  ? "侧栏和快捷键作用于此栏"
+                  : "点击此栏以操作其中的文件"
+              }
+            >
+              {label}
+              {focused === side && " · 当前"}
+            </span>
+          )}
           {tabs.map((t) => (
             <div
               key={t.id}
@@ -1524,75 +1606,128 @@ export default function App() {
             ))}
           </select>
         </nav>
-        <div className="navigation">
-          <div className="nav-buttons">
-            <Tool
-              label="后退"
-              disabled={tab.index === 0}
-              onClick={() => travel(-1, side)}
-            >
-              <ArrowLeft size={iconSize} />
-            </Tool>
-            <Tool
-              label="前进"
-              disabled={tab.index === tab.history.length - 1}
-              onClick={() => travel(1, side)}
-            >
-              <ArrowRight size={iconSize} />
-            </Tool>
-            <Tool
-              label="上一级"
-              disabled={!listing?.parent}
-              onClick={() => listing?.parent && go(listing.parent, side)}
-            >
-              <ArrowUp size={iconSize} />
-            </Tool>
-          </div>
-          <div className="address" onDoubleClick={() => editPath(side)}>
-            {editingPath === side ? (
-              <input
-                ref={pathRef}
-                list={addressSuggestions}
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                onBlur={() => setEditingPath(null)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") go(address, side);
-                  if (e.key === "Escape") setEditingPath(null);
-                }}
-                aria-label="完整路径"
-              />
-            ) : (
-              <>
-                <button
-                  onClick={() => go(isWindows ? crumbPath(0) : "/", side)}
-                  aria-label="根目录"
-                >
-                  <HardDrive size={15} />
-                </button>
-                {crumbs.map((c, i) => (
-                  <span key={i}>
-                    <ChevronRight size={13} />
-                    <button onClick={() => go(crumbPath(i), side)}>{c}</button>
-                  </span>
-                ))}
-                <button
-                  className="address-edit"
-                  aria-label="编辑路径"
-                  onClick={() => editPath(side)}
+        <div className="pane-controls">
+          <div className="navigation">
+            <div className="nav-buttons">
+              <Tool
+                label="后退"
+                disabled={tab.index === 0}
+                onClick={() => travel(-1, side)}
+              >
+                <ArrowLeft size={iconSize} />
+              </Tool>
+              <Tool
+                label="前进"
+                disabled={tab.index === tab.history.length - 1}
+                onClick={() => travel(1, side)}
+              >
+                <ArrowRight size={iconSize} />
+              </Tool>
+              <Tool
+                label="上一级"
+                disabled={!listing?.parent}
+                onClick={() => listing?.parent && go(listing.parent, side)}
+              >
+                <ArrowUp size={iconSize} />
+              </Tool>
+            </div>
+            <div className="address" onDoubleClick={() => editPath(side)}>
+              {editingPath === side ? (
+                <input
+                  ref={pathRef}
+                  list={addressSuggestions}
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  onBlur={() => setEditingPath(null)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") go(address, side);
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setEditingPath(null);
+                      (side === "left" ? left : right).listRef.current?.focus();
+                    }
+                  }}
+                  aria-label="完整路径"
                 />
-              </>
-            )}
-            <Tool label="刷新" onClick={refresh}>
-              <RefreshCw size={14} className={loading ? "spin" : ""} />
-            </Tool>
+              ) : (
+                <>
+                  <button
+                    onClick={() => go(isWindows ? crumbPath(0) : "/", side)}
+                    aria-label="根目录"
+                  >
+                    <HardDrive size={15} />
+                  </button>
+                  {crumbs.length > 1 && (
+                    <button
+                      className={`ancestor-toggle${crumbs.length <= 2 ? " short-path" : ""}`}
+                      aria-label="上级目录"
+                      title="选择上级目录"
+                      onClick={(event) => {
+                        const bounds =
+                          event.currentTarget.getBoundingClientRect();
+                        setMenu({
+                          x: bounds.left,
+                          y: bounds.bottom + 5,
+                          pane: side,
+                          ancestors: crumbs
+                            .slice(0, -1)
+                            .map((name, index) => ({
+                              name,
+                              path: crumbPath(index),
+                            })),
+                        });
+                      }}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  )}
+                  {crumbs.slice(-2).map((c, offset) => {
+                    const i = Math.max(0, crumbs.length - 2) + offset;
+                    return (
+                      <span
+                        key={i}
+                        className={
+                          i === crumbs.length - 1
+                            ? "current-crumb"
+                            : "parent-crumb"
+                        }
+                      >
+                        <ChevronRight size={13} />
+                        <button
+                          title={crumbPath(i)}
+                          onClick={() => go(crumbPath(i), side)}
+                        >
+                          {c}
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <button
+                    className="address-edit"
+                    aria-label="编辑路径"
+                    title={`${isMac ? "⌘" : "Ctrl+"}L 前往文件夹`}
+                    onClick={() => editPath(side)}
+                  />
+                </>
+              )}
+              <Tool label="刷新" onClick={refresh}>
+                <RefreshCw size={14} className={loading ? "spin" : ""} />
+              </Tool>
+            </div>
           </div>
-          <div className="filter">
+          <div className={`filter${tab.query ? " active" : ""}`}>
             <Search size={16} />
             <input
               aria-label="筛选当前文件夹"
               placeholder="筛选当前文件夹"
               value={tab.query}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || event.nativeEvent.isComposing)
+                  return;
+                event.preventDefault();
+                if (tab.query) patchPane({ query: "", scroll: 0 });
+                else (side === "left" ? left : right).listRef.current?.focus();
+              }}
               onChange={(e) =>
                 patchPane({ query: e.target.value, selected: [], scroll: 0 })
               }
@@ -1606,127 +1741,69 @@ export default function App() {
               </button>
             )}
           </div>
-        </div>
-        <div className="toolbar">
-          <button
-            className="text-tool"
-            aria-label="新建文件夹"
-            title="新建文件夹"
-            onClick={() => promptCreate("folder", listing?.path ?? tab.path)}
-          >
-            <FolderPlus size={17} />
-            <span>新建文件夹</span>
-          </button>
-          <span className="separator" />
-          <Tool
-            label="复制"
-            disabled={!selected.length}
-            onClick={() => copy(false, selected)}
-          >
-            <Copy size={16} />
-          </Tool>
-          <Tool
-            label="剪切"
-            disabled={!selected.length}
-            onClick={() => copy(true, selected)}
-          >
-            <Scissors size={16} />
-          </Tool>
-          <Tool label="粘贴" onClick={() => paste(tab.path)}>
-            <Clipboard size={16} />
-          </Tool>
-          {desktop && split && (
-            <>
-              <Tool label="复制到另一栏" disabled={!selected.length || !otherFolder} onClick={() => void start("copy", selected, otherFolder)}>
-                <Copy size={14} /><ArrowRight size={12} />
+          <div className="toolbar">
+            <div className="view-switch">
+              <Tool
+                label="列表视图"
+                active={tab.view === "list"}
+                onClick={() =>
+                  tab.view !== "list" && patchPane({ view: "list", scroll: 0 })
+                }
+              >
+                <List size={16} />
               </Tool>
-              <Tool label="移动到另一栏" disabled={!selected.length || !otherFolder} onClick={() => void start("move", selected, otherFolder)}>
-                <Scissors size={14} /><ArrowRight size={12} />
+              <Tool
+                label="列视图"
+                active={tab.view === "columns"}
+                onClick={() =>
+                  tab.view !== "columns" &&
+                  patchPane({ view: "columns", columns: undefined, scroll: 0 })
+                }
+              >
+                <Columns3 size={iconSize} />
               </Tool>
-            </>
-          )}
-          <Tool
-            label="移到回收站"
-            disabled={!selected.length}
-            onClick={() => start("trash", selected, tab.path)}
-          >
-            <Trash2 size={16} />
-          </Tool>
-          <div className="toolbar-spacer" />
-          <Tool
-            label="切换排序方向"
-            onClick={() => patchPane({ descending: !tab.descending })}
-          >
-            <ArrowDownUp size={16} />
-          </Tool>
-          <Tool
-            label={hidden ? "隐藏隐藏文件" : "显示隐藏文件"}
-            active={hidden}
-            onClick={() => setHidden(!hidden)}
-          >
-            {hidden ? <Eye size={16} /> : <EyeOff size={16} />}
-          </Tool>
-          <div className="view-switch">
+              <Tool
+                label="图标视图"
+                active={tab.view === "grid"}
+                onClick={() =>
+                  tab.view !== "grid" && patchPane({ view: "grid", scroll: 0 })
+                }
+              >
+                <LayoutGrid size={16} />
+              </Tool>
+              <Tool
+                label="显示选项"
+                expanded={viewPane === side}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  setMenu(
+                    viewPane === side
+                      ? null
+                      : {
+                          x: bounds.right - 140,
+                          y: bounds.bottom + 6,
+                          viewPane: side,
+                        },
+                  );
+                }}
+              >
+                <ChevronDown size={13} />
+              </Tool>
+            </div>
             <Tool
-              label="列视图"
-              active={tab.view === "columns"}
-              onClick={() =>
-                tab.view !== "columns" &&
-                patchPane({ view: "columns", columns: undefined, scroll: 0 })
-              }
-            >
-              <Columns3 size={iconSize} />
-            </Tool>
-            <Tool
-              label="列表视图"
-              active={tab.view === "list"}
-              onClick={() =>
-                tab.view !== "list" && patchPane({ view: "list", scroll: 0 })
-              }
-            >
-              <List size={16} />
-            </Tool>
-            <Tool
-              label="图标视图"
-              active={tab.view === "grid"}
-              onClick={() =>
-                tab.view !== "grid" && patchPane({ view: "grid", scroll: 0 })
-              }
-            >
-              <LayoutGrid size={16} />
-            </Tool>
-            <Tool
-              label="图标大小"
-              expanded={viewPane === side}
+              label="更多操作"
               onClick={(event) => {
-                event.stopPropagation();
-                const bounds = event.currentTarget.getBoundingClientRect();
-                setMenu(
-                  viewPane === side
-                    ? null
-                    : {
-                        x: bounds.right - 140,
-                        y: bounds.bottom + 6,
-                        viewPane: side,
-                      },
-                );
+                focusPane(side);
+                setMenu({
+                  x: event.clientX || window.innerWidth - 230,
+                  y: event.clientY || 180,
+                });
               }}
             >
-              <ChevronDown size={13} />
+              <MoreHorizontal size={18} />
             </Tool>
           </div>
-          <Tool
-            label="更多操作"
-            onClick={(event) => {
-              focusPane(side);
-              setMenu({
-                x: event.clientX || window.innerWidth - 230,
-                y: event.clientY || 180,
-              });
-            }}
-          >
-            <MoreHorizontal size={18} />
-          </Tool>
         </div>
         {!desktop && (
           <div className="demo-banner">
@@ -1734,39 +1811,7 @@ export default function App() {
           </div>
         )}
         {tab.view === "list" && (
-          <div className="column-head">
-            <button
-              onClick={() =>
-                patchPane({
-                  sort: "name",
-                  descending: tab.sort === "name" ? !tab.descending : false,
-                })
-              }
-            >
-              名称 {tab.sort === "name" && (tab.descending ? "↓" : "↑")}
-            </button>
-            <button
-              onClick={() =>
-                patchPane({ sort: "modified", descending: !tab.descending })
-              }
-            >
-              修改日期
-            </button>
-            <select aria-label="列表分组" value={tab.group ?? ""} onChange={(event) =>
-              patchPane({ group: (event.target.value || undefined) as Tab["group"], scroll: 0 })
-            }>
-              <option value="">类型 · 不分组</option>
-              <option value="kind">按类型分组</option>
-              <option value="date">按修改日期分组</option>
-            </select>
-            <button
-              onClick={() =>
-                patchPane({ sort: "size", descending: !tab.descending })
-              }
-            >
-              大小
-            </button>
-          </div>
+          <ListHeader tab={tab} patch={patchPane} list={element} />
         )}
         {tab.view === "columns" ? (
           <ColumnBrowser
@@ -1809,23 +1854,15 @@ export default function App() {
         ) : (
           fileArea
         )}
-        <div className="location-footer">
-          <Folder size={13} />
-          <span title={tab.path}>{tab.path}</span>
-          {dropHint ? (
-            <span className="drop-hint" role="status" title={dropHint.path}>
+        {dropHint && (
+          <div className="drop-hint" role="status" title={dropHint.path}>
+            <span>
               {dropHint.kind === "move" ? "移动到" : "复制到"}{" "}
               {basename(dropHint.path)}
-              {dropHint.kind === "move" && (
-                <kbd>{isMac ? "⌥" : "Ctrl"} 复制</kbd>
-              )}
             </span>
-          ) : (
-            <span className="keyboard-tip">
-              <Command size={12} /> L 前往文件夹
-            </span>
-          )}
-        </div>
+            {dropHint.kind === "move" && <kbd>{isMac ? "⌥" : "Ctrl"} 复制</kbd>}
+          </div>
+        )}
       </section>
     );
   }
@@ -1858,17 +1895,17 @@ export default function App() {
             : storageVisible
               ? "存储概览"
               : searchScope
-                ? "跨目录搜索"
+                ? "搜索子文件夹"
                 : basename(tab.path)}
         </span>
         <div className="title-actions">
           <button
             className="window-action"
-            aria-label="跨目录搜索"
+            aria-label="搜索子文件夹"
             aria-pressed={Boolean(searchScope)}
             onClick={() => (searchScope ? setSearchScope(null) : openSearch())}
           >
-            <FolderSearch size={16} /> 搜索
+            <FolderSearch size={16} /> 搜索子文件夹
           </button>
           <button
             className="window-action"
@@ -1907,7 +1944,14 @@ export default function App() {
         </div>
       </header>
       <datalist id={addressSuggestions}>
-        {[...new Set([...pathSuggestions, ...recentDirectories, ...commonPlaces.map((place) => place.path), ...favorites])].map((path) => (
+        {[
+          ...new Set([
+            ...pathSuggestions,
+            ...recentDirectories,
+            ...commonPlaces.map((place) => place.path),
+            ...favorites,
+          ]),
+        ].map((path) => (
           <option key={path} value={path} />
         ))}
       </datalist>
@@ -2004,7 +2048,13 @@ export default function App() {
         <main>
           <div
             className={`pane-stack${split ? " split" : ""}`}
-            style={split ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) 6px minmax(0, ${1 - splitRatio}fr)` } : undefined}
+            style={
+              split
+                ? {
+                    gridTemplateColumns: `minmax(0, ${splitRatio}fr) 6px minmax(0, ${1 - splitRatio}fr)`,
+                  }
+                : undefined
+            }
             hidden={
               storageVisible || Boolean(searchScope) || Boolean(settingsSection)
             }
@@ -2021,19 +2071,35 @@ export default function App() {
                 aria-valuenow={Math.round(splitRatio * 100)}
                 tabIndex={0}
                 onPointerDown={(event) => {
-                  if (event.button === 0) event.currentTarget.setPointerCapture(event.pointerId);
+                  if (event.button === 0)
+                    event.currentTarget.setPointerCapture(event.pointerId);
                 }}
                 onPointerMove={(event) => {
-                  if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-                  const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
-                  const ratio = Math.max(0.25, Math.min(0.75, (event.clientX - bounds.left) / bounds.width));
+                  if (!event.currentTarget.hasPointerCapture(event.pointerId))
+                    return;
+                  const bounds =
+                    event.currentTarget.parentElement!.getBoundingClientRect();
+                  const ratio = Math.max(
+                    0.25,
+                    Math.min(
+                      0.75,
+                      (event.clientX - bounds.left) / bounds.width,
+                    ),
+                  );
                   setSession((current) => ({ ...current, splitRatio: ratio }));
                 }}
                 onKeyDown={(event) => {
-                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+                    return;
                   event.preventDefault();
                   event.stopPropagation();
-                  const ratio = Math.max(0.25, Math.min(0.75, splitRatio + (event.key === "ArrowLeft" ? -0.05 : 0.05)));
+                  const ratio = Math.max(
+                    0.25,
+                    Math.min(
+                      0.75,
+                      splitRatio + (event.key === "ArrowLeft" ? -0.05 : 0.05),
+                    ),
+                  );
                   setSession((current) => ({ ...current, splitRatio: ratio }));
                 }}
               />
@@ -2084,13 +2150,30 @@ export default function App() {
       </div>
       <footer className="statusbar">
         <span>
-          {settingsSection
-            ? "应用设置"
-            : storageVisible
-              ? "本地存储概览"
-              : searchScope
-                ? "跨目录搜索"
+          {settingsSection ? (
+            "应用设置"
+          ) : storageVisible ? (
+            "本地存储概览"
+          ) : searchScope ? (
+            "搜索子文件夹"
+          ) : (
+            <>
+              {split && (
+                <span className="status-pane">
+                  {focused === "left" ? "左栏" : "右栏"} ·{" "}
+                </span>
+              )}
+              {tab.query
+                ? `匹配 ${entries.length} 项，共 ${pane.total} 项`
                 : `${entries.length} 个项目`}
+              {!hidden && pane.hiddenCount > 0 && (
+                <span className="hidden-count">
+                  {" "}
+                  · 隐藏 {pane.hiddenCount} 项
+                </span>
+              )}
+            </>
+          )}
           {!storageVisible &&
             !searchScope &&
             !settingsSection &&
@@ -2177,38 +2260,58 @@ export default function App() {
       )}
       {menu && (
         <div
-          className={`context-menu${viewPane ? " size-menu" : ""}`}
+          className={`context-menu${viewPane ? " browse-options" : ""}`}
           ref={menuRef}
-          aria-label={viewPane ? "选择图标大小" : undefined}
-          role={viewPane ? "group" : undefined}
+          aria-label={
+            viewPane ? "显示选项" : menu.ancestors ? "选择上级目录" : "文件操作"
+          }
+          role="group"
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(event) => {
+            if (
+              (event.target as HTMLElement).closest("select, input") ||
+              !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+            )
+              return;
+            event.preventDefault();
+            event.stopPropagation();
+            const buttons = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                "button:not(:disabled)",
+              ),
+            );
+            const current = buttons.indexOf(
+              document.activeElement as HTMLButtonElement,
+            );
+            const index =
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? buttons.length - 1
+                  : (current +
+                      (event.key === "ArrowDown" ? 1 : -1) +
+                      buttons.length) %
+                    buttons.length;
+            buttons[index]?.focus();
+          }}
         >
-          {viewPane ? (
-            gridSizes.map(({ value, label }) => {
-              const current =
-                viewTab?.view === "grid" &&
-                (viewTab.gridSize ?? "medium") === value;
-              return (
-                <button
-                  key={value}
-                  aria-pressed={current}
-                  onClick={() => {
-                    if (!current)
-                      patch(
-                        { view: "grid", gridSize: value, scroll: 0 },
-                        viewPane,
-                      );
-                    setMenu(null);
-                  }}
-                >
-                  <Check
-                    size={15}
-                    className={current ? "" : "size-menu-placeholder"}
-                  />
-                  {label}
-                </button>
-              );
-            })
+          {viewPane && viewTab ? (
+            <BrowseOptions
+              tab={viewTab}
+              patch={(value) => patch(value, viewPane)}
+              hidden={hidden}
+              showHidden={setHidden}
+            />
+          ) : menu.ancestors ? (
+            menu.ancestors.map((ancestor) => (
+              <button
+                key={ancestor.path}
+                title={ancestor.path}
+                onClick={() => go(ancestor.path, menu.pane)}
+              >
+                {ancestor.name}
+              </button>
+            ))
           ) : menu.tab ? (
             <>
               <button onClick={() => newTab(menu.tab!.path)}>新建标签</button>
@@ -2281,6 +2384,81 @@ export default function App() {
                   打开
                 </button>
               )}
+              {!menu.entry && (
+                <>
+                  <MenuAction
+                    shortcut={isMac ? "⇧⌘N" : "Ctrl+Shift+N"}
+                    onClick={() => promptCreate("folder", currentPath)}
+                  >
+                    {createOptions.folder.title}
+                  </MenuAction>
+                  <MenuAction onClick={() => promptCreate("text", currentPath)}>
+                    {createOptions.text.title}
+                  </MenuAction>
+                  <MenuAction
+                    shortcut={`${commandKey}V`}
+                    onClick={() => paste()}
+                  >
+                    粘贴
+                  </MenuAction>
+                  <hr />
+                </>
+              )}
+              {menu.entry && !menu.shortcut && (
+                <>
+                  <hr />
+                  <MenuAction
+                    shortcut={`${commandKey}C`}
+                    onClick={() => {
+                      copy();
+                      setMenu(null);
+                    }}
+                  >
+                    复制
+                  </MenuAction>
+                  <MenuAction
+                    shortcut={`${commandKey}X`}
+                    onClick={() => {
+                      copy(true);
+                      setMenu(null);
+                    }}
+                  >
+                    剪切
+                  </MenuAction>
+                  {desktop && split && (
+                    <>
+                      <MenuAction
+                        disabled={!otherFolder}
+                        shortcut={isMac ? "⇧⌘C" : "Ctrl+Shift+C"}
+                        onClick={() => start("copy", selected, otherFolder)}
+                      >
+                        复制到另一栏
+                      </MenuAction>
+                      <MenuAction
+                        disabled={!otherFolder}
+                        shortcut={isMac ? "⇧⌘M" : "Ctrl+Shift+M"}
+                        onClick={() => start("move", selected, otherFolder)}
+                      >
+                        移动到另一栏
+                      </MenuAction>
+                    </>
+                  )}
+                  <MenuAction
+                    shortcut={isMac ? "↩" : "F2"}
+                    onClick={() => renameSelected(menu.entry)}
+                  >
+                    重命名
+                  </MenuAction>
+                  {desktop &&
+                    selected.length > 1 &&
+                    selected.includes(menu.entry.path) && (
+                      <MenuAction onClick={openBatchRename}>
+                        批量重命名
+                      </MenuAction>
+                    )}
+                  <hr />
+                </>
+              )}
               {menu.entry?.isDir && (
                 <>
                   <button onClick={() => newTab(menu.entry!.path)}>
@@ -2314,14 +2492,15 @@ export default function App() {
                   <button onClick={() => chooseOpenWith(menu.entry!)}>
                     打开方式
                   </button>
-                  <button
+                  <MenuAction
+                    shortcut="Space"
                     onClick={() => {
                       setPreview(menu.entry!);
                       setMenu(null);
                     }}
                   >
                     快速预览
-                  </button>
+                  </MenuAction>
                 </>
               )}
               <hr />
@@ -2385,35 +2564,12 @@ export default function App() {
               <hr />
               {menu.entry ? (
                 <>
-                  {!menu.shortcut && (
-                    <>
-                      <button
-                        onClick={() => {
-                          copy();
-                          setMenu(null);
-                        }}
-                      >
-                        复制
-                      </button>
-                      <button
-                        onClick={() => {
-                          copy(true);
-                          setMenu(null);
-                        }}
-                      >
-                        剪切
-                      </button>
-                      <button onClick={() => renameSelected(menu.entry)}>
-                        重命名
-                      </button>
-                      {desktop && selected.length > 1 && selected.includes(menu.entry.path) && (
-                        <button onClick={openBatchRename}>批量重命名</button>
-                      )}
-                    </>
-                  )}
-                  <button onClick={() => openProperties(menu.entry!)}>
+                  <MenuAction
+                    shortcut={isMac ? "⌘I" : "Alt+Enter"}
+                    onClick={() => openProperties(menu.entry!)}
+                  >
                     属性
-                  </button>
+                  </MenuAction>
                   {!menu.shortcut && !menu.entry.isLink && (
                     <button
                       onClick={() =>
@@ -2431,13 +2587,23 @@ export default function App() {
                     /\.zip$/i.test(menu.entry.name) && (
                       <>
                         {desktop && (
-                          <button onClick={() => {
-                            setArchive({
-                              entry: menu.entry!,
-                              parent: menuPath.slice(0, Math.max(menuPath.lastIndexOf("/"), menuPath.lastIndexOf("\\")) + 1),
-                            });
-                            setMenu(null);
-                          }}>浏览压缩包</button>
+                          <button
+                            onClick={() => {
+                              setArchive({
+                                entry: menu.entry!,
+                                parent: menuPath.slice(
+                                  0,
+                                  Math.max(
+                                    menuPath.lastIndexOf("/"),
+                                    menuPath.lastIndexOf("\\"),
+                                  ) + 1,
+                                ),
+                              });
+                              setMenu(null);
+                            }}
+                          >
+                            浏览压缩包
+                          </button>
                         )}
                         <button onClick={() => start("unzip", [menuPath])}>
                           解压到同名文件夹
@@ -2465,24 +2631,18 @@ export default function App() {
                   {!menu.shortcut && (
                     <>
                       <hr />
-                      <button
+                      <MenuAction
+                        shortcut={isMac ? "⌘⌫" : "Delete"}
                         className="danger-text"
                         onClick={() => start("trash")}
                       >
                         移到回收站
-                      </button>
+                      </MenuAction>
                     </>
                   )}
                 </>
               ) : (
                 <>
-                  <button onClick={() => promptCreate("folder", currentPath)}>
-                    {createOptions.folder.title}
-                  </button>
-                  <button onClick={() => promptCreate("text", currentPath)}>
-                    {createOptions.text.title}
-                  </button>
-                  <button onClick={() => paste()}>粘贴</button>
                   <button onClick={() => openSearch(menuPath)}>
                     在此文件夹内搜索
                   </button>
@@ -2513,7 +2673,13 @@ export default function App() {
               文件任务 <small>{tasks.length}</small>
             </h3>
             {desktop && tasks.some((task) => !activeTask(task)) && (
-              <button onClick={() => void runMenuAction(() => call("clear_task_history"))}>清理已结束任务</button>
+              <button
+                onClick={() =>
+                  void runMenuAction(() => call("clear_task_history"))
+                }
+              >
+                清理已结束任务
+              </button>
             )}
             <Tool label="关闭任务面板" onClick={() => setTaskPanel(false)}>
               <X size={17} />
@@ -2593,21 +2759,36 @@ export default function App() {
                     ))}
                   </details>
                 )}
-                {!activeTask(t) && (t.destination || Boolean(t.failedSources?.length)) && (
-                  <div className="task-controls">
-                    {t.destination && <button onClick={() => {
-                      setTaskPanel(false);
-                      go(t.destination, focused);
-                    }}>打开目标位置</button>}
-                    {!!t.failedSources?.length && t.status === "error" && (
-                      <button onClick={() => void runMenuAction(async () => {
-                        const id = await call<string>("retry_task", { id: t.id });
-                        submittedTasks.current.add(id);
-                        void refreshActivity();
-                      })}>重试失败项目</button>
-                    )}
-                  </div>
-                )}
+                {!activeTask(t) &&
+                  (t.destination || Boolean(t.failedSources?.length)) && (
+                    <div className="task-controls">
+                      {t.destination && (
+                        <button
+                          onClick={() => {
+                            setTaskPanel(false);
+                            go(t.destination, focused);
+                          }}
+                        >
+                          打开目标位置
+                        </button>
+                      )}
+                      {!!t.failedSources?.length && t.status === "error" && (
+                        <button
+                          onClick={() =>
+                            void runMenuAction(async () => {
+                              const id = await call<string>("retry_task", {
+                                id: t.id,
+                              });
+                              submittedTasks.current.add(id);
+                              void refreshActivity();
+                            })
+                          }
+                        >
+                          重试失败项目
+                        </button>
+                      )}
+                    </div>
+                  )}
               </div>
             ))
           )}
@@ -2671,7 +2852,9 @@ export default function App() {
           left={left.listing.path}
           right={right.listing.path}
           onClose={() => setCompareOpen(false)}
-          onCopy={(sources, destination, within) => start("copy", sources, destination, within)}
+          onCopy={(sources, destination, within) =>
+            start("copy", sources, destination, within)
+          }
         />
       )}
       {archive && (
@@ -2679,7 +2862,9 @@ export default function App() {
           entry={archive.entry}
           parent={archive.parent}
           onClose={() => setArchive(null)}
-          onExtract={(destination) => start("unzip", [archive.entry.path], destination)}
+          onExtract={(destination) =>
+            start("unzip", [archive.entry.path], destination)
+          }
         />
       )}
       {properties && (
@@ -2736,7 +2921,11 @@ export default function App() {
             <div className="preview-body">
               {previewPdf ? (
                 <Suspense fallback={<p role="status">正在打开 PDF…</p>}>
-                  <PdfPreview key={preview.path} path={preview.path} name={preview.name} />
+                  <PdfPreview
+                    key={preview.path}
+                    path={preview.path}
+                    name={preview.name}
+                  />
                 </Suspense>
               ) : imageUrl ? (
                 <img src={imageUrl} alt={preview.name} />

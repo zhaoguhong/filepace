@@ -36,25 +36,35 @@ const formatLabels: Record<string, string> = {
   zip: "ZIP 压缩包",
   mp4: "MP4 视频",
   ts: "TypeScript",
-  tsx: "React 组件",
   json: "JSON 文档",
 };
 
 export function describeFile(entry: Entry) {
-  const dot = entry.name.lastIndexOf(".");
-  const extension = dot > 0 ? entry.name.slice(dot + 1).toLowerCase() : "";
+  const name = entry.name.toLowerCase();
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1) : "";
+  // @ keys match complete file names; native search and storage use the same table.
+  const typeKey = name.startsWith(".env.")
+    ? "@.env"
+    : /^(dockerfile|containerfile)\./.test(name)
+      ? `@${name.slice(0, name.indexOf("."))}`
+      : extension || `@${name}`;
   const windows = !entry.path.startsWith("/");
   const macPackage =
-    !windows && entry.isDir && !entry.isLink &&
+    !windows &&
+    entry.isDir &&
+    !entry.isLink &&
     /^(app|pkg|mpkg|sparsebundle|framework)$/.test(extension);
-  const kind = entry.isDir && !macPackage
-    ? "folder"
-    : entry.isLink
-      ? "shortcut"
-      : (byExtension.get(extension) ?? "generic");
+  const kind =
+    entry.isDir && !macPackage
+      ? "folder"
+      : entry.isLink
+        ? "shortcut"
+        : (byExtension.get(typeKey) ?? "generic");
   return {
     kind,
     windows,
+    shortcut: entry.isLink || kind === "shortcut",
     category: fileKinds[kind][2],
     label: entry.isLink
       ? "符号链接"
@@ -63,7 +73,18 @@ export function describeFile(entry: Entry) {
         : Object.hasOwn(formatLabels, extension)
           ? formatLabels[extension]
           : fileKinds[kind][0],
-    thumbnail: kind === "pdf" || (kind === "image" && /^(png|jpe?g|webp|gif|bmp|heic|heif)$/.test(extension)),
-    applicationIcon: kind === "application" && (macPackage || (windows && extension === "exe")),
+    thumbnail:
+      kind === "pdf" ||
+      (kind === "image" &&
+        /^(png|jpe?g|webp|gif|bmp|heic|heif)$/.test(extension)),
+    nativeIcon:
+      !entry.isLink &&
+      (windows
+        ? !entry.isDir &&
+          /^(exe|com|scr|cpl|lnk|url|website|appref-ms|msi|msix|msixbundle|appx|appxbundle|ico)$/.test(
+            extension,
+          )
+        : macPackage ||
+          (!entry.isDir && /^(pkg|mpkg|dmg|icns|webloc)$/.test(extension))),
   };
 }

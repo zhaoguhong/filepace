@@ -6,7 +6,7 @@ Filepace is a local file manager for macOS and Windows. Browse in tabs or side b
 
 ## Download and install
 
-Download the v0.5.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.5.0).
+Download the v0.6.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.6.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a
 - Drag a file or folder to another directory column, pane, or Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the directory displayed there.
 - Hold a dragged file near the left or right edge of Column View to scroll to other columns.
 - **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
-- Drag the divider to resize the panes. Use the toolbar to copy or move the selection to the other pane. The shortcuts are **Command+Shift+C** or **Ctrl+Shift+C** to copy and **Command+Shift+M** or **Ctrl+Shift+M** to move.
+- Drag the divider to resize the panes. Use the file context menu to copy or move the selection to the other pane. The shortcuts are **Command+Shift+C** or **Ctrl+Shift+C** to copy and **Command+Shift+M** or **Ctrl+Shift+M** to move.
 - **Compare Folders (对比目录)** shows items that exist on one side or differ. Compare sizes and modification times or check file contents, then select items to copy to the other pane.
 
 Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
@@ -35,9 +35,11 @@ Right-click a file, folder, or blank space in the file list to copy its full pat
 
 ## Views and system actions
 
-Column, list, and icon views use colors and shapes to distinguish documents, media, archives, installers, design files, fonts, databases, and other types. macOS `.app` bundles and Windows `.exe` files use their system icons when available. The toolbar offers four icon sizes. The drag preview shows the item icon, name, and selection count.
+List, Column, and Icon views use colors and shapes to distinguish documents, media, archives, installers, design files, fonts, databases, and other types. Code and scripts have language badges for Python, Java, JavaScript, TypeScript, and other languages. Dockerfile, Makefile, `.gitignore`, and `.env` files are also recognized. macOS app bundles, Windows applications, and shortcuts such as `.lnk` and `.url` use their system icons when available. Shortcuts carry an arrow badge. **Display Options (显示选项)** beside the view switch contains sorting, grouping, hidden-file visibility, and four icon sizes. The drag preview shows the item icon, name, and selection count.
 
-New tabs use Column View by default. Click a folder to open its contents in the next column. Select a file to see its preview or details. The toolbar switches each tab between Column, List, and Icon views. List View can group files by type or modification date. Open folders refresh when local files change.
+New tabs use List View by default. The toolbar orders the choices as List, Column, and Icon, and existing tabs keep their chosen views. In Column View, click a folder to open its contents in the next column, or select a file to see its preview or details. Drag a list header separator to resize columns; each tab remembers its widths. Double-click a separator to reset them. Hover over a long file name to see it in full; Icon View shows up to two lines.
+
+Use the top address bar to view or enter a path, and its ellipsis to choose an ancestor folder. Filtering the current folder shows match counts, and folders containing only hidden items explain how to reveal them. The status bar shows item counts, selection sizes, file tasks, and the active pane in Split View. Folder creation, copy, cut, paste, and trash actions are available through context menus and keyboard shortcuts; empty folders also offer a creation action. Escape dismisses a menu, preview, or rename field while preserving the selection; press it again to clear the selection. Open folders refresh when local files change.
 
 Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
 
@@ -53,7 +55,7 @@ Starting with v0.4.0, Filepace checks, downloads, and verifies stable updates fr
 
 ## Search subfolders
 
-Use **Search (搜索)**, **Command+F** on macOS, or **Ctrl+F** on Windows to look for file and folder names in the current directory and its subfolders. Choose a file type to narrow the search. Filepace queries Spotlight or Windows Search first and can scan the directory when the index is unavailable or incomplete. Click a result to locate it.
+Use **Search Subfolders (搜索子文件夹)**, **Command+F** on macOS, or **Ctrl+F** on Windows to look for file and folder names in the current directory and its subfolders. Choose a file type to narrow the search. Filepace queries Spotlight or Windows Search first and can scan the directory when the index is unavailable or incomplete. Click a result to locate it.
 
 Search by type, modification date, or minimum file size with or without a name. Save search criteria for the current folder. The path bar suggests recent folders, favorites, and matching subfolders.
 
@@ -104,5 +106,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.6.0/Filepace_0.6.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.6.0/Filepace_0.6.0_x64-setup.exe

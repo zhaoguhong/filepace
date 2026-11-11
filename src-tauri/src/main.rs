@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod application_icon;
 mod archives;
 mod batch_rename;
 mod compare;
 mod diagnostics;
 mod directory_watch;
+mod file_icon;
 mod fs_safety;
 mod native_drag;
 mod search;
@@ -1110,7 +1110,7 @@ fn act_on_task(
 #[tauri::command]
 async fn thumbnail(
     path: String,
-    application_icon: Option<bool>,
+    native_icon: Option<bool>,
 ) -> Result<tauri::ipc::Response, String> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     static SLOTS: [tauri::async_runtime::Mutex<()>; 3] =
@@ -1119,8 +1119,8 @@ async fn thumbnail(
     let _worker = SLOTS[slot].lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let path = Path::new(&path);
-        if application_icon == Some(true) {
-            return application_icon::load(path).map(tauri::ipc::Response::new);
+        if native_icon == Some(true) {
+            return file_icon::load(path).map(tauri::ipc::Response::new);
         }
         let file = open_regular_file(path, true)?;
         #[cfg(target_os = "macos")]

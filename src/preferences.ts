@@ -27,7 +27,7 @@ const key = "filepace-preferences";
 const defaults: Preferences = {
   mode: "system",
   theme: "default",
-  defaultView: "columns",
+  defaultView: "list",
   autoUpdate: true,
   commonPlaces: null,
   collapsedSidebar: [],

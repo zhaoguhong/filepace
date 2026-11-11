@@ -53,6 +53,13 @@ pub(crate) struct Identity {
 }
 
 impl Identity {
+    pub(crate) fn same_file_after_rename(&self, current: &Self) -> bool {
+        self.volume == current.volume
+            && self.file == current.file
+            // NTFS can restore a name's cached creation time during a rename.
+            && (cfg!(windows) || self.created == current.created)
+    }
+
     pub(crate) fn at(path: &Path) -> io::Result<Self> {
         let metadata = path.symlink_metadata()?;
         Self::from_path(path, &metadata)

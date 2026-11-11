@@ -6,7 +6,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.5.0) 下载适合你的 v0.5.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.6.0) 下载适合你的 v0.6.0 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 - 把文件或文件夹拖到另一列、另一侧窗格或另一个 Filepace 窗口，默认移动。松开鼠标时按住 macOS 的 **Option** 或 Windows 的 **Ctrl** 就会复制。拖到文件夹上会放入该文件夹，拖到空白处会放入该处显示的目录。
 - 拖动文件时，把鼠标停在列视图的左侧或右侧边缘，列表会横向滚动，露出其他列。
 - 点「合并分栏」会回到单栏，并保留两边的标签页。
-- 拖动分隔线可调整两栏宽度。可用工具栏把选区复制或移动到另一栏，也可按 **⌘⇧C** / **Ctrl+Shift+C** 复制、**⌘⇧M** / **Ctrl+Shift+M** 移动。
+- 拖动分隔线可调整两栏宽度。可用文件右键菜单把选区复制或移动到另一栏，也可按 **⌘⇧C** / **Ctrl+Shift+C** 复制、**⌘⇧M** / **Ctrl+Shift+M** 移动。
 - 点「对比目录」查看两栏中仅一侧存在或有差异的项目。默认比较大小与修改时间，也可比较文件内容，勾选结果后复制到另一栏。
 
 右键单击文件、文件夹或文件列表的空白处，可以复制完整路径、在 Finder 或资源管理器中显示，或打开命令行。macOS 使用终端，Windows 使用 PowerShell。右键单击文件时，命令行会在文件所在目录启动。
@@ -35,9 +35,11 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 ## 查看与系统操作
 
-列视图、列表和图标视图用颜色和图形区分文档、影音、压缩包、安装包、设计文件、字体、数据库等类型。macOS 的 `.app` 和 Windows 的 `.exe` 优先显示系统提供的应用图标。工具栏提供小、中、大、超大四种图标尺寸。拖动时会显示文件图标、名称和多选数量。
+列表、列视图和图标视图用颜色和图形区分文档、影音、压缩包、安装包、设计文件、字体、数据库等类型。Python、Java、JavaScript、TypeScript 等代码和脚本显示各自的语言标识，也能识别 Dockerfile、Makefile、`.gitignore` 和 `.env` 等文件。macOS 应用包、Windows 应用及 `.lnk`、`.url` 等快捷方式优先读取系统图标，快捷方式带有箭头标记。视图切换旁的「显示选项」提供排序、分组、隐藏文件和小、中、大、超大四种图标尺寸。拖动时会显示文件图标、名称和多选数量。
 
-新标签默认使用列视图。单击文件夹会在右侧展开下一列，选中文件会显示预览或基本信息。每个标签可用工具栏切换列视图、列表和图标。列表可按类型或修改日期分组，打开的目录会随本机文件变化刷新。
+新标签默认使用列表视图，工具栏按列表、列视图、图标的顺序排列。已有标签保留各自的视图。在列视图中，单击文件夹会在右侧展开下一列，选中文件会显示预览或基本信息。拖动列表表头的分隔线可调整列宽，每个标签分别记忆，双击分隔线恢复默认。长文件名可悬停查看完整名称，图标视图最多显示两行。
+
+顶部地址栏用于查看路径和前往文件夹，上级目录可从省略号选择。当前目录筛选会显示匹配数量，文件夹只有隐藏项目时会说明原因并提供显示入口。底栏显示项目数、选区大小和文件任务，分栏时标明当前操作的窗格。新建文件夹、复制、剪切、粘贴和删除可从右键菜单或快捷键操作，空目录也提供新建入口。按 Esc 关闭菜单、预览或改名时会保留选区，再按一次可取消选择。打开的目录会随本机文件变化刷新。
 
 在三种视图中，都可以从空白处按住鼠标拖出选框，一次选中文件和文件夹。也可以按住 **Shift** 选取连续项目，或按住 macOS 的 **⌘**、Windows 的 **Ctrl** 逐个增减选区。
 
@@ -53,7 +55,7 @@ macOS 版使用临时签名，尚未公证，首次打开可能出现「门禁�
 
 ## 跨目录搜索
 
-点窗口顶部的「搜索」，或按 macOS 的 **⌘F**、Windows 的 **Ctrl+F**，在当前文件夹和子文件夹里按名称和类型查找。Filepace 优先查询 Spotlight 或 Windows Search。索引不可用时会扫描目录，也可从索引结果切换到「扫描全部子目录」。点结果可直接定位项目。
+点窗口顶部的「搜索子文件夹」，或按 macOS 的 **⌘F**、Windows 的 **Ctrl+F**，在当前文件夹和子文件夹里按名称和类型查找。Filepace 优先查询 Spotlight 或 Windows Search。索引不可用时会扫描目录，也可从索引结果切换到「扫描全部子目录」。点结果可直接定位项目。
 
 可单独按类型、修改日期或最小文件大小搜索，也可把条件保存在当前目录。输入路径时会显示最近目录、收藏和匹配的子目录。
 
@@ -104,5 +106,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.5.0/Filepace_0.5.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.6.0/Filepace_0.6.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.6.0/Filepace_0.6.0_x64-setup.exe

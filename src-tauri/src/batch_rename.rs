@@ -175,6 +175,7 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
         .collect();
     let mut parked = 0;
     let mut published = 0;
+    let mut committed_identities = Vec::with_capacity(plan.items.len());
     let result = (|| {
         for ((source, _), path) in plan.items.iter().zip(&temporary) {
             if cancelled(state, id) {
@@ -189,11 +190,18 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
                 return Err("任务已取消".into());
             }
             plan.parent.check()?;
-            if Identity::at(path).as_ref().ok() != Some(source.identity()) {
+            if !Identity::at(path)
+                .is_ok_and(|current| source.identity().same_file_after_rename(&current))
+            {
                 return Err("暂存项目已变更".into());
             }
             rename_exclusive(path, target).map_err(|error| error.to_string())?;
             published += 1;
+            let identity = Identity::at(target).map_err(|error| error.to_string())?;
+            if !source.identity().same_file_after_rename(&identity) {
+                return Err("已改名项目已变更".into());
+            }
+            committed_identities.push(identity);
         }
         Ok(())
     })();
@@ -201,7 +209,8 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
         let mut recovered = true;
         for ((source, target), path) in plan.items.iter().zip(&temporary).take(published).rev() {
             if plan.parent.check().is_err()
-                || Identity::at(target).as_ref().ok() != Some(source.identity())
+                || !Identity::at(target)
+                    .is_ok_and(|current| source.identity().same_file_after_rename(&current))
                 || rename_exclusive(target, path).is_err()
             {
                 recovered = false;
@@ -209,7 +218,8 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
         }
         for ((source, _), path) in plan.items.iter().zip(&temporary).take(parked).rev() {
             if plan.parent.check().is_err()
-                || Identity::at(path).as_ref().ok() != Some(source.identity())
+                || !Identity::at(path)
+                    .is_ok_and(|current| source.identity().same_file_after_rename(&current))
                 || rename_exclusive(path, &source.path).is_err()
             {
                 recovered = false;
@@ -230,10 +240,11 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
     Ok(plan
         .items
         .iter()
-        .map(|(source, target)| Renamed {
+        .zip(committed_identities)
+        .map(|((source, target), identity)| Renamed {
             from: source.path.clone(),
             to: target.clone(),
-            identity: source.identity().clone(),
+            identity,
         })
         .collect())
 }
@@ -262,6 +273,23 @@ mod tests {
         let second = folder.path().join("second.txt");
         fs::write(&first, b"first").unwrap();
         fs::write(&second, b"second").unwrap();
+        #[cfg(windows)]
+        for (index, path) in [&first, &second].into_iter().enumerate() {
+            use std::{os::windows::io::AsRawHandle, ptr};
+            use windows_sys::Win32::{Foundation::FILETIME, Storage::FileSystem::SetFileTime};
+            // Distinct creation times make NTFS name tunneling observable even
+            // when the fixtures were originally created in the same clock tick.
+            let ticks = 132_537_600_000_000_000_u64 + index as u64 * 10_000_000;
+            let time = FILETIME {
+                dwLowDateTime: ticks as u32,
+                dwHighDateTime: (ticks >> 32) as u32,
+            };
+            let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+            assert_ne!(
+                unsafe { SetFileTime(file.as_raw_handle() as _, &time, ptr::null(), ptr::null()) },
+                0
+            );
+        }
         let state = Shared::default();
         state
             .tasks
@@ -285,5 +313,44 @@ mod tests {
         reverse(&changes, &state, "task").unwrap();
         assert_eq!(fs::read(&first).unwrap(), b"first");
         assert_eq!(fs::read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn refuses_undo_when_a_committed_name_was_replaced() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("source.txt");
+        let other = folder.path().join("other.txt");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&other, b"other original").unwrap();
+        let state = Shared::default();
+        state
+            .tasks
+            .lock()
+            .unwrap()
+            .insert("task".into(), Task::default());
+        let plan = prepare(vec![
+            Edit {
+                path: strpath(&source),
+                name: "renamed.txt".into(),
+            },
+            Edit {
+                path: strpath(&other),
+                name: "other-renamed.txt".into(),
+            },
+        ])
+        .unwrap();
+        let changes = execute(&plan, &state, "task").unwrap();
+        let target = folder.path().join("renamed.txt");
+        let parked = folder.path().join("parked.txt");
+        fs::rename(&target, &parked).unwrap();
+        fs::write(&target, b"replacement").unwrap();
+        assert!(reverse(&changes, &state, "task").is_err());
+        assert_eq!(fs::read(target).unwrap(), b"replacement");
+        assert_eq!(fs::read(parked).unwrap(), b"original");
+        assert_eq!(
+            fs::read(folder.path().join("other-renamed.txt")).unwrap(),
+            b"other original"
+        );
+        assert!(!source.exists());
     }
 }

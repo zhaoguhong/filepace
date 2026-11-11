@@ -6,11 +6,11 @@ import type { Entry } from "./model";
 export default function Thumbnail({
   entry,
   fallback,
-  applicationIcon = false,
+  nativeIcon = false,
 }: {
   entry: Entry;
   fallback: ReactNode;
-  applicationIcon?: boolean;
+  nativeIcon?: boolean;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [url, setUrl] = useState("");
@@ -27,7 +27,7 @@ export default function Thumbnail({
           imageUrl = URL.createObjectURL(image);
           setUrl(imageUrl);
         },
-        applicationIcon,
+        nativeIcon,
       );
     });
     return () => {
@@ -35,10 +35,10 @@ export default function Thumbnail({
       unsubscribe?.();
       if (imageUrl) URL.revokeObjectURL(imageUrl);
     };
-  }, [entry.path, entry.modified, entry.size, applicationIcon]);
+  }, [entry.path, entry.modified, entry.size, nativeIcon]);
   return (
     <span ref={ref} className="thumbnail">
-      {url ? <img src={url} alt="" draggable={false} /> : fallback}
+      {url ? <img src={url} alt="" draggable={false} onError={() => setUrl("")} /> : fallback}
     </span>
   );
 }

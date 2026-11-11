@@ -20,7 +20,9 @@ test("browse, filter, tabs, restore, preview and grid", async ({ page }) => {
   await page.keyboard.press("Escape");
   await page.getByLabel("图标视图", { exact: true }).click();
   await expect(page.locator(".file-area")).toHaveClass(/grid/);
-  await page.getByLabel("显示隐藏文件").click();
+  await page.getByRole("button", { name: "显示选项", exact: true }).click();
+  await page.getByRole("button", { name: "显示隐藏文件", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect(page.locator(".file-area").getByRole("option")).toHaveCount(12);
   await page.getByRole("tab").first().click({ button: "right" });
   await page.getByRole("button", { name: "关闭标签", exact: true }).click();
@@ -45,8 +47,9 @@ test("distinguishes document icons and saves the chosen size per tab", async ({ 
   const sizeMenu = page.getByRole("group", { name: "选择图标大小" });
   let previousWidth = 0;
   for (const label of ["小图标", "中图标", "大图标", "超大图标"]) {
-    await page.getByRole("button", { name: "图标大小", exact: true }).click();
+    await page.getByRole("button", { name: "显示选项", exact: true }).click();
     await sizeMenu.getByRole("button", { name: label, exact: true }).click();
+    await page.keyboard.press("Escape");
     const icon = await word.locator(".entry-icon").boundingBox();
     expect(icon?.width).toBeGreaterThan(previousWidth);
     previousWidth = icon!.width;
@@ -89,7 +92,7 @@ test("shows storage volumes, filters scan results, and locates a file", async ({
 
 test("searches by file name and type and reveals the result", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "跨目录搜索" }).click();
+  await page.getByRole("button", { name: "搜索子文件夹" }).click();
   await page.getByRole("textbox", { name: "文件名关键词" }).fill("会议");
   await page.getByRole("combobox", { name: "文件类型" }).selectOption("images");
   await page.getByRole("button", { name: "开始搜索" }).click();
@@ -105,7 +108,7 @@ test("follows system light and dark mode and keeps an explicit theme", async ({ 
   await page.goto("/");
   const root = page.locator("html");
   await expect(root).toHaveAttribute("data-mode", "light");
-  for (const surface of ["html", ".titlebar", ".sidebar", ".tabs", ".active-column", ".statusbar"]) {
+  for (const surface of ["html", ".titlebar", ".sidebar", ".tabs", ".column-head", ".statusbar"]) {
     await expect(page.locator(surface)).toHaveCSS("background-color", "rgb(255, 255, 255)");
   }
   const file = page.getByRole("option", { name: /会议纪要\.docx/ });
@@ -134,8 +137,9 @@ test("follows system light and dark mode and keeps an explicit theme", async ({ 
   await expect(root).toHaveCSS("background-color", "rgb(252, 249, 255)");
 });
 
-test("opens new tabs in columns and follows a branch until the file preview", async ({ page }) => {
+test("follows column branches and applies a changed default only to new tabs", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "列视图", exact: true }).click();
   const current = page.getByLabel("文件列表", { exact: true });
   await expect(current).toBeVisible();
   const strip = await page.locator(".column-browser").boundingBox();
@@ -158,11 +162,11 @@ test("opens new tabs in columns and follows a branch until the file preview", as
 
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const view = page.getByRole("combobox", { name: "默认视图" });
-  await expect(view).toHaveValue("columns");
-  await view.selectOption("list");
+  await expect(view).toHaveValue("list");
+  await view.selectOption("grid");
   await page.getByRole("button", { name: "返回文件" }).click();
   await page.getByRole("button", { name: "新建标签", exact: true }).click();
-  await expect(current).toHaveClass(/^file-area list/);
+  await expect(current).toHaveClass(/^file-area grid/);
   await page.getByRole("tab").first().click();
   await expect(current).toHaveClass(/column-list/);
 });
@@ -174,7 +178,8 @@ test("new folder errors are visible and navigation can be typed", async ({
   await page.getByLabel("完整路径").fill("/Users/demo/Downloads");
   await page.getByLabel("完整路径").press("Enter");
   await expect(page.getByText("这个文件夹还是空的")).toBeVisible();
-  await page.getByRole("button", { name: "新建文件夹", exact: true }).click();
+  await page.getByLabel("文件列表", { exact: true }).click({ button: "right", position: { x: 25, y: 200 } });
+  await page.locator(".context-menu").getByRole("button", { name: "新建文件夹", exact: true }).click();
   await expect(page.getByLabel("文件夹名称")).toBeVisible();
   await page.getByRole("button", { name: "取消", exact: true }).click();
 });
@@ -229,13 +234,14 @@ test("shows path and system actions for a file, a folder and an empty list", asy
 
 const home = "/Users/demo";
 
-async function mockDesktop(page: Page, defaultView: "list" | "columns", root = home, count = 0) {
-  await page.addInitScript(({ home, defaultView, count, version }) => {
+async function mockDesktop(page: Page, defaultView: "list" | "columns", root = home, count = 0, files?: [string, boolean, boolean?][], persistSession = false) {
+  await page.addInitScript(({ home, defaultView, count, version, files, persistSession }) => {
     localStorage.setItem("filepace-preferences", JSON.stringify({ defaultView }));
     const writes: { command: string; args: Record<string, unknown> }[] = [];
     const reads: string[] = [];
+    const icons: Record<string, unknown>[] = [];
     const separator = home.includes("\\") ? "\\" : "/";
-    const listings: Record<string, [string, boolean][]> = {
+    const listings: Record<string, [string, boolean, boolean?][]> = {
       [home]: [["项目", true], ["左栏文件.txt", false], ["补充文档.DOCX", false]],
       [`${home}${separator}项目`]: [["归档", true], ["右栏文件.txt", false]],
     };
@@ -246,6 +252,7 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
     }
     listings[branch] = [["深层文件.txt", false]];
     if (count) listings[home] = Array.from({ length: count }, (_, i) => [`文件 ${(i * 7919) % count}.txt`, false]);
+    if (files) listings[home] = files;
     let callback = 0;
     let revision = 0;
     let tasks: Task[] = [];
@@ -267,6 +274,8 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
       isTauri: true,
       filepaceWrites: writes,
       filepaceReads: reads,
+      filepaceIcons: icons,
+      filepaceListings: listings,
       filepaceEmit: emit,
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
       __TAURI_INTERNALS__: {
@@ -276,6 +285,8 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
           return callback;
         },
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
+          if (persistSession && command === "load_session") return JSON.parse(sessionStorage.getItem("filepace-fixture-session") ?? "null");
+          if (persistSession && command === "save_session") sessionStorage.setItem("filepace-fixture-session", JSON.stringify(args.value));
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
           if (command === "tasks") return { tasks, revision, undo: null };
           if (command === "error_log") return (window as Window & { filepaceErrors?: unknown[] }).filepaceErrors ?? [];
@@ -289,10 +300,21 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
             return {
               path,
               parent: path.slice(0, path.lastIndexOf(separator)),
-              entries: (listings[path] ?? []).map(([name, isDir]) => ({
-                name, isDir, path: `${path}${separator}${name}`, isLink: false, size: 10, modified: 0, hidden: false,
+              entries: (listings[path] ?? []).map(([name, isDir, isLink = false]) => ({
+                name, isDir, path: `${path}${separator}${name}`, isLink, size: 10, modified: 0, hidden: name.startsWith("."),
               })),
             };
+          }
+          if (command === "thumbnail") {
+            icons.push(args);
+            if (String(args.path).includes("Unavailable")) throw "系统文件图标不可用";
+            if (String(args.path).includes("Corrupt")) return new Uint8Array([1, 2, 3]).buffer;
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 16;
+            const context = canvas.getContext("2d")!;
+            context.fillStyle = String(args.path).includes("Second") ? "#328361" : "#3178c6";
+            context.fillRect(0, 0, 16, 16);
+            return Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]), (c) => c.charCodeAt(0)).buffer;
           }
           if (command === "make_text_file") {
             writes.push({ command, args });
@@ -319,8 +341,262 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
         },
       },
     });
-  }, { home: root, defaultView, count, version: packageInfo.version });
+  }, { home: root, defaultView, count, version: packageInfo.version, files, persistSession });
 }
+
+test("starts in list view and keeps navigation and file actions in their existing menus", async ({ page }) => {
+  await page.goto("/");
+  const files = page.getByLabel("文件列表", { exact: true });
+  await expect(files).toHaveClass(/^file-area list/);
+  await expect(page.locator(".view-switch button").first()).toHaveAccessibleName("列表视图");
+  for (const name of ["新建文件夹", "复制", "剪切", "粘贴", "移到回收站"]) {
+    await expect(page.locator(".toolbar").getByRole("button", { name, exact: true })).toHaveCount(0);
+  }
+  await expect(page.locator(".location-footer")).toHaveCount(0);
+  const footer = page.locator(".statusbar");
+  await expect(footer).toContainText("11 个项目");
+  const file = files.getByRole("option", { name: /产品需求\.md/ });
+  await file.click({ button: "right" });
+  const menu = page.locator(".context-menu");
+  for (const name of ["复制", "剪切", "移到回收站"]) {
+    await expect(menu.getByRole("button", { name, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await file.click();
+  await expect(footer).toContainText("已选择 1 项");
+  await page.keyboard.press("ControlOrMeta+l");
+  await expect(page.getByLabel("完整路径")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "新建标签", exact: true }).click();
+  await expect(files).toHaveClass(/^file-area list/);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const view = page.getByRole("combobox", { name: "默认视图" });
+  await expect(view).toHaveValue("list");
+  await expect(view.locator("option")).toHaveText(["列表", "列视图", "图标"]);
+});
+
+test("distinguishes language icons and loads Windows shortcut icons with safe fallbacks in every view", async ({ page }) => {
+  const root = "C:\\Icon Fixtures";
+  await mockDesktop(page, "list", root, 0, [
+    ["main.PY", false], ["Main.java", false], ["app.js", false], ["app.ts", false],
+    ["App.tsx", false], ["run.ps1", false], ["run.cmd", false], ["Dockerfile", false],
+    [".env.local", false], [".gitignore", false], ["First.lnk", false], ["Second.LNK", false],
+    ["Unavailable.lnk", false], ["Corrupt.lnk", false], ["Site.url", false], ["Setup.msi", false],
+    ["Folder.lnk", true], ["Folder link", true, true], ["unknown.xyz", false],
+  ]);
+  await page.goto("/");
+  await page.getByRole("button", { name: "显示选项", exact: true }).click();
+  await page.getByRole("button", { name: "显示隐藏文件", exact: true }).click();
+  await page.keyboard.press("Escape");
+  const files = page.getByLabel("文件列表", { exact: true });
+  const kinds = { "main.PY": "python", "Main.java": "java", "app.js": "javascript", "app.ts": "typescript", "App.tsx": "tsx", "run.ps1": "powershell", "run.cmd": "batch", "Dockerfile": "docker", ".env.local": "env", ".gitignore": "git", "Folder.lnk": "folder", "unknown.xyz": "generic" };
+  const sources = new Set<string>();
+  for (const [name, kind] of Object.entries(kinds)) {
+    const icon = files.getByRole("option").filter({ has: page.locator(".file-name", { hasText: name }) }).locator(`.entry-icon[data-file-kind="${kind}"] img`);
+    await expect(icon).toBeVisible();
+    sources.add((await icon.getAttribute("src"))!);
+  }
+  expect(sources.size).toBe(Object.keys(kinds).length);
+  for (const label of ["图标视图", "列视图", "列表视图"]) {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    for (const name of ["First.lnk", "Second.LNK", "Site.url", "Setup.msi"]) {
+      const row = files.getByRole("option").filter({ has: page.locator(".file-name", { hasText: name }) });
+      await row.scrollIntoViewIfNeeded();
+      await expect(row.locator(".thumbnail img")).toHaveAttribute("src", /^blob:/);
+      if (name !== "Setup.msi") await expect(row.locator(".shortcut-overlay")).toBeVisible();
+    }
+    for (const name of ["Unavailable.lnk", "Corrupt.lnk"]) {
+      const row = files.getByRole("option").filter({ has: page.locator(".file-name", { hasText: name }) });
+      await row.scrollIntoViewIfNeeded();
+      await expect(row.locator(".entry-icon img")).toHaveAttribute("src", /^data:image\/svg\+xml,/);
+      await expect(row.locator(".shortcut-overlay")).toBeVisible();
+    }
+    await files.evaluate((element) => { element.scrollTop = 0; });
+    await expect(files.getByRole("option").filter({ hasText: "Folder link" }).locator(".shortcut-overlay")).toBeVisible();
+  }
+  const requests = await page.evaluate(() => (window as Window & { filepaceIcons: { path: string; nativeIcon: boolean }[] }).filepaceIcons);
+  expect(requests.map((request) => request.path).sort()).toEqual(["First.lnk", "Second.LNK", "Unavailable.lnk", "Corrupt.lnk", "Site.url", "Setup.msi"].map((name) => `${root}\\${name}`).sort());
+  expect(requests.every((request) => request.nativeIcon)).toBe(true);
+  await page.getByRole("button", { name: "图标视图", exact: true }).click();
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await page.screenshot({ path: `test-results/filepace-file-icons-${colorScheme}.png` });
+  }
+});
+
+test("offers copy and move to the other pane in the file context menu", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("button", { name: "左右分栏", exact: true }).click();
+  const left = page.getByRole("region", { name: "左栏", exact: true });
+  const right = page.getByRole("region", { name: "右栏", exact: true });
+  await right.getByRole("option", { name: /项目/ }).dblclick();
+  const file = left.getByRole("option", { name: /左栏文件\.txt/ });
+  const menu = page.locator(".context-menu");
+  for (const [label, kind] of [["复制到另一栏", "copy"], ["移动到另一栏", "move"]]) {
+    await file.click({ button: "right" });
+    await menu.getByRole("button", { name: label, exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as Window & { filepaceWrites: { command: string; args: Record<string, unknown> }[] }).filepaceWrites.at(-1))).toEqual({
+      command: "start_task", args: { kind, sources: [`${home}/左栏文件.txt`], destination: `${home}/项目` },
+    });
+  }
+});
+
+test("dismisses one interaction at a time while preserving the file selection", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  const files = page.getByLabel("文件列表", { exact: true });
+  const file = files.getByRole("option", { name: /左栏文件\.txt/ });
+  await file.click({ button: "right" });
+  const buttons = page.locator(".context-menu").getByRole("button");
+  await expect(buttons.nth(0)).toHaveAccessibleName("打开");
+  await expect(buttons.nth(1)).toHaveAccessibleName("复制");
+  await expect(buttons.nth(2)).toHaveAccessibleName("剪切");
+  await page.keyboard.press("ArrowDown");
+  await expect(buttons.nth(1)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await expect(files).toBeFocused();
+  await page.keyboard.press("F2");
+  await expect(page.getByLabel("新文件名")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByLabel("新文件名")).toHaveCount(0);
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ControlOrMeta+l");
+  await expect(page.getByLabel("完整路径")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Space");
+  await expect(page.getByLabel("关闭预览")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ControlOrMeta+Shift+n");
+  await expect(page.getByRole("dialog", { name: "新建文件夹" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(files.getByRole("option", { selected: true })).toHaveCount(0);
+});
+
+test("explains filter counts, hidden-only folders and empty-folder actions", async ({ page }) => {
+  await mockDesktop(page, "list", home, 0, [["visible.py", false], ["notes.txt", false], [".secret.py", false]]);
+  await page.goto("/");
+  const filter = page.getByLabel("筛选当前文件夹");
+  const footer = page.locator(".statusbar");
+  await expect(footer).toContainText("2 个项目");
+  await expect(footer).toContainText("隐藏 1 项");
+  await filter.fill("py");
+  await expect(footer).toContainText("匹配 1 项，共 2 项");
+  await expect(page.locator(".filter")).toHaveClass(/active/);
+  await filter.press("Escape");
+  await expect(filter).toHaveValue("");
+  await filter.fill("secret");
+  await expect(page.getByText("另有 1 个匹配项被隐藏，可以显示隐藏文件。")).toBeVisible();
+  await page.getByLabel("文件列表", { exact: true }).getByRole("button", { name: "显示隐藏文件" }).click();
+  await expect(footer).toContainText("匹配 1 项，共 3 项");
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  await page.getByRole("button", { name: "显示选项", exact: true }).click();
+  await page.getByRole("button", { name: "显示隐藏文件", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.evaluate((root) => {
+    const app = window as Window & { filepaceListings: Record<string, [string, boolean][]>; filepaceEmit: (name: string, payload: unknown) => void };
+    app.filepaceListings[root] = [[".only-hidden", false]];
+    app.filepaceEmit("directory-changed", [root]);
+  }, home);
+  await expect(page.getByRole("heading", { name: "这个文件夹只有隐藏项目" })).toBeVisible();
+  await page.getByRole("button", { name: "显示隐藏文件", exact: true }).click();
+  await expect(page.getByRole("option", { name: /only-hidden/ })).toBeVisible();
+  await page.getByRole("button", { name: "编辑路径", exact: true }).click();
+  await page.getByLabel("完整路径").fill(home + "/empty");
+  await page.getByLabel("完整路径").press("Enter");
+  await expect(page.getByRole("heading", { name: "这个文件夹还是空的" })).toBeVisible();
+  await page.getByLabel("文件列表", { exact: true }).getByRole("button", { name: "新建文件夹", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "新建文件夹" })).toBeVisible();
+  await page.keyboard.press("Escape");
+});
+
+test("resizes aligned list columns and restores each tab's saved widths", async ({ page }) => {
+  const longName = "A long Python file name that remains readable while browsing and renaming.py";
+  await mockDesktop(page, "list", home, 0, [["项目", true], [longName, false], ["short.txt", false]], true);
+  await page.goto("/");
+  const name = page.getByRole("option", { name: new RegExp(longName.replaceAll(".", "\\.")) }).locator(".file-name");
+  await expect(name.locator(".file-label")).toHaveAttribute("title", longName);
+  await name.click();
+  const original = (await name.boundingBox())!.width;
+  const separator = page.getByRole("separator", { name: "调整名称列宽", exact: true });
+  const bounds = (await separator.boundingBox())!;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 60, bounds.y + bounds.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await name.boundingBox())!.width).toBeGreaterThan(original + 50);
+  const dateHeader = (await page.locator(".list-heading").nth(1).boundingBox())!;
+  const date = (await name.locator("..").locator(".file-date").boundingBox())!;
+  expect(date.x).toBeCloseTo(dateHeader.x, 0);
+  const resized = (await name.boundingBox())!.width;
+  const cancelBounds = (await separator.boundingBox())!;
+  await page.mouse.move(cancelBounds.x + cancelBounds.width / 2, cancelBounds.y + cancelBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(cancelBounds.x + 20, cancelBounds.y + cancelBounds.height / 2);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect.poll(async () => Math.abs((await name.boundingBox())!.width - resized)).toBeLessThan(2);
+  await expect(name.locator("..")).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: "新建标签", exact: true }).click();
+  await expect.poll(async () => (await name.boundingBox())!.width).toBeLessThan(original + 3);
+  await page.getByRole("tab").first().click();
+  await expect.poll(async () => (await name.boundingBox())!.width).toBeGreaterThan(resized - 3);
+  await page.getByRole("option", { name: /项目/ }).dblclick();
+  await expect(page.getByRole("option", { name: /右栏文件/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem("filepace-fixture-session") ?? "{}").tabs?.[0]?.columnWidths?.length)).toBe(4);
+  await page.reload();
+  await expect(page.getByRole("option", { name: /右栏文件/ })).toBeVisible();
+  await expect(page.locator(".file-pane")).toHaveAttribute("style", /--list-column-0/);
+  await page.getByRole("button", { name: "显示选项", exact: true }).click();
+  await page.getByRole("button", { name: "恢复默认列宽", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".file-pane")).not.toHaveAttribute("style", /--list-column-0/);
+});
+
+test("keeps compact controls, pane focus and display options usable in narrow windows", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  expect((await page.locator(".pane-controls").boundingBox())!.height).toBeLessThan(65);
+  await page.getByRole("button", { name: "左右分栏", exact: true }).click();
+  const left = page.getByRole("region", { name: "左栏", exact: true });
+  const right = page.getByRole("region", { name: "右栏", exact: true });
+  const first = left.getByRole("option", { name: /左栏文件/ });
+  await first.click();
+  await right.getByRole("option", { name: /补充文档/ }).click();
+  await expect(left).not.toHaveClass(/focused/);
+  await expect(right).toHaveClass(/focused/);
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".status-pane")).toContainText("右栏");
+  await page.setViewportSize({ width: 800, height: 640 });
+  for (const pane of [left, right]) {
+    expect(await pane.locator(".pane-controls").evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThan(2);
+  }
+  await right.getByRole("button", { name: "显示选项", exact: true }).click();
+  const menu = page.getByRole("group", { name: "显示选项", exact: true });
+  const menuBounds = (await menu.boundingBox())!;
+  expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(800);
+  expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(640);
+  await menu.getByRole("group", { name: "排序依据" }).getByRole("button", { name: "大小", exact: true }).click();
+  await menu.getByRole("combobox", { name: "列表分组" }).selectOption("kind");
+  await page.keyboard.press("Escape");
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await page.screenshot({ path: `test-results/filepace-compact-panes-${colorScheme}.png` });
+  }
+  await page.getByRole("button", { name: "合并分栏", exact: true }).click();
+  await page.getByRole("button", { name: "编辑路径", exact: true }).click();
+  await page.getByLabel("完整路径").fill("/Users/demo/a-very-long-parent-folder/another-long-parent/current-folder");
+  await page.getByLabel("完整路径").press("Enter");
+  await page.getByRole("button", { name: "上级目录", exact: true }).click();
+  await page.getByRole("group", { name: "选择上级目录", exact: true }).getByRole("button", { name: "demo", exact: true }).click();
+  await expect(page.getByRole("option", { name: /左栏文件/ })).toBeVisible();
+});
 
 test("keeps the ten-thousand-item grid bounded and reveals its last row", async ({ page }) => {
   await mockDesktop(page, "list", home, 10_000);
@@ -595,12 +871,14 @@ test("moves and copies files between panes and keeps both tabs when merging", as
   await right.getByRole("option", { name: /项目/ }).dblclick();
   await expect(left.getByRole("option", { name: /左栏文件/ })).toBeVisible();
   await expect(right.getByRole("option", { name: /右栏文件/ })).toBeVisible();
-  await expect(page.getByText("左栏", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("右栏", { exact: true })).toHaveCount(0);
-  await left.getByRole("button", { name: "图标大小" }).click();
+  await expect(left.locator(".pane-focus-badge")).toContainText("左栏");
+  await expect(right.locator(".pane-focus-badge")).toContainText("右栏");
+  await left.getByRole("button", { name: "显示选项" }).click();
   await page.getByRole("button", { name: "小图标", exact: true }).click();
-  await right.getByRole("button", { name: "图标大小" }).click();
+  await page.keyboard.press("Escape");
+  await right.getByRole("button", { name: "显示选项" }).click();
   await page.getByRole("button", { name: "大图标", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect(left.getByLabel("文件列表")).toHaveAttribute("data-grid-size", "small");
   await expect(right.getByLabel("文件列表")).toHaveAttribute("data-grid-size", "large");
 
