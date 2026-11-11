@@ -260,22 +260,49 @@ mod tests {
         fs::write(&target, b"shortcut target stays untouched").unwrap();
         let first = fixture.path().join("First 快捷方式.LNK");
         let second = fixture.path().join("Second 快捷方式.lnk");
-        // Use the native Shell link writer; no hand-built .lnk parser or target launch.
-        let result = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile", "-NonInteractive", "-Command",
-                "$ErrorActionPreference = 'Stop'; $shell = New-Object -ComObject WScript.Shell; foreach ($pair in @(@($env:FILEPACE_FIRST_ICON, 3), @($env:FILEPACE_SECOND_ICON, 4))) { $link = $shell.CreateShortcut($pair[0]); $link.TargetPath = $env:FILEPACE_ICON_TARGET; $link.IconLocation = \"$env:WINDIR\\System32\\shell32.dll,$($pair[1])\"; $link.Save() }",
-            ])
-            .env("FILEPACE_FIRST_ICON", &first)
-            .env("FILEPACE_SECOND_ICON", &second)
-            .env("FILEPACE_ICON_TARGET", &target)
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        // Generate fixtures through Unicode Shell interfaces, avoiding external
+        // script encoding and argument parsing.
+        fn create_link(path: &Path, target: &Path, index: i32) {
+            use std::os::windows::ffi::OsStrExt;
+            use windows::{
+                core::{Interface, PCWSTR},
+                Win32::{
+                    System::Com::{
+                        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile,
+                        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+                    },
+                    UI::Shell::{IShellLinkW, ShellLink},
+                },
+            };
+            struct Apartment;
+            impl Drop for Apartment {
+                fn drop(&mut self) {
+                    unsafe { CoUninitialize() };
+                }
+            }
+            let wide = |path: &Path| {
+                path.as_os_str()
+                    .encode_wide()
+                    .chain([0])
+                    .collect::<Vec<_>>()
+            };
+            let resource = Path::new(&std::env::var("WINDIR").unwrap())
+                .join("System32")
+                .join("shell32.dll");
+            unsafe {
+                CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+                let _apartment = Apartment;
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                link.SetPath(PCWSTR(wide(target).as_ptr())).unwrap();
+                link.SetIconLocation(PCWSTR(wide(&resource).as_ptr()), index)
+                    .unwrap();
+                let file: IPersistFile = link.cast().unwrap();
+                file.Save(PCWSTR(wide(path).as_ptr()), true).unwrap();
+            }
+        }
+        create_link(&first, &target, 3);
+        create_link(&second, &target, 4);
         let first_contents = fs::read(&first).unwrap();
         let second_contents = fs::read(&second).unwrap();
         let first_png = load(&first).unwrap();
