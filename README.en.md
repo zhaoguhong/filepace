@@ -77,6 +77,8 @@ New tabs use List View by default. The toolbar orders the choices as List, Colum
 
 Use the top address bar to view or enter a path, and its ellipsis to choose an ancestor folder. Filtering the current folder shows match counts, and folders containing only hidden items explain how to reveal them. The status bar shows item counts, selection sizes, file tasks, and the active pane in Split View. Folder creation, copy, cut, paste, and trash actions are available through context menus and keyboard shortcuts; empty folders also offer a creation action. Escape dismisses a menu, preview, or rename field while preserving the selection; press it again to clear the selection. Open folders refresh when local files change.
 
+Large directories appear in batches, and leaving cancels further reads. Refresh keeps the previous list and selection until the complete result arrives. Individual filesystem calls on network or removable drives may still take time.
+
 Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
 
 Click the sidebar's **Common Locations (常用位置)** or **Favorites (收藏目录)** heading to collapse or expand it. Use the plus button beside Common Locations to add the current folder. Right-click a shortcut to reorder or remove it. The sidebar remembers your changes.
@@ -88,8 +90,6 @@ Use **Open With (打开方式)** to choose from the apps provided by the system.
 ## App updates
 
 Starting with v0.4.0, Filepace checks, downloads, and verifies stable updates from GitHub in the background. Use **Settings → Updates** to check manually or turn off automatic updates. Finish active file tasks before restarting to install an update. Upgrade from v0.3.0 or earlier by downloading the new installer once.
-
-Large directories appear in batches, and leaving cancels further reads. Refresh keeps the previous list and selection until the complete result arrives. Individual filesystem calls on network or removable drives may still take time.
 
 ## Search subfolders
 

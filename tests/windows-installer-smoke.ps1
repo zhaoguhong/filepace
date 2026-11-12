@@ -204,6 +204,8 @@ try {
 
     Click-Element (Wait-ForElement $window '存储概览')
     $null = Wait-ForElement $window '*已用比例'
+    Click-Element (Wait-ForElement $window '目录分析')
+    $null = Wait-ForElement $window '扫描范围'
     Click-Element (Wait-ForElement $window '开始扫描')
     $null = Wait-ForElement $window '文件分类'
     Click-Element (Wait-ForElement $window '图片*1*')
