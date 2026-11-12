@@ -313,7 +313,7 @@ test("reveals a search result that arrives only in the final directory batch", a
   await page.getByRole("button", { name: "搜索子文件夹", exact: true }).click();
   await page.getByLabel("文件名关键词").fill("zz-final");
   await page.getByRole("button", { name: "开始搜索", exact: true }).click();
-  await page.getByRole("button", { name: /zz-final.txt/ }).click();
+  await page.locator(".result-row").filter({ hasText: "zz-final.txt" }).getByRole("button", { name: "打开所在目录并选中" }).click();
   await expect
     .poll(() =>
       page.evaluate(

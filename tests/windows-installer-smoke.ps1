@@ -92,6 +92,66 @@ if ((Test-Path $executable) -or (Test-Path $sessionFile)) { throw 'Expected a cl
 $installers = @(Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe')
 if ($installers.Count -ne 1) { throw 'Expected one NSIS installer' }
 
+# This executable is a local protocol fixture, never an installed AI client.
+# It neither contacts a service nor uses credentials or account quota.
+$diagnosisFixture = Join-Path $root 'diagnosis-cli'
+$null = New-Item -ItemType Directory -Path $diagnosisFixture
+$diagnosisCommand = Join-Path $diagnosisFixture 'codex.exe'
+$diagnosisPrompt = Join-Path $diagnosisFixture 'prompt.txt'
+$diagnosisStarted = Join-Path $diagnosisFixture 'started'
+$diagnosisRelease = Join-Path $diagnosisFixture 'allow-report'
+$diagnosisFinished = Join-Path $diagnosisFixture 'finished'
+Add-Type -OutputAssembly $diagnosisCommand -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Threading;
+public static class FilepaceDiagnosisFixture {
+    public static int Main(string[] args) {
+        if (Array.IndexOf(args, "--version") >= 0 || (args.Length == 1 && args[0] == "version")) {
+            Console.WriteLine("codex-cli 0.0.0-filepace-fixture");
+            return 0;
+        }
+        if (Array.IndexOf(args, "--help") >= 0) {
+            Console.WriteLine("Local Filepace fixture: exec --json --output-schema <path> -");
+            return 0;
+        }
+        if (args.Length == 0 || args[0] != "exec" || Array.IndexOf(args, "--json") < 0) {
+            Console.Error.WriteLine("Unexpected local fixture arguments");
+            return 2;
+        }
+        string root = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        string prompt;
+        using (var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false))) {
+            prompt = input.ReadToEnd();
+        }
+        if (!prompt.Contains("\"scopeName\"")) {
+            Console.Error.WriteLine("Missing directory snapshot in fixture input");
+            return 3;
+        }
+        File.WriteAllText(Path.Combine(root, "prompt.txt"), prompt, new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(root, "started"), "started");
+        Thread.Sleep(3000);
+        // Wait for real UI navigation before replying, even on a slow runner.
+        // The deadline also lets the fixture terminate if smoke automation fails.
+        DateTime deadline = DateTime.UtcNow.AddSeconds(20);
+        while (!File.Exists(Path.Combine(root, "allow-report"))) {
+            if (DateTime.UtcNow >= deadline) {
+                Console.Error.WriteLine("Fixture timed out waiting for background navigation");
+                return 4;
+            }
+            Thread.Sleep(100);
+        }
+        string report = "{\"summary\":\"FILEPACE_NATIVE_DIAGNOSIS_FIXTURE_OK\",\"findings\":[],\"limitations\":[]}";
+        string text = report.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        Console.WriteLine("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"" + text + "\"}}");
+        File.WriteAllText(Path.Combine(root, "finished"), "finished");
+        return 0;
+    }
+}
+'@
+
 function New-Pane($id, $path) {
     return @{
         active = $id
@@ -107,7 +167,7 @@ $main.focused = 'left'
 $null = New-Item -ItemType Directory -Path $config -Force
 [IO.File]::WriteAllText($sessionFile, (@{ main = $main } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
-function Wait-ForElement($area, $label) {
+function Wait-ForElement($area, $label, [System.Windows.Automation.ControlType]$ControlType = $null) {
     $deadline = (Get-Date).AddSeconds(15)
     do {
         $elements = $area.FindAll(
@@ -115,7 +175,8 @@ function Wait-ForElement($area, $label) {
             [System.Windows.Automation.Condition]::TrueCondition
         )
         foreach ($element in $elements) {
-            if ($element.Current.Name -like $label -and -not $element.Current.IsOffscreen) { return $element }
+            if ($element.Current.Name -like $label -and -not $element.Current.IsOffscreen -and
+                ($null -eq $ControlType -or $element.Current.ControlType -eq $ControlType)) { return $element }
         }
         Start-Sleep -Milliseconds 150
     } while ((Get-Date) -lt $deadline)
@@ -143,6 +204,24 @@ function Enter-Text($element, [string]$value) {
     Set-Clipboard -Value $value
     [FilepaceSmokeMouse]::ControlKey(65)
     [FilepaceSmokeMouse]::ControlKey(86)
+}
+
+function Scroll-Analysis($area, [bool]$ToBottom) {
+    $elements = $area.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    foreach ($element in $elements) {
+        if ($element.Current.IsOffscreen) { continue }
+        $pattern = $null
+        if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern) -and
+            $pattern.Current.VerticallyScrollable) {
+            $position = if ($ToBottom) { 100 } else { 0 }
+            $pattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $position)
+            Start-Sleep -Milliseconds 200
+            return
+        }
+    }
 }
 
 function Assert-Fixture([string]$path) {
@@ -212,6 +291,55 @@ try {
     $null = Wait-ForElement $window '最大的文件 · 图片'
     Click-Element (Wait-ForElement $window '返回文件')
     Write-Host 'Verified volume data, directory scan, and category filtering in the installed app.'
+
+    Click-Element (Wait-ForElement $window '目录分析')
+    Click-Element (Wait-ForElement $window '智能诊断' ([System.Windows.Automation.ControlType]::TabItem))
+    Scroll-Analysis $window $true
+    Click-Element (Wait-ForElement $window 'AI 工具' ([System.Windows.Automation.ControlType]::ComboBox))
+    # Native HTML select type-ahead selects Codex even if another CLI was detected.
+    foreach ($key in @(36, 67, 79, 68, 69, 88, 13)) {
+        [FilepaceSmokeMouse]::PressKey($key)
+    }
+    Scroll-Analysis $window $true
+    Click-Element (Wait-ForElement $window '指定命令路径')
+    Scroll-Analysis $window $true
+    Enter-Text (Wait-ForElement $window 'Codex 可执行文件' ([System.Windows.Automation.ControlType]::Edit)) $diagnosisCommand
+    Click-Element (Wait-ForElement $window '重新检测')
+    Scroll-Analysis $window $false
+    $start = Wait-ForElement $window '开始诊断'
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not $start.Current.IsEnabled -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (-not $start.Current.IsEnabled) { throw 'The local diagnosis fixture was not enabled' }
+    Click-Element $start
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path $diagnosisStarted) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path $diagnosisStarted)) { throw 'The local diagnosis fixture did not receive a request' }
+    $prompt = [IO.File]::ReadAllText($diagnosisPrompt, [Text.Encoding]::UTF8)
+    if (-not $prompt.Contains(('"scopeName":"' + [IO.Path]::GetFileName($source) + '"'))) {
+        throw 'Diagnosis did not use the original source directory snapshot'
+    }
+    Click-Element (Wait-ForElement $window '返回文件')
+    $leftPane = Wait-ForElement $window '左栏'
+    Click-Element (Wait-ForElement $leftPane '编辑路径')
+    Enter-Text (Wait-ForElement $leftPane '完整路径' ([System.Windows.Automation.ControlType]::Edit)) $destination
+    [FilepaceSmokeMouse]::PressKey(13)
+    $null = Wait-ForElement $leftPane '这个文件夹还是空的'
+    if (Test-Path $diagnosisFinished) { throw 'Diagnosis completed before background directory navigation' }
+    [IO.File]::WriteAllText($diagnosisRelease, 'ready')
+    Click-Element (Wait-ForElement $window ('诊断已完成：' + [IO.Path]::GetFileName($source)))
+    Scroll-Analysis $window $true
+    $null = Wait-ForElement $window 'FILEPACE_NATIVE_DIAGNOSIS_FIXTURE_OK'
+    Scroll-Analysis $window $false
+    $null = Wait-ForElement $window $source
+    if (-not (Test-Path $diagnosisFinished)) { throw 'The local diagnosis fixture did not finish' }
+    Click-Element (Wait-ForElement $window '返回文件')
+    $leftPane = Wait-ForElement $window '左栏'
+    $null = Wait-ForElement $leftPane '这个文件夹还是空的'
+    Click-Element (Wait-ForElement $leftPane '编辑路径')
+    Enter-Text (Wait-ForElement $leftPane '完整路径' ([System.Windows.Automation.ControlType]::Edit)) $source
+    [FilepaceSmokeMouse]::PressKey(13)
+    $null = Wait-ForElement $leftPane 'copy.txt*'
+    Write-Host 'Verified native background diagnosis, directory switching, completion entry, and original report using a local CLI fixture without account usage.'
 
     $rightPane = Wait-ForElement $window '右栏'
     $list = (Wait-ForElement $rightPane '文件列表').Current.BoundingRectangle

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
-  ArrowUpRight,
   Folder,
   FolderSearch,
   ChartPie,
@@ -11,10 +10,12 @@ import {
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
-import FileIcon from "./FileIcon";
 import { fileCategoryLabels } from "./fileTypes";
 import { basename, formatSize, type Place } from "./model";
-import StorageDiagnosis from "./StorageDiagnosis";
+import StorageDiagnosis, { type DiagnosisCallbacks } from "./StorageDiagnosis";
+import ResultFiles from "./ResultFiles";
+import type { ResultActionProps } from "./resultActions";
+import { usePreservedScroll } from "./preservedScroll";
 import "./storage.css";
 
 import type {
@@ -39,7 +40,11 @@ const emptyCounts: ScanCounts = { files: 0, folders: 0, bytes: 0, skipped: 0 };
 const number = new Intl.NumberFormat("zh-CN");
 const recentScanLimit = 8;
 const snapshotLifetime = 5 * 60_000;
-type RecentScan = StorageSnapshot & { scannedAt: number; changed: boolean };
+type RecentScan = StorageSnapshot & {
+  scannedAt: number;
+  changed: boolean;
+  changeBaseline: number;
+};
 const normalized = (path: string) => {
   const value = path.replaceAll("\\", "/").replace(/\/+$/, "");
   return /^[a-z]:/i.test(value) || value.startsWith("//")
@@ -62,12 +67,21 @@ function ItemList({
   folders = false,
   onBrowse,
   onChoose,
-}: {
+  onFileAction,
+  fileChanges,
+  fileChangeBatches,
+  visible,
+  scope,
+  changeBaseline,
+}: ResultActionProps & {
   title: string;
   items: RankedItem[];
   folders?: boolean;
   onBrowse: (path: string, selected?: string) => void;
   onChoose: (path: string) => void;
+  visible: boolean;
+  scope: string;
+  changeBaseline?: number;
 }) {
   return (
     <section className="storage-card">
@@ -75,52 +89,43 @@ function ItemList({
       {items.length === 0 ? (
         <p className="storage-muted">这个范围没有项目。</p>
       ) : (
-        <ul className="storage-items">
-          {items.map((item) => (
-            <li key={item.path}>
-              <button
-                className="storage-item"
-                title={item.path}
-                onClick={() =>
-                  folders
-                    ? onBrowse(item.path)
-                    : onBrowse(item.parent, item.path)
-                }
-              >
-                <FileIcon
-                  entry={{
-                    ...item,
-                    isDir: folders,
-                    isLink: false,
-                    hidden: false,
-                    modified: 0,
-                  }}
-                  showThumbnail={false}
-                />
-                <span>
-                  <b>{item.name}</b>
-                  <small>
-                    {folders
-                      ? `${number.format(item.files)} 个文件`
-                      : item.parent}
-                  </small>
-                </span>
-                <strong>{formatSize(item.size)}</strong>
-                <ArrowUpRight size={14} />
-              </button>
-              {folders && (
-                <button
-                  className="storage-scan-folder"
-                  title="选为扫描范围"
-                  aria-label={`选择 ${item.name} 作为扫描范围`}
-                  onClick={() => onChoose(item.path)}
-                >
-                  <FolderSearch size={16} />
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
+        <ResultFiles
+          items={items.map((item) => ({
+            entry: {
+              ...item,
+              isDir: folders,
+              isLink: false,
+              hidden: false,
+              modified: 0,
+            },
+            parent: item.parent,
+            detail: folders
+              ? `${number.format(item.files)} 个文件 · ${item.parent}`
+              : undefined,
+          }))}
+          scope={scope}
+          label={title}
+          visible={visible}
+          changeBaseline={changeBaseline}
+          onBrowse={onBrowse}
+          onFileAction={onFileAction}
+          fileChanges={fileChanges}
+          fileChangeBatches={fileChangeBatches}
+          extra={
+            folders
+              ? (item) => (
+                  <button
+                    className="storage-scan-folder"
+                    title="选为扫描范围"
+                    aria-label={`选择 ${item.entry.name} 作为扫描范围`}
+                    onClick={() => onChoose(item.entry.path)}
+                  >
+                    <FolderSearch size={16} />
+                  </button>
+                )
+              : undefined
+          }
+        />
       )}
     </section>
   );
@@ -134,16 +139,25 @@ export default function DirectoryAnalysis({
   onChoose,
   onBrowse,
   onClose,
-}: {
-  visible: boolean;
-  currentPath: string;
-  scope: string;
-  places: Place[];
-  onChoose: (path: string) => void;
-  onBrowse: (path: string, selected?: string) => void;
-  onClose: () => void;
-}) {
+  onFileAction,
+  fileChanges,
+  fileChangeBatches,
+  onDiagnosisStatus,
+  onDiagnosisComplete,
+  diagnosisOpen,
+}: ResultActionProps &
+  DiagnosisCallbacks & {
+    visible: boolean;
+    currentPath: string;
+    scope: string;
+    places: Place[];
+    onChoose: (path: string) => void;
+    onBrowse: (path: string, selected?: string) => void;
+    onClose: () => void;
+    diagnosisOpen?: { scope: string; request: number };
+  }) {
   const [volumes, setVolumes] = useState<StorageVolume[]>([]);
+  const preservedScroll = usePreservedScroll(visible);
   const [view, setView] = useState<"usage" | "diagnosis">("usage");
   const [scanProgress, setScanProgress] = useState<ScanCounts | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -154,7 +168,11 @@ export default function DirectoryAnalysis({
   const scanId = useRef("");
   const scanCancelled = useRef(false);
   const scanPath = useRef("");
+  const scanForDiagnosis = useRef(false);
   const path = scope || currentPath;
+  const currentPathRef = useRef(path);
+  currentPathRef.current = path;
+  const openedDiagnosis = useRef<number | undefined>(undefined);
   const scanResult = recentScans.find((snapshot) => snapshot.scope === path);
   const report = scanResult?.report ?? null;
   const scannedAt = scanResult?.scannedAt;
@@ -165,6 +183,39 @@ export default function DirectoryAnalysis({
   const counts =
     (scanPath.current === path ? scanProgress : null) ?? report?.counts;
   const busy = scanProgress !== null;
+  const observedSequence = useRef(fileChangeBatches?.at(-1)?.sequence ?? 0);
+  useEffect(() => {
+    if (
+      visible &&
+      diagnosisOpen &&
+      diagnosisOpen.scope === path &&
+      diagnosisOpen.request !== openedDiagnosis.current
+    ) {
+      openedDiagnosis.current = diagnosisOpen.request;
+      setView("diagnosis");
+    }
+  }, [diagnosisOpen, path, visible]);
+  useEffect(() => {
+    const batches =
+      fileChangeBatches?.filter(
+        (batch) => batch.sequence > observedSequence.current,
+      ) ?? [];
+    if (!batches.length) return;
+    observedSequence.current = batches.at(-1)!.sequence;
+    setRecentScans((scans) =>
+      scans.map((snapshot) =>
+        batches.some((batch) =>
+          batch.changes.some(
+            (change) =>
+              overlaps(change.from, snapshot.scope) ||
+              Boolean(change.to && overlaps(change.to, snapshot.scope)),
+          ),
+        )
+          ? { ...snapshot, changed: true }
+          : snapshot,
+      ),
+    );
+  }, [fileChangeBatches]);
 
   useEffect(() => {
     if (!visible) return;
@@ -219,19 +270,29 @@ export default function DirectoryAnalysis({
     setFilter("");
     // A volume or folder entry can change scope while a manual scan is running.
     // Stop the old scan before allowing another; never show its counts here.
-    if (scanId.current && scanPath.current !== path && !scanCancelled.current) {
+    if (
+      scanId.current &&
+      scanPath.current !== path &&
+      !scanForDiagnosis.current &&
+      !scanCancelled.current
+    ) {
       void cancelScan(scanId.current).catch((error) =>
         setScanError(String(error)),
       );
     }
   }, [path]);
 
-  async function runScan(id: string): Promise<StorageSnapshot | null> {
+  async function runScan(
+    id: string,
+    forDiagnosis = false,
+  ): Promise<RecentScan | null> {
     if (!path) throw new Error("请先选择分析范围。");
     if (scanId.current) throw new Error("当前范围正在扫描，请等待扫描结束。");
     scanId.current = id;
     scanPath.current = path;
+    scanForDiagnosis.current = forDiagnosis;
     scanCancelled.current = false;
+    const startingSequence = observedSequence.current;
     setScanProgress(emptyCounts);
     setScanError("");
     setRecentScans((scans) =>
@@ -244,11 +305,18 @@ export default function DirectoryAnalysis({
         id,
       });
       if (scanCancelled.current || !result) {
-        setScanError("扫描已停止。");
+        if (currentPathRef.current === path) setScanError("扫描已停止。");
         return null;
       }
-      const snapshot = { scope: path, id, report: result };
       const scannedAt = Date.now();
+      const snapshot: RecentScan = {
+        scope: path,
+        id,
+        report: result,
+        scannedAt,
+        changed: observedSequence.current !== startingSequence,
+        changeBaseline: startingSequence,
+      };
       setNow(scannedAt);
       setRecentScans((scans) =>
         [
@@ -256,18 +324,21 @@ export default function DirectoryAnalysis({
             (previous) =>
               previous.scope !== path && previous.report.path !== result.path,
           ),
-          { ...snapshot, scannedAt, changed: false },
+          snapshot,
         ].slice(-recentScanLimit),
       );
       return snapshot;
     } catch (error) {
       if (scanCancelled.current) return null;
-      setScanError(String(error));
+      if (currentPathRef.current === path) setScanError(String(error));
       throw error;
     } finally {
-      scanId.current = "";
-      setStopping(false);
-      setScanProgress(null);
+      if (scanId.current === id) {
+        scanId.current = "";
+        scanForDiagnosis.current = false;
+        setStopping(false);
+        setScanProgress(null);
+      }
     }
   }
 
@@ -279,7 +350,7 @@ export default function DirectoryAnalysis({
 
   async function prepareDiagnosisScan(id: string, refresh: boolean) {
     if (!refresh && !stale && report && scanResult) return scanResult;
-    return runScan(id);
+    return runScan(id, true);
   }
 
   async function cancelScan(id: string) {
@@ -356,6 +427,7 @@ export default function DirectoryAnalysis({
   return (
     <section
       className="storage-dashboard directory-analysis"
+      {...preservedScroll}
       aria-label="目录分析"
       hidden={!visible}
     >
@@ -382,7 +454,7 @@ export default function DirectoryAnalysis({
               <label htmlFor="storage-scope">扫描范围</label>
               <select
                 id="storage-scope"
-                disabled={busy}
+                disabled={busy && !scanForDiagnosis.current}
                 value={scope === currentPath ? "" : scope}
                 onChange={(event) => choose(event.target.value)}
               >
@@ -403,7 +475,11 @@ export default function DirectoryAnalysis({
           )}
           {busy && (
             <p className="storage-muted" role="status">
-              {stopping ? "等待当前读取结束…" : "正在读取目录…"}
+              {stopping
+                ? "等待当前读取结束…"
+                : scanPath.current !== path
+                  ? `正在后台读取目录：${scanPath.current}`
+                  : "正在读取目录…"}
             </p>
           )}
           {stale && (
@@ -629,6 +705,7 @@ export default function DirectoryAnalysis({
                   </div>
                   <div className="storage-rankings">
                     <ItemList
+                      key={`files-${scanResult?.id}`}
                       title={
                         filter
                           ? `最大的文件 · ${categories[filter]?.label ?? filter}`
@@ -637,13 +714,26 @@ export default function DirectoryAnalysis({
                       items={largest}
                       onBrowse={browseResult}
                       onChoose={choose}
+                      scope={path}
+                      visible={visible && view === "usage"}
+                      changeBaseline={scanResult?.changeBaseline}
+                      onFileAction={onFileAction}
+                      fileChanges={fileChanges}
+                      fileChangeBatches={fileChangeBatches}
                     />
                     <ItemList
+                      key={`folders-${scanResult?.id}`}
                       title="占用最多的子目录"
                       items={report.folders}
                       folders
                       onBrowse={browseResult}
                       onChoose={choose}
+                      scope={path}
+                      visible={visible && view === "usage"}
+                      changeBaseline={scanResult?.changeBaseline}
+                      onFileAction={onFileAction}
+                      fileChanges={fileChanges}
+                      fileChangeBatches={fileChangeBatches}
                     />
                   </div>
                 </div>
@@ -668,6 +758,13 @@ export default function DirectoryAnalysis({
               onPrepare={prepareDiagnosisScan}
               onCancelScan={cancelScan}
               onBrowse={browseResult}
+              onFileAction={onFileAction}
+              fileChanges={fileChanges}
+              fileChangeBatches={fileChangeBatches}
+              resultsVisible={visible && view === "diagnosis"}
+              changeBaseline={scanResult?.changeBaseline}
+              onDiagnosisStatus={onDiagnosisStatus}
+              onDiagnosisComplete={onDiagnosisComplete}
               onShowUsage={() => {
                 setView("usage");
                 document.getElementById("analysis-tab-usage")?.focus();

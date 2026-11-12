@@ -384,6 +384,7 @@ impl ScanState {
             label,
             &format!("search:{label}"),
             &format!("compare:{label}"),
+            &format!("duplicates:{label}"),
             &format!("diagnosis:{label}"),
         ] {
             if let Some(job) = jobs.get(key) {

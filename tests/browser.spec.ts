@@ -82,11 +82,11 @@ test("shows storage volumes, filters scan results, and locates a file", async ({
   await expect(page.getByRole("heading", { name: "最大的文件 · 压缩包" })).toBeVisible();
   await expect(page.getByRole("button", { name: /数据备份\.zip/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /季度汇报\.pptx/ })).toHaveCount(0);
-  await page.getByRole("button", { name: /数据备份\.zip/ }).click();
+  await page.locator(".result-row").filter({ hasText: "数据备份.zip" }).getByRole("button", { name: "打开所在目录并选中" }).click();
   await expect(page.getByRole("heading", { name: "存储概览" })).toHaveCount(0);
   await expect(page.getByRole("option", { name: /数据备份\.zip/, selected: true })).toBeVisible();
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
-  await page.getByRole("button", { name: /^项目 0 个文件/ }).click();
+  await page.getByRole("button", { name: /^项目 0 个文件/ }).dblclick();
   await expect(page.getByText("这个文件夹还是空的")).toBeVisible();
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
   await expect(page.getByLabel("扫描范围", { exact: true })).toHaveValue("/Users/demo");
@@ -118,7 +118,7 @@ test("searches by file name and type and reveals the result", async ({ page }) =
   await expect(page.getByText("这个范围没有匹配的项目。")).toBeVisible();
   await page.getByRole("combobox", { name: "文件类型" }).selectOption("documents");
   await page.getByRole("textbox", { name: "文件名关键词" }).press("Enter");
-  await page.getByRole("button", { name: /会议纪要\.docx/ }).click();
+  await page.locator(".result-row").filter({ hasText: "会议纪要.docx" }).getByRole("button", { name: "打开所在目录并选中" }).click();
   await expect(page.getByRole("option", { name: /会议纪要\.docx/, selected: true })).toBeVisible();
 });
 
@@ -352,7 +352,7 @@ test("diagnoses with all four agents, configures a missing command, and retains 
   await start.click();
   const report = page.getByLabel("智能诊断报告", { exact: true });
   await expect(report).toContainText("由 codex 生成的诊断");
-  await report.getByRole("button", { name: /左栏文件\.txt/ }).click();
+  await report.getByRole("button", { name: "打开所在目录并选中" }).click();
   await expect(page.getByRole("option", { name: /左栏文件\.txt/, selected: true })).toBeVisible();
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
   await expect(report).toContainText("由 codex 生成的诊断");
@@ -370,6 +370,7 @@ test("diagnoses with all four agents, configures a missing command, and retains 
   await expect(report).toContainText("由 opencode 生成的诊断");
   await page.getByLabel("AI 工具", { exact: true }).selectOption("deepseek");
   await expect(page.getByLabel("AI 连接配置")).toContainText("my-provider");
+  await page.getByText("连接配置", { exact: true }).click();
   await page.getByLabel("配置方案", { exact: true }).selectOption("web");
   await start.click();
   await expect(report).toContainText("由 deepseek 生成的诊断");
@@ -405,44 +406,37 @@ test("stops diagnosis, reports an agent error, and allows retry", async ({ page 
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
-test("cancels a stale diagnosis when the scan scope changes and ignores late output", async ({ page }) => {
+test("keeps diagnosis tied to its original scope while browsing another analysis range", async ({ page }) => {
   await mockStorageDiagnosis(page, "late");
-  await page.getByRole("tab", { name: "占用分析", exact: true }).click();
-  await page.getByRole("button", { name: "开始扫描", exact: true }).click();
-  await page.getByRole("tab", { name: "智能诊断", exact: true }).click();
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
   await page.getByLabel("扫描范围", { exact: true }).selectOption("/Volumes/fixture");
-  await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
-  await expect.poll(async () => page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_diagnosis").length)).toBe(1);
+  await expect(page.getByText(/正在后台诊断：/)).toContainText(home);
   await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.complete());
-  await page.getByRole("tab", { name: "占用分析", exact: true }).click();
-  await page.getByRole("button", { name: "开始扫描", exact: true }).click();
-  await page.getByRole("tab", { name: "智能诊断", exact: true }).click();
+  await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
   await expect(page.getByLabel("智能诊断报告", { exact: true })).toHaveCount(0);
-  await page.evaluate(() => { (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.mode = "success"; });
-  await page.getByRole("button", { name: "开始诊断", exact: true }).click();
-  await expect(page.getByLabel("智能诊断报告", { exact: true }).getByRole("button", { name: /左栏文件\.txt/ })).toHaveAttribute("title", "/Volumes/fixture/左栏文件.txt");
+  await page.getByLabel("扫描范围", { exact: true }).selectOption("");
+  await expect(page.getByLabel("智能诊断报告", { exact: true }).getByRole("button", { name: /左栏文件\.txt/ })).toHaveAttribute("title", `${home}/左栏文件.txt`);
+  const calls = await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls);
+  expect(calls.filter((call) => call.command === "cancel_storage_diagnosis")).toHaveLength(0);
 });
 
-test("cancels diagnosis when rescanning or closing directory analysis", async ({ page }) => {
+test("keeps diagnosis running while rescanning and closing directory analysis", async ({ page }) => {
   await mockStorageDiagnosis(page, "pending");
-  await page.getByRole("tab", { name: "占用分析", exact: true }).click();
-  await page.getByRole("button", { name: "开始扫描", exact: true }).click();
-  await page.getByRole("tab", { name: "智能诊断", exact: true }).click();
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "占用分析", exact: true }).click();
   await page.getByRole("button", { name: "重新扫描", exact: true }).click();
   await page.getByRole("tab", { name: "智能诊断", exact: true }).click();
-  await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
-  await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "返回文件", exact: true }).click();
-  await expect.poll(async () => page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_diagnosis").length)).toBe(2);
+  await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.complete());
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
-  await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
-  await expect(page.getByLabel("智能诊断报告", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("智能诊断报告", { exact: true })).toBeVisible();
+  const calls = await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls);
+  expect(calls.filter((call) => call.command === "cancel_storage_diagnosis")).toHaveLength(0);
+  expect(calls.filter((call) => call.command === "scan_storage")).toHaveLength(2);
+  expect(calls.find((call) => call.command === "diagnose_storage")?.args.scanId).toBe(calls.find((call) => call.command === "scan_storage")?.args.id);
 });
 
 test("sends preset directions and supplemental requirements and reuses the scan", async ({ page }) => {
@@ -515,18 +509,19 @@ test("never calls an agent after stopping preparation, even if the scan complete
   expect(calls.filter((call) => call.command === "diagnose_storage")).toHaveLength(0);
 });
 
-test("cancels preparation when closing the panel and does not start an agent on a late scan", async ({ page }) => {
+test("continues preparation after closing the panel and starts the agent on its original snapshot", async ({ page }) => {
   await mockStorageDiagnosis(page);
   await page.evaluate(() => { (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.scanMode = "late"; });
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "返回文件", exact: true }).click();
-  await expect.poll(async () => page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_scan").length)).toBe(1);
   await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.completeScans());
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
-  await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("智能诊断报告", { exact: true })).toBeVisible();
   const calls = await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls);
-  expect(calls.filter((call) => call.command === "diagnose_storage")).toHaveLength(0);
+  expect(calls.filter((call) => call.command === "cancel_storage_scan")).toHaveLength(0);
+  expect(calls.filter((call) => call.command === "diagnose_storage")).toHaveLength(1);
+  expect(calls.find((call) => call.command === "diagnose_storage")?.args.scanId).toBe(calls.find((call) => call.command === "scan_storage")?.args.id);
 });
 
 test("handles failed and empty automatic scans without spending agent usage", async ({ page }) => {
@@ -1184,8 +1179,9 @@ test("moves and copies files between panes and keeps both tabs when merging", as
   await right.getByRole("option", { name: /项目/ }).dblclick();
   await expect(left.getByRole("option", { name: /左栏文件/ })).toBeVisible();
   await expect(right.getByRole("option", { name: /右栏文件/ })).toBeVisible();
-  await expect(left.locator(".pane-focus-badge")).toContainText("左栏");
-  await expect(right.locator(".pane-focus-badge")).toContainText("右栏");
+  await expect(right).toHaveClass(/focused/);
+  await expect(left.locator(".pane-focus-badge")).toHaveCount(0);
+  await expect(right.locator(".pane-focus-badge")).toHaveCount(0);
   await left.getByRole("button", { name: "显示选项" }).click();
   await page.getByRole("button", { name: "小图标", exact: true }).click();
   await page.keyboard.press("Escape");
@@ -1414,7 +1410,7 @@ test("opens directory analysis from volumes and folder menus without changing pa
   await expect(page.getByLabel("扫描范围", { exact: true })).toHaveValue("/");
 });
 
-test("keeps diagnosis running across analysis tabs and cancels when opening volume overview", async ({ page }) => {
+test("keeps diagnosis running across analysis tabs and volume overview", async ({ page }) => {
   await mockStorageDiagnosis(page, "pending");
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
@@ -1426,7 +1422,9 @@ test("keeps diagnosis running across analysis tabs and cancels when opening volu
   await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_diagnosis"))).toHaveLength(0);
   await page.getByRole("button", { name: "存储概览", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_diagnosis").length)).toBe(1);
+  await page.getByRole("button", { name: "目录分析", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止诊断", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls.filter((call) => call.command === "cancel_storage_diagnosis"))).toHaveLength(0);
 });
 
 test("lays out directory analysis in light, dark and narrow windows", async ({ page }) => {

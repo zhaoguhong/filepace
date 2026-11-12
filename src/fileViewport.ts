@@ -21,9 +21,10 @@ export function fileLayout(
   view: View,
   size: GridSize,
   width: number,
+  compact = false,
 ): FileLayout {
   if (view !== "grid") {
-    const height = view === "columns" ? 34 : 44;
+    const height = view === "columns" ? 34 : compact ? 34 : 44;
     return { columns: 1, width, height, step: height, gap: 0, padding: 0 };
   }
   const [minimum, height] = tiles[size];
@@ -86,6 +87,7 @@ export function revealItem(
 export function useFileViewport(
   view: View = "list",
   size: GridSize = "medium",
+  compact = false,
 ) {
   const listRef = useRef<HTMLDivElement>(null);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
@@ -115,6 +117,6 @@ export function useFileViewport(
     attachList,
     element,
     height: viewport.height,
-    layout: fileLayout(view, size, viewport.width),
+    layout: fileLayout(view, size, viewport.width, compact),
   };
 }

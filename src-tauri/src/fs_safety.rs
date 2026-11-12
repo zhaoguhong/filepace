@@ -45,7 +45,7 @@ pub(crate) fn check_ancestors(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Identity {
     volume: u64,
     file: u64,

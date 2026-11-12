@@ -191,6 +191,24 @@ export default function Settings({
                   ))}
                 </select>
               </label>
+              <label className="setting-row">
+                <span>
+                  <b>列表密度</b>
+                  <small>紧凑模式在同一窗口内显示更多文件。</small>
+                </span>
+                <select
+                  aria-label="列表密度"
+                  value={preferences.density}
+                  onChange={(event) =>
+                    change({
+                      density: event.target.value as Preferences["density"],
+                    })
+                  }
+                >
+                  <option value="comfortable">舒适</option>
+                  <option value="compact">紧凑</option>
+                </select>
+              </label>
             </>
           )}
           {section === "appearance" && (

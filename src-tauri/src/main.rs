@@ -6,6 +6,7 @@ mod compare;
 mod diagnostics;
 mod directory_listing;
 mod directory_watch;
+mod duplicates;
 mod file_icon;
 mod fs_safety;
 mod native_drag;
@@ -17,10 +18,10 @@ mod system_actions;
 mod system_process;
 mod task_feed;
 mod transfer;
-#[cfg(windows)]
-mod windows_sparse;
 mod undo;
 mod updates;
+#[cfg(windows)]
+mod windows_sparse;
 
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
 use diagnostics::Failure;
@@ -37,11 +38,11 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
-    time::UNIX_EPOCH,
+    time::{Instant, UNIX_EPOCH},
 };
 use storage::{cancel_storage_scan, scan_storage, storage_volumes};
 use system_actions::{open_properties, open_system_storage, open_with};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, Window};
 use tauri_plugin_opener::OpenerExt;
 use transfer::{Source, Transfer};
 use undo::Change;
@@ -110,6 +111,34 @@ struct FailedSource {
     identity: Identity,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileChange {
+    from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    kind: String,
+}
+
+fn moved_file_changes(journal: &[Change]) -> Vec<FileChange> {
+    journal
+        .iter()
+        .filter_map(|change| match change {
+            Change::Moved { from, to, .. } => Some(FileChange {
+                from: strpath(from),
+                to: Some(strpath(to)),
+                kind: "move".into(),
+            }),
+            Change::RemovedDirectory(from) => Some(FileChange {
+                from: strpath(from),
+                to: None,
+                kind: "move".into(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct Task {
@@ -124,16 +153,62 @@ struct Task {
     completed: u64,
     skipped: u64,
     bytes: u64,
+    total_bytes: Option<u64>,
+    current_bytes: u64,
+    current_total_bytes: Option<u64>,
+    transfer_millis: u64,
+    file_changes: Vec<FileChange>,
+    #[serde(skip)]
+    transfer_clock: Option<Instant>,
+    #[serde(skip)]
+    transfer_base_millis: u64,
     errors: Vec<String>,
     failed_sources: Vec<FailedSource>,
     #[serde(skip)]
     destination_folder: Option<Arc<Directory>>,
     #[serde(skip)]
     within: Option<String>,
+    #[serde(skip)]
+    duplicate_guard: Option<duplicates::Guard>,
     conflict: Option<Conflict>,
     decision: Option<String>,
     policy: Option<String>,
     cancelled: bool,
+}
+
+impl Task {
+    fn check_progress_total(&mut self) {
+        if self.skipped > 0
+            || !self.errors.is_empty()
+            || self.total_bytes.is_some_and(|total| {
+                self.bytes > total || (self.status == "done" && self.bytes != total)
+            })
+        {
+            self.total_bytes = None;
+        }
+        if !self.errors.is_empty() {
+            self.current_total_bytes = None;
+        }
+    }
+
+    fn begin_transfer(&mut self, path: &Path, size: u64) {
+        self.phase = "写入暂存文件".into();
+        self.current = strpath(path);
+        self.current_bytes = 0;
+        self.current_total_bytes = Some(size);
+        self.transfer_clock = Some(Instant::now());
+        self.transfer_base_millis = self.transfer_millis;
+    }
+
+    fn advance_transfer(&mut self, bytes: u64) {
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.current_bytes = self.current_bytes.saturating_add(bytes);
+        if let Some(clock) = self.transfer_clock {
+            self.transfer_millis = self
+                .transfer_base_millis
+                .saturating_add(clock.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        }
+    }
 }
 
 type TaskWork = Box<dyn FnOnce(&Shared, &str, &tauri::AppHandle) -> Result<(), String> + Send>;
@@ -158,6 +233,7 @@ struct Shared {
     sessions: Mutex<HashMap<String, serde_json::Value>>,
     closing_windows: Mutex<HashSet<String>>,
     clipboard: Mutex<(Vec<String>, bool)>,
+    duplicate_clipboard: Mutex<Option<duplicates::Guard>>,
     directory_watch: Mutex<directory_watch::DirectoryWatch>,
 }
 fn strpath(p: &Path) -> String {
@@ -474,7 +550,35 @@ fn make_text_file(parent: String, name: String, app: tauri::AppHandle) -> Result
 }
 
 #[tauri::command]
-fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(), String> {
+async fn rename_entry(
+    window: Window,
+    path: String,
+    name: String,
+    duplicate_guard: Option<duplicates::GuardRequest>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = duplicate_guard
+            .map(|request| {
+                window.state::<duplicates::DuplicateState>().guard(
+                    window.label(),
+                    &request,
+                    std::slice::from_ref(&path),
+                )
+            })
+            .transpose()?;
+        rename_entry_checked(path, name, guard, app)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn rename_entry_checked(
+    path: String,
+    name: String,
+    duplicate_guard: Option<duplicates::Guard>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     valid_name(&name)?;
     let src = entry_path(Path::new(&path))?;
     let dst = src.parent().ok_or("不能重命名根目录")?.join(name);
@@ -488,6 +592,15 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
         .map_err(|_| "正在写入文件，请稍后重试")?;
     let tasks = shared.tasks.lock().unwrap();
     ensure_mutation_allowed(&shared, &tasks)?;
+    drop(tasks);
+    if let Some(guard) = &duplicate_guard {
+        guard.verify(|| false)?;
+    }
+    let tasks = shared.tasks.lock().unwrap();
+    ensure_mutation_allowed(&shared, &tasks)?;
+    if let Some(guard) = &duplicate_guard {
+        guard.check_source(&src)?;
+    }
     rename_exclusive(&src, &dst).map_err(|error| {
         if error.kind() == ErrorKind::AlreadyExists {
             "同名文件已存在".into()
@@ -496,6 +609,11 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
         }
     })?;
     let changed = [strpath(&src), strpath(&dst)];
+    let file_change = FileChange {
+        from: changed[0].clone(),
+        to: Some(changed[1].clone()),
+        kind: "rename".into(),
+    };
     if let Ok(identity) = Identity::at(&dst) {
         undo::record(
             &shared,
@@ -508,15 +626,29 @@ fn rename_entry(path: String, name: String, app: tauri::AppHandle) -> Result<(),
         );
     }
     drop(tasks);
+    let _ = app.emit("files-mutated", vec![file_change]);
     let _ = app.emit("directory-changed", changed);
     Ok(())
 }
 #[tauri::command]
 fn clipboard_set(
+    window: Window,
     paths: Vec<String>,
     cut: bool,
+    duplicate_guard: Option<duplicates::GuardRequest>,
     state: tauri::State<Arc<Shared>>,
 ) -> Result<(), String> {
+    let guard = if cut {
+        duplicate_guard
+            .map(|request| {
+                window
+                    .state::<duplicates::DuplicateState>()
+                    .guard(window.label(), &request, &paths)
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let ctx = ClipboardContext::new().map_err(|e| e.to_string())?;
     let mut content = vec![ClipboardContent::Files(paths.clone())];
     content.push(ClipboardContent::Other(
@@ -530,6 +662,7 @@ fn clipboard_set(
     ));
     ctx.set(content).map_err(|e| e.to_string())?;
     *state.clipboard.lock().unwrap() = (paths, cut);
+    *state.duplicate_clipboard.lock().unwrap() = guard;
     Ok(())
 }
 #[tauri::command]
@@ -575,6 +708,7 @@ fn clipboard_copy_paths(paths: Vec<String>, names_only: Option<bool>) -> Result<
 fn update(shared: &Shared, id: &str, f: impl FnOnce(&mut Task)) {
     if let Some(t) = shared.tasks.lock().unwrap().get_mut(id) {
         f(t);
+        t.check_progress_total();
         shared.task_feed.change(Some(id));
     }
 }
@@ -685,14 +819,37 @@ fn copy_entry(
 
 #[tauri::command]
 async fn start_task(
+    window: Window,
     kind: String,
     sources: Vec<String>,
     destination: String,
     within: Option<String>,
+    duplicate_guard: Option<duplicates::GuardRequest>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        prepare_task(kind, sources, destination, within, None, app)
+        let mut guard = duplicate_guard
+            .map(|request| {
+                window.state::<duplicates::DuplicateState>().guard(
+                    window.label(),
+                    &request,
+                    &sources,
+                )
+            })
+            .transpose()?;
+        if kind == "move" && guard.is_none() {
+            let shared = app.state::<Arc<Shared>>();
+            let clipboard_guard = shared.duplicate_clipboard.lock().unwrap().clone();
+            if let Some(clipboard_guard) = clipboard_guard {
+                if clipboard_guard.covers(&sources)
+                    && clipboard_get()
+                        .is_ok_and(|(paths, cut)| cut && clipboard_guard.covers(&paths))
+                {
+                    guard = Some(clipboard_guard);
+                }
+            }
+        }
+        prepare_task(kind, sources, destination, within, None, guard, app)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -704,13 +861,24 @@ fn prepare_task(
     destination: String,
     within: Option<String>,
     retry: Option<&Task>,
+    duplicate_guard: Option<duplicates::Guard>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    let duplicate_guard = duplicate_guard
+        .map(|guard| guard.restrict(&sources))
+        .transpose()?;
     if matches!(kind.as_str(), "zip" | "unzip") {
         return archives::start(kind, sources, destination, app);
     }
     let TransferPlan { folder, items } =
         plan_transfer(&kind, &sources, &destination, within.as_deref(), retry)?;
+    if let Some(guard) = &duplicate_guard {
+        for (_, target) in &items {
+            if let Some(target) = target {
+                guard.check_destination(target)?;
+            }
+        }
+    }
     enqueue_task(
         app,
         Task {
@@ -719,25 +887,60 @@ fn prepare_task(
             destination,
             destination_folder: folder.clone(),
             within,
+            duplicate_guard: duplicate_guard.clone(),
             ..Default::default()
         },
         move |state, id, app| {
+            if let Some(guard) = &duplicate_guard {
+                guard.verify(|| cancelled(state, id))?;
+            }
+            if kind == "copy" {
+                update(state, id, |task| task.phase = "正在统计总量".into());
+                let total = transfer::total_copy_bytes(
+                    items.iter().map(|(source, _)| source.path.as_path()),
+                    || cancelled(state, id),
+                );
+                update(state, id, |task| {
+                    task.total_bytes = total;
+                    task.phase = "准备传输".into();
+                });
+            }
             let mut operation = Transfer::new(state, id, kind == "move");
+            operation.set_duplicate_guard(duplicate_guard.as_ref());
             for (source, target) in items {
                 if cancelled(state, id) {
                     break;
                 }
                 let path = strpath(&source.path);
                 update(state, id, |task| task.current = path.clone());
-                let result = if let (Some(target), Some(folder)) = (&target, folder.as_ref()) {
-                    operation.run(&source, target, folder).map(|_| ())
-                } else {
-                    source.check().and_then(|()| {
-                        trash::delete(&source.path).map_err(|error| error.to_string())?;
-                        update(state, id, |task| task.completed += 1);
+                let verified = duplicate_guard
+                    .as_ref()
+                    .map(|guard| {
+                        guard.check_source(&source.path)?;
+                        if let Some(target) = &target {
+                            guard.check_destination(target)?;
+                        }
                         Ok(())
                     })
-                };
+                    .unwrap_or(Ok(()));
+                let result = verified.and_then(|()| {
+                    if let (Some(target), Some(folder)) = (&target, folder.as_ref()) {
+                        operation.run(&source, target, folder).map(|_| ())
+                    } else {
+                        source.check().and_then(|()| {
+                            trash::delete(&source.path).map_err(|error| error.to_string())?;
+                            update(state, id, |task| {
+                                task.completed += 1;
+                                task.file_changes.push(FileChange {
+                                    from: path.clone(),
+                                    to: None,
+                                    kind: "trash".into(),
+                                });
+                            });
+                            Ok(())
+                        })
+                    }
+                });
                 if let Err(error) = result {
                     update(state, id, |task| {
                         task.errors.push(format!("{path}: {error}"));
@@ -755,6 +958,10 @@ fn prepare_task(
                     .collect();
                 let _ = app.emit("directory-changed", changed);
             }
+            update(state, id, |task| {
+                task.file_changes
+                    .extend(moved_file_changes(&operation.journal));
+            });
             undo::record(state, "撤销移动", operation.journal);
             Ok(())
         },
@@ -957,6 +1164,19 @@ fn run_tasks(state: Arc<Shared>, app: tauri::AppHandle) {
             }
             .into()
         });
+        // Emit one committed batch while the mutation guard is still held.
+        // Single-entry renames use this same event under that guard, keeping
+        // task changes, rename cycles and subsequent renames in commit order.
+        let file_changes = state
+            .tasks
+            .lock()
+            .unwrap()
+            .get(&task_id)
+            .map(|task| task.file_changes.clone())
+            .unwrap_or_default();
+        if !file_changes.is_empty() {
+            let _ = app.emit("files-mutated", file_changes);
+        }
         if let Some(failure) = failure {
             diagnostics::record(&app, failure);
         }
@@ -1041,6 +1261,7 @@ async fn retry_task(id: String, app: tauri::AppHandle) -> Result<String, String>
             task.destination.clone(),
             task.within.clone(),
             Some(&task),
+            task.duplicate_guard.clone(),
             app,
         )
     })
@@ -1389,9 +1610,11 @@ fn main() {
         .manage(diagnostics::ErrorLog::default())
         .manage(native_drag::DragState::default())
         .manage(storage::ScanState::default())
+        .manage(duplicates::DuplicateState::default())
         .manage(directory_listing::Requests::default())
         .manage(updates::UpdateState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             handle_window_close(window, event);
@@ -1410,6 +1633,9 @@ fn main() {
                 window
                     .state::<storage::ScanState>()
                     .stop_window(window.label());
+                window
+                    .state::<duplicates::DuplicateState>()
+                    .close(window.label());
             }
         })
         .setup(|app| {
@@ -1498,6 +1724,8 @@ fn main() {
             search::cancel_search,
             compare::compare_directories,
             compare::cancel_compare,
+            duplicates::find_duplicates,
+            duplicates::cancel_duplicates,
             archives::list_archive,
             open_terminal,
             make_directory,

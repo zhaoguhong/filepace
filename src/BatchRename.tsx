@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { call } from "./bridge";
 import type { Entry } from "./model";
+import type { DuplicateGuard } from "./duplicateResults";
 
 type Rule = "replace" | "affix" | "number";
 
@@ -8,10 +9,12 @@ export default function BatchRename({
   entries,
   onClose,
   onStarted,
+  duplicateGuard,
 }: {
   entries: Entry[];
   onClose: () => void;
   onStarted: (id: string) => void;
+  duplicateGuard?: DuplicateGuard;
 }) {
   const [rule, setRule] = useState<Rule>("replace");
   const [first, setFirst] = useState("");
@@ -50,7 +53,7 @@ export default function BatchRename({
     if (!changed) return;
     let closed = false;
     const timer = setTimeout(() => {
-      void call<string>("preview_batch_rename", { edits }).then(
+      void call<string>("preview_batch_rename", { edits, duplicateGuard }).then(
         (token) => {
           if (!closed) setCheck({ edits, token });
         },
@@ -63,7 +66,7 @@ export default function BatchRename({
       closed = true;
       clearTimeout(timer);
     };
-  }, [edits, changed]);
+  }, [edits, changed, duplicateGuard]);
   const current = check?.edits === edits ? check : undefined;
 
   return (

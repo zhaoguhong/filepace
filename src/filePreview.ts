@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { call, desktop } from "./bridge";
 import { subscribeThumbnail } from "./thumbnailCache";
 import type { Entry } from "./model";
+import { textPreviewKind } from "./textPreviewFormat";
 
 export function useFilePreview(entry: Entry | null, inline = false) {
   const path = entry?.path;
@@ -10,6 +11,7 @@ export function useFilePreview(entry: Entry | null, inline = false) {
     path: string;
     text?: string;
     image?: string;
+    error?: string;
   }>();
   useEffect(() => {
     setResult(undefined);
@@ -18,9 +20,9 @@ export function useFilePreview(entry: Entry | null, inline = false) {
     const nativePicture = /\.(heic|heif)$/i.test(name);
     const pdf = /\.pdf$/i.test(name);
     const text =
-      /\.(txt|md|markdown|csv|tsv|log|json|xml|ini|toml|ya?ml|html|css|jsx?|tsx?|rs|py|sh)$/i.test(
-        name,
-      );
+      textPreviewKind(name) !== "text" ||
+      /\.(txt|log|ini)$/i.test(name) ||
+      /^(?:readme|license|makefile|dockerfile|\.env(?:\..*)?)$/i.test(name);
     if (inline && !picture && !nativePicture && !pdf && !text) return;
     let disposed = false;
     let url = "";
@@ -32,7 +34,7 @@ export function useFilePreview(entry: Entry | null, inline = false) {
           url = URL.createObjectURL(image);
           setResult({ path, image: url });
         } else if (!inline) {
-          setResult({ path, text: "此文件暂时无法生成预览" });
+          setResult({ path, error: "此文件暂时无法生成预览" });
         }
       });
     } else if (desktop && picture) {
@@ -43,15 +45,23 @@ export function useFilePreview(entry: Entry | null, inline = false) {
           setResult({ path, image: url });
         })
         .catch((error) => {
-          if (!disposed) setResult({ path, text: String(error) });
+          if (!disposed) setResult({ path, error: String(error) });
         });
     } else {
-      void call<string>("read_preview", { path })
+      void call<unknown>("read_preview", { path })
         .then((text) => {
-          if (!disposed) setResult({ path, text });
+          if (disposed) return;
+          setResult(
+            typeof text === "string"
+              ? { path, text }
+              : {
+                  path,
+                  error: "此文件暂时无法生成文本预览，请用默认应用打开。",
+                },
+          );
         })
         .catch((error) => {
-          if (!disposed) setResult({ path, text: inline ? "" : String(error) });
+          if (!disposed) setResult({ path, error: String(error) });
         });
     }
     return () => {

@@ -1,0 +1,55 @@
+.update-notice {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  text-align: left;
+}
+.update-notice:hover {
+  border-color: var(--accent);
+}
+.update-notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.update-notice strong,
+.update-notice small {
+  display: block;
+  line-height: 1.5;
+}
+.update-notice strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.update-notice small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.update-notice[data-phase="error"] {
+  border-color: var(--border);
+}
+.statusbar .update-notice-compact {
+  width: auto;
+  min-height: 26px;
+  gap: 6px;
+  padding: 3px 8px;
+  margin: 0;
+  border-radius: 6px;
+}
+.update-notice-compact .update-notice-text {
+  white-space: nowrap;
+}
+.update-notice-compact small {
+  display: none;
+}
+.statusbar .update-notice-compact > svg:first-child {
+  color: var(--accent-text);
+}

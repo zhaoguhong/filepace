@@ -15,7 +15,7 @@ use crate::{
     strpath,
     transfer::Source,
     undo::{self, Change},
-    update, valid_name, Shared, Task,
+    update, valid_name, FileChange, Shared, Task,
 };
 
 #[derive(Deserialize)]
@@ -33,6 +33,7 @@ pub(crate) struct Renamed {
 struct Plan {
     parent: Directory,
     items: Vec<(Source, PathBuf)>,
+    duplicate_guard: Option<crate::duplicates::Guard>,
 }
 
 #[derive(Default)]
@@ -71,7 +72,11 @@ fn validate(parent: Directory, items: Vec<(Source, PathBuf)>) -> Result<Plan, St
             }
         }
     }
-    Ok(Plan { parent, items })
+    Ok(Plan {
+        parent,
+        items,
+        duplicate_guard: None,
+    })
 }
 
 fn prepare(edits: Vec<Edit>) -> Result<Plan, String> {
@@ -98,9 +103,28 @@ fn prepare(edits: Vec<Edit>) -> Result<Plan, String> {
 pub(crate) async fn preview_batch_rename(
     window: Window,
     edits: Vec<Edit>,
+    duplicate_guard: Option<crate::duplicates::GuardRequest>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let plan = prepare(edits)?;
+        let sources = edits
+            .iter()
+            .map(|edit| edit.path.clone())
+            .collect::<Vec<_>>();
+        let mut plan = prepare(edits)?;
+        plan.duplicate_guard = duplicate_guard
+            .map(|request| {
+                window.state::<crate::duplicates::DuplicateState>().guard(
+                    window.label(),
+                    &request,
+                    &sources,
+                )
+            })
+            .transpose()?;
+        if let Some(guard) = &plan.duplicate_guard {
+            for (_, target) in &plan.items {
+                guard.check_destination(target)?;
+            }
+        }
         let state = window.state::<Plans>();
         let mut plans = state.0.lock().unwrap();
         plans.retain(|_, (_, time, _)| time.elapsed() < Duration::from_secs(300));
@@ -164,6 +188,9 @@ pub(crate) fn batch_rename(
 
 fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String> {
     plan.parent.check()?;
+    if let Some(guard) = &plan.duplicate_guard {
+        guard.verify(|| cancelled(state, id))?;
+    }
     let stage = tempfile::Builder::new()
         .prefix(".filepace-stage-")
         .tempdir_in(&plan.parent.path)
@@ -182,6 +209,9 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
                 return Err("任务已取消".into());
             }
             source.check()?;
+            if let Some(guard) = &plan.duplicate_guard {
+                guard.check_source(&source.path)?;
+            }
             rename_exclusive(&source.path, path).map_err(|error| error.to_string())?;
             parked += 1;
         }
@@ -190,6 +220,9 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
                 return Err("任务已取消".into());
             }
             plan.parent.check()?;
+            if let Some(guard) = &plan.duplicate_guard {
+                guard.check_keeper()?;
+            }
             if !Identity::at(path)
                 .is_ok_and(|current| source.identity().same_file_after_rename(&current))
             {
@@ -236,7 +269,15 @@ fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String
         };
     }
     let _ = fs::remove_dir(&stage);
-    update(state, id, |task| task.completed += published as u64);
+    update(state, id, |task| {
+        task.completed += published as u64;
+        task.file_changes
+            .extend(plan.items.iter().map(|(source, target)| FileChange {
+                from: strpath(&source.path),
+                to: Some(strpath(target)),
+                kind: "rename".into(),
+            }));
+    });
     Ok(plan
         .items
         .iter()
@@ -269,8 +310,9 @@ mod tests {
     #[test]
     fn exchanges_names_and_undoes_as_one_batch() {
         let folder = tempfile::tempdir().unwrap();
-        let first = folder.path().join("first.txt");
-        let second = folder.path().join("second.txt");
+        let root = folder.path().canonicalize().unwrap();
+        let first = root.join("first.txt");
+        let second = root.join("second.txt");
         fs::write(&first, b"first").unwrap();
         fs::write(&second, b"second").unwrap();
         #[cfg(windows)]
@@ -310,9 +352,25 @@ mod tests {
         let changes = execute(&plan, &state, "task").unwrap();
         assert_eq!(fs::read(&first).unwrap(), b"second");
         assert_eq!(fs::read(&second).unwrap(), b"first");
+        {
+            let tasks = state.tasks.lock().unwrap();
+            let mutations = &tasks["task"].file_changes;
+            assert_eq!(mutations.len(), 2);
+            assert_eq!(mutations[0].from, strpath(&first));
+            assert_eq!(mutations[0].to, Some(strpath(&second)));
+            assert_eq!(mutations[1].from, strpath(&second));
+            assert_eq!(mutations[1].to, Some(strpath(&first)));
+        }
         reverse(&changes, &state, "task").unwrap();
         assert_eq!(fs::read(&first).unwrap(), b"first");
         assert_eq!(fs::read(&second).unwrap(), b"second");
+        let tasks = state.tasks.lock().unwrap();
+        let mutations = &tasks["task"].file_changes;
+        assert_eq!(mutations.len(), 4);
+        assert_eq!(mutations[2].from, strpath(&second));
+        assert_eq!(mutations[2].to, Some(strpath(&first)));
+        assert_eq!(mutations[3].from, strpath(&first));
+        assert_eq!(mutations[3].to, Some(strpath(&second)));
     }
 
     #[test]

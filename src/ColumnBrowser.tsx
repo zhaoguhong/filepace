@@ -9,6 +9,7 @@ import {
 } from "react";
 import { LoaderCircle } from "lucide-react";
 import FileIcon from "./FileIcon";
+import TextPreview from "./TextPreview";
 import { useDirectoryListing, type PaneSide } from "./browsePane";
 import { revealItem, useFileViewport, visibleRange } from "./fileViewport";
 import { useFilePreview } from "./filePreview";
@@ -66,9 +67,17 @@ function Ancestor({
 }) {
   const { listing, loading, error } = useDirectoryListing(path);
   const [scroll, setScroll] = useState(0);
-  const { listRef: list, attachList, height, layout } = useFileViewport("columns");
+  const {
+    listRef: list,
+    attachList,
+    height,
+    layout,
+  } = useFileViewport("columns");
   const entries = useMemo(
-    () => listing ? sortEntries(listing.entries, tab.sort, tab.descending, hidden) : [],
+    () =>
+      listing
+        ? sortEntries(listing.entries, tab.sort, tab.descending, hidden)
+        : [],
     [listing, tab.sort, tab.descending, hidden],
   );
   const range = visibleRange(entries.length, scroll, height, layout);
@@ -143,8 +152,13 @@ function PreviewColumn({
       <div className="column-preview-body">
         {result?.image ? (
           <img src={result.image} alt={entry.name} />
-        ) : result?.text ? (
-          <pre>{result.text}</pre>
+        ) : result?.text !== undefined || result?.error ? (
+          <TextPreview
+            name={entry.name}
+            text={result?.text}
+            error={result?.error}
+            compact
+          />
         ) : (
           <FileIcon entry={entry} showThumbnail={false} />
         )}

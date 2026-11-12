@@ -4,6 +4,7 @@ import type { Entry } from "./model";
 import type { StorageReport, StorageVolume } from "./storageTypes";
 import type { SearchReport } from "./SearchPanel";
 import type { DiagnosisAgentInfo } from "./StorageDiagnosis";
+import type { DuplicateReport } from "./duplicateResults";
 export const desktop = isTauri();
 const root = "/Users/demo";
 const demo: Entry[] = [
@@ -64,6 +65,20 @@ export async function call<T>(
     return { hits, indexed: false, limited: false, skipped: 0 } satisfies SearchReport as T;
   }
   if (command === "cancel_search") return undefined as T;
+  if (command === "find_duplicates") {
+    const path = String(args.path);
+    const source = { ...demo.find((entry) => entry.name === "产品需求.md")!, path: path + "/产品需求.md" };
+    return {
+      path,
+      groups: [{ id: "demo-identical-document", size: source.size, files: [source, { ...source, name: "产品需求-副本.md", path: path + "/归档/产品需求-副本.md" }] }],
+      scannedFiles: 12,
+      scannedBytes: 34 * 1024 ** 2,
+      skipped: 0,
+      limited: false,
+      hardLinks: 0,
+    } satisfies DuplicateReport as T;
+  }
+  if (command === "cancel_duplicates") return undefined as T;
   if (command === "storage_volumes") {
     return [
       {

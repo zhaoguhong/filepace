@@ -179,13 +179,14 @@ export function useDirectoryListing(path: string | undefined) {
 export function useBrowsePane(
   session: PaneSession | undefined,
   hidden: boolean,
+  compact = false,
 ) {
   const tab =
     session?.tabs.find((t) => t.id === session.active) ?? session?.tabs[0];
   const path = tab?.path;
   const directory = useDirectoryListing(path);
   const { listing } = directory;
-  const viewport = useFileViewport(tab?.view, tab?.gridSize);
+  const viewport = useFileViewport(tab?.view, tab?.gridSize, compact);
   const { listRef, layout } = viewport;
   const anchor = useRef<{ tab: string; path: string; lead: string } | null>(
     null,

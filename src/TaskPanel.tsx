@@ -1,9 +1,76 @@
 import { ArrowDownToLine, X } from "lucide-react";
 import { call, desktop } from "./bridge";
 import { basename, formatSize, type Task } from "./model";
+import { formatRemaining, taskProgress } from "./taskProgress";
+import "./tasks.css";
 
 export const activeTask = (task: { status: string }) =>
   ["queued", "running", "conflict"].includes(task.status);
+
+function Progress({ task }: { task: Task }) {
+  const progress = taskProgress(task);
+  const transferring = ["copy", "move", "zip", "unzip"].includes(task.kind);
+  return (
+    <>
+      <small className="task-progress-label">
+        已完成 {task.completed} 项
+        {Boolean(task.skipped) && ` · 跳过 ${task.skipped} 项`}
+        {task.status === "running" && task.phase && ` · ${task.phase}`}
+      </small>
+      {transferring && (
+        <small className="task-measurement">
+          {task.kind === "move" &&
+          task.status === "done" &&
+          task.bytes === 0 &&
+          task.phase === "直接移动项目" ? (
+            <>已直接移动，无需复制文件内容</>
+          ) : progress.total !== null ? (
+            <>
+              {progress.overall ? "已传输" : "当前文件"}{" "}
+              {formatSize(progress.done)} / {formatSize(progress.total)}
+              {progress.fraction !== null &&
+                ` · ${Math.floor(progress.fraction * 100)}%`}
+              {!progress.overall && ` · 累计传输 ${formatSize(task.bytes)}`}
+            </>
+          ) : (
+            <>
+              已传输 {formatSize(task.bytes)}
+              {activeTask(task) && " · 总量未知"}
+            </>
+          )}
+          {progress.rate !== null && ` · 平均 ${formatSize(progress.rate)}/秒`}
+          {progress.remaining !== null &&
+            ` · ${progress.overall ? "传输" : "当前文件"}约剩 ${formatRemaining(progress.remaining)}`}
+        </small>
+      )}
+      {task.status === "running" && (
+        <div
+          className={`progress${progress.fraction !== null ? " determinate" : ""}`}
+          role="progressbar"
+          aria-label={progress.overall ? "文件传输进度" : "当前文件进度"}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={
+            progress.fraction === null
+              ? undefined
+              : Math.floor(progress.fraction * 100)
+          }
+          aria-valuetext={
+            task.phase === "正在统计总量" ? "正在统计，总量未知" : undefined
+          }
+        >
+          <i
+            style={
+              progress.fraction === null
+                ? undefined
+                : { width: `${progress.fraction * 100}%` }
+            }
+          />
+        </div>
+      )}
+    </>
+  );
+}
 
 export default function TaskPanel({
   tasks,
@@ -94,17 +161,35 @@ export default function TaskPanel({
                 </button>
               )}
             </div>
-            <p title={t.current}>{basename(t.current)}</p>
-            <small>
-              已完成 {t.completed} 项 · {formatSize(t.bytes)}
-              {Boolean(t.skipped) && ` · 跳过 ${t.skipped} 项`}
-              {t.status === "running" && t.phase && ` · ${t.phase}`}
-            </small>
-            {t.status === "running" && (
-              <div className="progress">
-                <i />
-              </div>
-            )}
+            <dl className="task-paths">
+              {t.sources.length > 0 && (
+                <>
+                  <dt>来源</dt>
+                  <dd>
+                    {t.sources.length === 1 ? (
+                      t.sources[0]
+                    ) : (
+                      <details>
+                        <summary>
+                          {t.sources.length} 个项目 · {basename(t.sources[0])}
+                        </summary>
+                        {t.sources.map((path) => (
+                          <p key={path}>{path}</p>
+                        ))}
+                      </details>
+                    )}
+                  </dd>
+                </>
+              )}
+              {t.destination && (
+                <>
+                  <dt>目标</dt>
+                  <dd>{t.destination}</dd>
+                </>
+              )}
+            </dl>
+            {t.current && <p title={t.current}>{basename(t.current)}</p>}
+            <Progress task={t} />
             {t.errors.length > 0 && (
               <details open={t.kind === "undo" || undefined}>
                 <summary>{t.errors.length} 个问题</summary>

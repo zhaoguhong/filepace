@@ -19,6 +19,7 @@ export type Preferences = {
   theme: keyof typeof themeLabels;
   defaultView: View;
   autoUpdate: boolean;
+  density: "comfortable" | "compact";
   commonPlaces: Shortcut[] | null;
   collapsedSidebar: SidebarSection[];
 };
@@ -29,6 +30,7 @@ const defaults: Preferences = {
   theme: "default",
   defaultView: "list",
   autoUpdate: true,
+  density: "comfortable",
   commonPlaces: null,
   collapsedSidebar: [],
 };
@@ -55,6 +57,7 @@ function readPreferences(): Preferences {
           typeof value.autoUpdate === "boolean"
             ? value.autoUpdate
             : defaults.autoUpdate,
+        density: value.density === "compact" ? "compact" : "comfortable",
         commonPlaces: Array.isArray(value.commonPlaces)
           ? value.commonPlaces.filter(
               (place) =>

@@ -10,7 +10,7 @@ use crate::{
     fs_safety::{check_ancestors, missing, rename_exclusive, Directory, Identity},
     strpath,
     transfer::{Source, Transfer},
-    update, Shared,
+    update, FileChange, Shared,
 };
 
 pub(crate) enum Change {
@@ -105,12 +105,25 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
                 verify_item(to, identity)?;
                 verify_original(from)?;
                 match rename_exclusive(to, from) {
-                    Ok(()) => update(shared, id, |task| task.completed += 1),
+                    Ok(()) => update(shared, id, |task| {
+                        task.completed += 1;
+                        task.file_changes.push(FileChange {
+                            from: strpath(to),
+                            to: Some(strpath(from)),
+                            kind: "move".into(),
+                        });
+                    }),
                     Err(error) if error.kind() == ErrorKind::CrossesDevices => {
                         let source = Source::at(to.clone())?;
                         verify_item(to, identity)?;
                         let parent = Directory::parent(from).map_err(|error| error.to_string())?;
-                        Transfer::new(shared, id, true).stage(&source, from, &parent, None)?;
+                        let mut operation = Transfer::new(shared, id, true);
+                        let result = operation.stage(&source, from, &parent, None);
+                        update(shared, id, |task| {
+                            task.file_changes
+                                .extend(crate::moved_file_changes(&operation.journal));
+                        });
+                        result?;
                     }
                     Err(error) => return Err(error.to_string()),
                 }
@@ -118,7 +131,13 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
             Change::MadeDirectory { path, identity } => {
                 verify_item(path, identity)?;
                 match fs::remove_dir(path) {
-                    Ok(()) => {}
+                    Ok(()) => update(shared, id, |task| {
+                        task.file_changes.push(FileChange {
+                            from: strpath(path),
+                            to: None,
+                            kind: "move".into(),
+                        })
+                    }),
                     // Retain any files added after the original move.
                     Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => {}
                     Err(error) => return Err(error.to_string()),
@@ -127,6 +146,13 @@ pub(crate) fn reverse(record: &mut UndoRecord, shared: &Shared, id: &str) -> Res
             Change::RemovedDirectory(from) => {
                 verify_original(from)?;
                 fs::create_dir(from).map_err(|error| error.to_string())?;
+                update(shared, id, |task| {
+                    task.file_changes.push(FileChange {
+                        from: strpath(from),
+                        to: Some(strpath(from)),
+                        kind: "move".into(),
+                    })
+                });
             }
         }
         record.changes.pop();
@@ -183,6 +209,11 @@ mod tests {
             b"existing target"
         );
         assert!(!target.join("moved.txt").exists());
+        let tasks = shared.tasks.lock().unwrap();
+        let changes = &tasks["task"].file_changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].from, strpath(&target.join("moved.txt")));
+        assert_eq!(changes[0].to, Some(strpath(&source.join("moved.txt"))));
     }
 
     #[test]

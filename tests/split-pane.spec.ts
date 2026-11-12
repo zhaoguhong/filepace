@@ -25,7 +25,9 @@ test("keeps pane focus independent while resizing through the narrow divider", a
   await expect
     .poll(async () => Number(await divider.getAttribute("aria-valuenow")))
     .toBeGreaterThan(55);
-  await expect(right.locator(".pane-focus-badge")).toContainText("当前");
+  await expect(right).toHaveClass(/focused/);
+  await expect(left).not.toHaveClass(/focused/);
+  await expect(page.locator(".pane-focus-badge")).toHaveCount(0);
   await expect(
     left.getByRole("option", { name: /产品需求\.md/, selected: true }),
   ).toBeVisible();

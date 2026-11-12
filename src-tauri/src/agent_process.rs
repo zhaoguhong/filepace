@@ -4,7 +4,7 @@ use std::{
     process::{Child, Command, Output, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Mutex, OnceLock,
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -14,13 +14,14 @@ const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 
 struct ProcessId {
     pid: u32,
+    closed: Arc<AtomicBool>,
     #[cfg(windows)]
     job: usize,
 }
 
 #[derive(Default)]
 struct Registry {
-    running: HashMap<String, ProcessId>,
+    running: HashMap<String, HashMap<u32, ProcessId>>,
     closed: HashSet<String>,
 }
 
@@ -45,14 +46,20 @@ fn terminate(process: &ProcessId) {
 pub(crate) fn stop_window(owner: &str) {
     let mut registry = registry().lock().unwrap();
     registry.closed.insert(owner.into());
-    if let Some(process) = registry.running.get(owner) {
-        terminate(process);
+    if let Some(processes) = registry.running.get(owner) {
+        for process in processes.values() {
+            // Closing is cancellation in its own right. Completion must not
+            // depend on scheduling pipe readers or on a successful OS kill.
+            process.closed.store(true, Ordering::Release);
+            terminate(process);
+        }
     }
 }
 
 struct Process {
     child: Child,
     owner: Option<String>,
+    closed: Arc<AtomicBool>,
     #[cfg(windows)]
     job: windows_sys::Win32::Foundation::HANDLE,
 }
@@ -123,11 +130,13 @@ impl Process {
         };
         #[cfg(windows)]
         let (child, job) = job;
+        let closed = Arc::new(AtomicBool::new(false));
         if let Some(owner) = owner {
-            registry.running.insert(
-                owner.into(),
+            registry.running.entry(owner.into()).or_default().insert(
+                child.id(),
                 ProcessId {
                     pid: child.id(),
+                    closed: closed.clone(),
                     #[cfg(windows)]
                     job: job as usize,
                 },
@@ -136,6 +145,7 @@ impl Process {
         Ok(Self {
             child,
             owner: owner.map(String::from),
+            closed,
             #[cfg(windows)]
             job,
         })
@@ -144,27 +154,30 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        if let Some(owner) = &self.owner {
-            let mut registry = registry().lock().unwrap();
-            if registry
-                .running
-                .get(owner)
-                .is_some_and(|process| process.pid == self.child.id())
-            {
-                registry.running.remove(owner);
-            }
-        }
-        // Each invocation owns its group/job, including Node/Bun wrapper children.
+        let mut registry_guard = self.owner.as_ref().map(|_| registry().lock().unwrap());
+        // Keep registration visible until both the group/job and the direct
+        // child have been signalled. Closing a final window may exit the app
+        // immediately after stop_window returns.
         terminate(&ProcessId {
             pid: self.child.id(),
+            closed: self.closed.clone(),
             #[cfg(windows)]
             job: self.job as usize,
         });
+        let _ = self.child.kill();
+        if let (Some(owner), Some(registry)) = (&self.owner, &mut registry_guard) {
+            if let Some(processes) = registry.running.get_mut(owner) {
+                processes.remove(&self.child.id());
+                if processes.is_empty() {
+                    registry.running.remove(owner);
+                }
+            }
+        }
+        drop(registry_guard);
         #[cfg(windows)]
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.job);
         }
-        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -222,6 +235,9 @@ pub(crate) fn run(
     let mut input_error = None;
     let mut outputs: [Option<Vec<u8>>; 3] = [None, None, None];
     loop {
+        if process.closed.load(Ordering::Acquire) {
+            return Err("窗口已关闭，诊断已停止".into());
+        }
         if cancelled.load(Ordering::Relaxed) {
             return Err("诊断已停止".into());
         }
@@ -330,26 +346,40 @@ mod tests {
     #[test]
     fn closing_a_window_terminates_its_process_and_prevents_late_startup() {
         let owner = uuid::Uuid::new_v4().to_string();
+        let root = tempfile::tempdir().unwrap();
+        let ready = root.path().join("ready");
+        let late = root.path().join("should-not-exist");
+        let release = root.path().join("release-after-close");
         thread::scope(|scope| {
             let worker = scope.spawn(|| {
                 let mut command = Command::new("/bin/sh");
-                command.args(["-c", "sleep 30 & wait"]);
+                command.args([
+                    "-c",
+                    "(while [ ! -e \"$3\" ]; do sleep 0.01; done; touch \"$2\") & printf ready > \"$1\"; wait",
+                    "fixture",
+                ]);
+                command.arg(&ready).arg(&late).arg(&release);
                 run(
                     &mut command,
                     vec![],
                     &AtomicBool::new(false),
-                    Duration::from_secs(3),
+                    Duration::from_secs(10),
                     Some(&owner),
                 )
             });
             let started = Instant::now();
-            while !registry().lock().unwrap().running.contains_key(&owner) {
-                assert!(started.elapsed() < Duration::from_secs(2));
+            while !ready.exists() {
+                assert!(started.elapsed() < Duration::from_secs(5));
                 thread::sleep(Duration::from_millis(10));
             }
             stop_window(&owner);
-            assert!(!worker.join().unwrap().unwrap().status.success());
+            assert!(worker.join().unwrap().unwrap_err().contains("窗口已关闭"));
         });
+        // A survivor can only write after closing has completed, independent
+        // of how quickly the test thread was scheduled before the close.
+        std::fs::write(&release, b"closed").unwrap();
+        thread::sleep(Duration::from_millis(600));
+        assert!(!late.exists(), "a descendant survived closing its window");
         assert!(run(
             &mut Command::new("/bin/echo"),
             vec![],
@@ -359,6 +389,47 @@ mod tests {
         )
         .unwrap_err()
         .contains("窗口已关闭"));
+    }
+
+    #[test]
+    fn closing_a_window_terminates_overlapping_invocations_owned_by_it() {
+        let owner = uuid::Uuid::new_v4().to_string();
+        let mut first = Command::new("/bin/sh");
+        first.args(["-c", "sleep 30"]);
+        let mut second = Command::new("/bin/sh");
+        second.args(["-c", "sleep 30"]);
+        let mut first = Process::spawn(&mut first, Some(&owner)).unwrap();
+        let mut second = Process::spawn(&mut second, Some(&owner)).unwrap();
+        assert_eq!(registry().lock().unwrap().running[&owner].len(), 2);
+        stop_window(&owner);
+        assert!(first.closed.load(Ordering::Acquire));
+        assert!(second.closed.load(Ordering::Acquire));
+        assert!(!first.child.wait().unwrap().success());
+        assert!(!second.child.wait().unwrap().success());
+        drop(first);
+        assert_eq!(registry().lock().unwrap().running[&owner].len(), 1);
+        drop(second);
+        assert!(!registry().lock().unwrap().running.contains_key(&owner));
+    }
+
+    #[test]
+    fn closing_before_registration_never_launches_the_command() {
+        let owner = uuid::Uuid::new_v4().to_string();
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("should-not-exist");
+        stop_window(&owner);
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "touch \"$1\"", "fixture"]).arg(&output);
+        assert!(run(
+            &mut command,
+            vec![],
+            &AtomicBool::new(false),
+            Duration::from_secs(1),
+            Some(&owner)
+        )
+        .unwrap_err()
+        .contains("窗口已关闭"));
+        assert!(!output.exists());
     }
 
     #[test]

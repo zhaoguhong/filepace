@@ -2,6 +2,7 @@ use std::{
     fs::{self, Metadata},
     io::ErrorKind,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 #[cfg(not(windows))]
@@ -15,8 +16,43 @@ use crate::{
     fs_safety::{is_link, rename_exclusive, Directory, Identity, Snapshot},
     resolve_conflict, strpath,
     undo::Change,
-    update, Shared,
+    update, FileChange, Shared,
 };
+
+// A best-effort metadata scan gives copy jobs a denominator without reading
+// file contents. Unknown or unsupported entries leave the total unknown; the
+// normal transfer still performs all its own safety checks and error reporting.
+pub(crate) fn total_copy_bytes<'a>(
+    sources: impl IntoIterator<Item = &'a Path>,
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<u64> {
+    let mut bytes = 0u64;
+    let mut entries = 0usize;
+    let started = Instant::now();
+    for source in sources {
+        let source = crate::fs_safety::entry_path(source).ok()?;
+        for entry in walkdir::WalkDir::new(source).follow_links(false) {
+            // Preflight improves feedback but must not hold up an otherwise
+            // valid transfer indefinitely. Continue with unknown total instead.
+            if cancelled() || entries >= 250_000 || started.elapsed() >= Duration::from_secs(2) {
+                return None;
+            }
+            entries += 1;
+            let entry = entry.ok()?;
+            crate::fs_safety::check_ancestors(entry.path()).ok()?;
+            let metadata = entry.path().symlink_metadata().ok()?;
+            if is_link(&metadata) {
+                return None;
+            }
+            if metadata.is_file() {
+                bytes = bytes.checked_add(metadata.len())?;
+            } else if !metadata.is_dir() {
+                return None;
+            }
+        }
+    }
+    Some(bytes)
+}
 
 pub(crate) struct Source {
     pub(crate) path: PathBuf,
@@ -91,6 +127,16 @@ pub(crate) fn commit_staged(
     recovery.finish()
 }
 
+fn replaced_destination(shared: &Shared, id: &str, target: &Path, trashed: bool) {
+    update(shared, id, |task| {
+        task.file_changes.push(FileChange {
+            from: strpath(target),
+            to: None,
+            kind: if trashed { "trash" } else { "move" }.into(),
+        });
+    });
+}
+
 fn commit_with_recovery(
     stage: &Path,
     target: &Path,
@@ -99,6 +145,28 @@ fn commit_with_recovery(
     shared: &Shared,
     id: &str,
     recovery: &mut crate::recovery::Guard,
+) -> Result<(), String> {
+    commit_with_recovery_using_trash(
+        stage,
+        target,
+        parent,
+        replace,
+        shared,
+        id,
+        recovery,
+        |backup| trash::delete(backup).map_err(|error| error.to_string()),
+    )
+}
+
+fn commit_with_recovery_using_trash(
+    stage: &Path,
+    target: &Path,
+    parent: &Directory,
+    replace: Option<&Snapshot>,
+    shared: &Shared,
+    id: &str,
+    recovery: &mut crate::recovery::Guard,
+    trash_backup: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     parent.check()?;
     if cancelled(shared, id) {
@@ -144,21 +212,27 @@ fn commit_with_recovery(
             recovery.finish()?;
             return Err(format!("无法提交目标，已恢复原目标：{error}"));
         }
+        replaced_destination(shared, id, target, false);
         return Err(format!(
             "无法提交目标。原目标保存在 {}：{error}",
             backup.display()
         ));
     }
-    crate::recovery::sync_directory(&parent.path)?;
-    match trash::delete(&backup) {
+    if let Err(error) = crate::recovery::sync_directory(&parent.path) {
+        replaced_destination(shared, id, target, false);
+        return Err(error);
+    }
+    match trash_backup(&backup) {
         Ok(()) => {
+            replaced_destination(shared, id, target, true);
             let _ = fs::remove_dir(backup_dir);
         }
         Err(error) => {
+            replaced_destination(shared, id, target, false);
             return Err(format!(
                 "目标已提交。旧目标保存在 {}：{error}",
                 backup.display()
-            ))
+            ));
         }
     }
     Ok(())
@@ -168,6 +242,7 @@ pub(crate) struct Transfer<'a> {
     shared: &'a Shared,
     id: &'a str,
     moving: bool,
+    duplicate_guard: Option<&'a crate::duplicates::Guard>,
     #[cfg(not(windows))]
     buffer: Vec<u8>,
     pub(crate) journal: Vec<Change>,
@@ -179,10 +254,23 @@ impl<'a> Transfer<'a> {
             shared,
             id,
             moving,
+            duplicate_guard: None,
             #[cfg(not(windows))]
             buffer: Vec::new(),
             journal: Vec::new(),
         }
+    }
+
+    pub(crate) fn set_duplicate_guard(&mut self, guard: Option<&'a crate::duplicates::Guard>) {
+        self.duplicate_guard = guard;
+    }
+
+    fn check_duplicate_guard(&self, source: &Source, target: &Path) -> Result<(), String> {
+        if let Some(guard) = self.duplicate_guard {
+            guard.check_source(&source.path)?;
+            guard.check_destination(target)?;
+        }
+        Ok(())
     }
 
     fn check_cancelled(&self) -> Result<(), String> {
@@ -203,7 +291,10 @@ impl<'a> Transfer<'a> {
         source.check_transferable()?;
         parent.check()?;
         update(self.shared, self.id, |task| {
-            task.current = strpath(&source.path)
+            task.current = strpath(&source.path);
+            task.current_bytes = 0;
+            task.current_total_bytes = None;
+            task.phase = "准备传输".into();
         });
 
         if source.metadata.is_dir() {
@@ -223,23 +314,30 @@ impl<'a> Transfer<'a> {
         source.check()?;
         parent.check()?;
         self.check_cancelled()?;
+        self.check_duplicate_guard(source, &target)?;
         if self.moving && replace.is_none() {
             let mut recovery =
                 self.shared
                     .recovery
                     .begin(self.id, Some(&source.path), &target, None, true)?;
             recovery.phase("准备直接移动源项目")?;
+            update(self.shared, self.id, |task| {
+                task.phase = "直接移动项目".into()
+            });
             match rename_exclusive(&source.path, &target) {
                 Ok(()) => {
                     recovery.retain();
-                    crate::recovery::sync_directory(&parent.path)?;
-                    crate::recovery::sync_directory(&source.parent.path)?;
+                    // The rename has committed even if a later directory
+                    // flush fails. Preserve its real target for undo and result
+                    // reconciliation before doing any more fallible work.
                     self.journal.push(Change::Moved {
                         from: source.path.clone(),
                         to: target,
                         identity: source.snapshot.identity.clone(),
                     });
                     update(self.shared, self.id, |task| task.completed += 1);
+                    crate::recovery::sync_directory(&parent.path)?;
+                    crate::recovery::sync_directory(&source.parent.path)?;
                     recovery.finish()?;
                     return Ok(true);
                 }
@@ -308,6 +406,7 @@ impl<'a> Transfer<'a> {
             source.check()?;
             let staged = snapshot_at(&payload)?;
             update(self.shared, self.id, |task| task.phase = "提交目标".into());
+            self.check_duplicate_guard(source, target)?;
             commit_with_recovery(
                 &payload,
                 target,
@@ -322,6 +421,7 @@ impl<'a> Transfer<'a> {
                 if !staged.matches_after_rename(target) {
                     return Err("目标在提交后已变更，保留源项目".into());
                 }
+                self.check_duplicate_guard(source, target)?;
                 source.remove()?;
                 self.journal.push(Change::Moved {
                     from: source.path.clone(),
@@ -354,10 +454,13 @@ impl<'a> Transfer<'a> {
         fs::create_dir(&payload).map_err(|error| error.to_string())?;
         for (child, relative) in &children {
             self.check_cancelled()?;
-            child.check_transferable()?;
             update(self.shared, self.id, |task| {
-                task.current = strpath(&child.path)
+                task.current = strpath(&child.path);
+                task.current_bytes = 0;
+                task.current_total_bytes = None;
+                task.phase = "准备传输".into();
             });
+            child.check_transferable()?;
             let staged = payload.join(relative);
             if child.metadata.is_dir() {
                 fs::create_dir(staged).map_err(|error| error.to_string())?;
@@ -483,14 +586,16 @@ impl<'a> Transfer<'a> {
                 let bytes = transferred.max(0) as u64;
                 let delta = bytes.saturating_sub(context.bytes);
                 context.bytes = bytes;
-                update(context.shared, context.id, |task| task.bytes += delta);
+                update(context.shared, context.id, |task| {
+                    task.advance_transfer(delta)
+                });
                 PROGRESS_CONTINUE
             }))
             .unwrap_or(PROGRESS_CANCEL)
         }
         self.check_cancelled()?;
         update(self.shared, self.id, |task| {
-            task.phase = "写入暂存文件".into()
+            task.begin_transfer(&source.path, metadata.len());
         });
         let from = crate::fs_safety::wide_path(&source.path).map_err(|error| error.to_string())?;
         let to = crate::fs_safety::wide_path(path).map_err(|error| error.to_string())?;
@@ -568,7 +673,7 @@ impl<'a> Transfer<'a> {
         }
         let mut output = fs::File::create_new(path).map_err(|error| error.to_string())?;
         update(self.shared, self.id, |task| {
-            task.phase = "写入暂存文件".into()
+            task.begin_transfer(&source.path, metadata.len());
         });
         if self.buffer.is_empty() {
             self.buffer.resize(1024 * 1024, 0);
@@ -584,7 +689,9 @@ impl<'a> Transfer<'a> {
             output
                 .write_all(&self.buffer[..size])
                 .map_err(|error| error.to_string())?;
-            update(self.shared, self.id, |task| task.bytes += size as u64);
+            update(self.shared, self.id, |task| {
+                task.advance_transfer(size as u64)
+            });
         }
         source.check()?;
         preserve_metadata(source, path)?;
@@ -700,12 +807,188 @@ mod tests {
             .unwrap();
         assert_eq!(fs::read(&source_path).unwrap(), b"durable staged contents");
         assert_eq!(fs::read(&target).unwrap(), b"durable staged contents");
+        let task = state.tasks.lock().unwrap()["task"].clone();
+        assert_eq!(task.bytes, 23);
+        assert_eq!(task.current_bytes, 23);
+        assert_eq!(task.current_total_bytes, Some(23));
         assert_eq!(fs::read_dir(directory).unwrap().count(), 0);
         assert!(!fs::read_dir(fixture.path()).unwrap().any(|entry| entry
             .unwrap()
             .file_name()
             .to_string_lossy()
             .starts_with(".filepace-stage-")));
+    }
+
+    #[test]
+    fn copy_total_scans_nested_logical_bytes_and_can_be_cancelled() {
+        let (fixture, state) = setup();
+        let source_path = fixture.path().join("source");
+        let nested = source_path.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(source_path.join("one"), b"one").unwrap();
+        fs::write(nested.join("two"), b"second").unwrap();
+        assert_eq!(total_copy_bytes([source_path.as_path()], || false), Some(9));
+        assert_eq!(total_copy_bytes([source_path.as_path()], || true), None);
+        let target = fixture.path().join("target");
+        let source = Source::at(source_path.clone()).unwrap();
+        Transfer::new(&state, "task", false)
+            .run(&source, &target, &Directory::parent(&target).unwrap())
+            .unwrap();
+        assert_eq!(fs::read(source_path.join("one")).unwrap(), b"one");
+        assert_eq!(fs::read(nested.join("two")).unwrap(), b"second");
+        assert_eq!(fs::read(target.join("one")).unwrap(), b"one");
+        assert_eq!(fs::read(target.join("nested/two")).unwrap(), b"second");
+        assert_eq!(state.tasks.lock().unwrap()["task"].bytes, 9);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_total_is_unknown_for_links_and_does_not_follow_them() {
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("outside");
+        fs::write(&target, b"data").unwrap();
+        let source = fixture.path().join("link");
+        std::os::unix::fs::symlink(&target, &source).unwrap();
+        assert_eq!(total_copy_bytes([source.as_path()], || false), None);
+        assert_eq!(fs::read(target).unwrap(), b"data");
+    }
+
+    #[test]
+    fn committed_move_changes_report_the_actual_keep_both_target() {
+        let (fixture, state) = setup();
+        let source_path = fixture.path().join("source.txt");
+        let target = fixture.path().join("target.txt");
+        fs::write(&source_path, b"move me").unwrap();
+        fs::write(&target, b"existing").unwrap();
+        update(&state, "task", |task| task.policy = Some("keep".into()));
+        let source = Source::at(source_path.clone()).unwrap();
+        let mut transfer = Transfer::new(&state, "task", true);
+        transfer
+            .run(&source, &target, &Directory::parent(&target).unwrap())
+            .unwrap();
+        let changes = crate::moved_file_changes(&transfer.journal);
+        let actual_target = fixture.path().join("target (2).txt");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].from, strpath(&source_path));
+        assert_eq!(changes[0].to, Some(strpath(&actual_target)));
+        assert_eq!(changes[0].kind, "move");
+        assert!(!source_path.exists());
+        assert_eq!(fs::read(target).unwrap(), b"existing");
+        assert_eq!(fs::read(actual_target).unwrap(), b"move me");
+    }
+
+    #[test]
+    fn copy_progress_discards_a_scan_total_after_a_skip_or_changed_size() {
+        let (fixture, state) = setup();
+        let source_path = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        fs::write(&source_path, b"new contents").unwrap();
+        fs::write(&target, b"keep existing contents").unwrap();
+        update(&state, "task", |task| {
+            task.total_bytes = Some(12);
+            task.policy = Some("skip".into());
+        });
+        let source = Source::at(source_path.clone()).unwrap();
+        assert!(!Transfer::new(&state, "task", false)
+            .run(&source, &target, &Directory::parent(&target).unwrap())
+            .unwrap());
+        assert_eq!(state.tasks.lock().unwrap()["task"].total_bytes, None);
+        assert_eq!(fs::read(&target).unwrap(), b"keep existing contents");
+        assert_eq!(fs::read(&source_path).unwrap(), b"new contents");
+
+        update(&state, "task", |task| {
+            task.skipped = 0;
+            task.total_bytes = Some(24);
+        });
+        let copied = fixture.path().join("copied");
+        assert!(Transfer::new(&state, "task", false)
+            .run(&source, &copied, &Directory::parent(&copied).unwrap())
+            .unwrap());
+        update(&state, "task", |task| task.status = "done".into());
+        assert_eq!(state.tasks.lock().unwrap()["task"].total_bytes, None);
+        assert_eq!(fs::read(copied).unwrap(), b"new contents");
+        assert_eq!(fs::read(source_path).unwrap(), b"new contents");
+    }
+
+    #[test]
+    fn committed_replacement_invalidates_the_old_destination_snapshot() {
+        let (fixture, state) = setup();
+        let source_path = fixture.path().join("source");
+        let target = fixture.path().join("filepace-replacement-regression.txt");
+        fs::write(&source_path, b"new source contents").unwrap();
+        fs::write(&target, b"old destination contents").unwrap();
+        let old_destination = snapshot_at(&target).unwrap();
+        let stage = fixture.path().join("stage");
+        fs::copy(&source_path, &stage).unwrap();
+        let trashed = fixture.path().join("test-trash");
+        let mut recovery = state
+            .recovery
+            .begin("task", Some(&source_path), &target, Some(&stage), false)
+            .unwrap();
+        commit_with_recovery_using_trash(
+            &stage,
+            &target,
+            &Directory::parent(&target).unwrap(),
+            Some(&old_destination),
+            &state,
+            "task",
+            &mut recovery,
+            |backup| fs::rename(backup, &trashed).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&source_path).unwrap(), b"new source contents");
+        assert_eq!(fs::read(&target).unwrap(), b"new source contents");
+        assert_eq!(fs::read(trashed).unwrap(), b"old destination contents");
+        assert!(!old_destination.matches(&target));
+        let tasks = state.tasks.lock().unwrap();
+        let changes = &tasks["task"].file_changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].from, strpath(&target));
+        assert_eq!(changes[0].to, None);
+        assert_eq!(changes[0].kind, "trash");
+    }
+
+    #[test]
+    fn committed_replacement_retains_old_content_when_trash_fails() {
+        let (fixture, state) = setup();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        let stage = fixture.path().join("stage");
+        fs::write(&source, b"new source contents").unwrap();
+        fs::write(&target, b"old destination contents").unwrap();
+        fs::copy(&source, &stage).unwrap();
+        let old_destination = snapshot_at(&target).unwrap();
+        let mut recovery = state
+            .recovery
+            .begin("task", Some(&source), &target, Some(&stage), false)
+            .unwrap();
+        let mut retained = None;
+        let result = commit_with_recovery_using_trash(
+            &stage,
+            &target,
+            &Directory::parent(&target).unwrap(),
+            Some(&old_destination),
+            &state,
+            "task",
+            &mut recovery,
+            |backup| {
+                retained = Some(backup.to_owned());
+                Err("simulated trash failure".into())
+            },
+        );
+        assert!(result.unwrap_err().contains("旧目标保存在"));
+        assert_eq!(fs::read(&source).unwrap(), b"new source contents");
+        assert_eq!(fs::read(&target).unwrap(), b"new source contents");
+        assert_eq!(
+            fs::read(retained.unwrap()).unwrap(),
+            b"old destination contents"
+        );
+        let tasks = state.tasks.lock().unwrap();
+        let changes = &tasks["task"].file_changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].from, strpath(&target));
+        assert_eq!(changes[0].to, None);
+        assert_eq!(changes[0].kind, "move");
     }
 
     #[cfg(windows)]
@@ -892,5 +1175,6 @@ mod tests {
         assert_eq!(fs::read(original.join("file")).unwrap(), b"source");
         assert_eq!(fs::read(target).unwrap(), b"old target");
         assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 2);
+        assert!(state.tasks.lock().unwrap()["task"].file_changes.is_empty());
     }
 }

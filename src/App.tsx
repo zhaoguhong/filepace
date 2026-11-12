@@ -6,13 +6,38 @@ import ListHeader, { listColumnStyle } from "./ListHeader";
 import MenuAction from "./MenuAction";
 import StorageDashboard from "./StorageDashboard";
 import DirectoryAnalysis from "./DirectoryAnalysis";
+import type { DiagnosisStatus } from "./StorageDiagnosis";
+import DiagnosisActivity, { DiagnosisCompletion } from "./DiagnosisActivity";
+import { useDiagnosisNotifications } from "./diagnosisNotifications";
+import UpdateNotice from "./UpdateNotice";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
 import BatchRename from "./BatchRename";
 import ComparePanel from "./ComparePanel";
 import ArchivePanel from "./ArchivePanel";
+import CommandPalette, { type FileCommand } from "./CommandPalette";
+import FileOperationDialog, { type FileOperation } from "./FileOperationDialog";
+import type { ResultActionRequest } from "./resultActions";
+import type { FileChange } from "./resultMutations";
+import TextPreview from "./TextPreview";
+import WorkLayouts from "./WorkLayouts";
+import DuplicatePanel from "./DuplicatePanel";
+import type { DuplicateGuard } from "./duplicateResults";
+import {
+  readSavedSearches,
+  savedSearchesChanged,
+  type SavedSearch,
+} from "./savedSearches";
 import Settings, { type SettingsSection } from "./Settings";
-import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -52,7 +77,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { call, desktop } from "./bridge";
-import { invalidateDirectories, useBrowsePane, type PaneSession, type PaneSide } from "./browsePane";
+import {
+  invalidateDirectories,
+  useBrowsePane,
+  type PaneSession,
+  type PaneSide,
+} from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
 import { useMarquee } from "./marquee";
 import { revealItem, visibleRange } from "./fileViewport";
@@ -91,6 +121,7 @@ type Menu = {
   shortcut?: SidebarSection;
 };
 type OpenWithApp = { name: string; path: string; default: boolean };
+type SearchLocation = { path: string; pane: PaneSide };
 const createOptions = {
   folder: {
     title: "新建文件夹",
@@ -118,8 +149,14 @@ const commandKey = isMac ? "⌘" : "Ctrl+";
 
 function readRecentDirectories(): string[] {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem("filepace-recent-directories") ?? "[]");
-    return Array.isArray(value) ? value.filter((path): path is string => typeof path === "string").slice(0, 20) : [];
+    const value: unknown = JSON.parse(
+      localStorage.getItem("filepace-recent-directories") ?? "[]",
+    );
+    return Array.isArray(value)
+      ? value
+          .filter((path): path is string => typeof path === "string")
+          .slice(0, 20)
+      : [];
   } catch {
     return [];
   }
@@ -218,12 +255,11 @@ export default function App() {
       entry: Entry;
       apps: OpenWithApp[];
     } | null>(null),
-    [storagePage, setStoragePage] = useState<"" | "overview" | "analysis">(""),
+    [storagePage, setStoragePage] = useState<
+      "" | "overview" | "analysis" | "duplicates"
+    >(""),
     [storageScope, setStorageScope] = useState(""),
-    [searchScope, setSearchScope] = useState<{
-      path: string;
-      pane: PaneSide;
-    } | null>(null),
+    [searchScope, setSearchScope] = useState<SearchLocation | null>(null),
     [settingsSection, setSettingsSection] = useState<SettingsSection | null>(
       null,
     ),
@@ -241,22 +277,68 @@ export default function App() {
     [applyAllTask, setApplyAllTask] = useState<string | null>(null);
   const [favorites, setFavorites] = useState(readFavorites);
   const [batchEntries, setBatchEntries] = useState<Entry[] | null>(null);
+  const [batchDuplicateGuard, setBatchDuplicateGuard] =
+    useState<DuplicateGuard>();
   const [compareOpen, setCompareOpen] = useState(false);
-  const [archive, setArchive] = useState<{ entry: Entry; parent: string } | null>(null);
-  const [recentDirectories, setRecentDirectories] = useState(readRecentDirectories);
+  const [archive, setArchive] = useState<{
+    entry: Entry;
+    parent: string;
+  } | null>(null);
+  const [recentDirectories, setRecentDirectories] = useState(
+    readRecentDirectories,
+  );
   const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
   const addressSuggestions = useId();
   const [cutPaths, setCutPaths] = useState<string[]>([]);
+  const [searchSessions, setSearchSessions] = useState<SearchLocation[]>([]);
+  const [analysisReturn, setAnalysisReturn] = useState(false);
+  const [diagnosisStatus, setDiagnosisStatus] =
+    useState<DiagnosisStatus | null>(null);
+  const [diagnosisNotice, setDiagnosisNotice] =
+    useState<DiagnosisStatus | null>(null);
+  const [diagnosisOpen, setDiagnosisOpen] = useState<{
+    scope: string;
+    request: number;
+  }>();
+  const [returnContext, setReturnContext] = useState<
+    "search" | "analysis" | "duplicates" | null
+  >(null);
+  const [commandPalette, setCommandPalette] = useState(false);
+  const [fileOperation, setFileOperation] = useState<FileOperation | null>(
+    null,
+  );
+  const [layoutsOpen, setLayoutsOpen] = useState(false);
+  const [duplicateScope, setDuplicateScope] = useState("");
+  const [duplicateReturn, setDuplicateReturn] = useState(false);
+  const [savedSearchList, setSavedSearchList] = useState(readSavedSearches);
+  const [restoreSearch, setRestoreSearch] = useState<{
+    search: SavedSearch;
+    pane: PaneSide;
+  } | null>(null);
+  const [fileChangeBatches, setFileChangeBatches] = useState<
+    { sequence: number; changes: FileChange[] }[]
+  >([]);
+  const mutationSequence = useRef(0);
+  const previewEntries = useRef<Entry[]>([]);
   const closed = useRef<Record<PaneSide, Tab[]>>({ left: [], right: [] }),
     pathRef = useRef<HTMLInputElement>(null),
     menuRef = useRef<HTMLDivElement>(null),
     submittedTasks = useRef(new Set<string>()),
     dragTab = useRef("");
   const storageVisible = storagePage !== "";
+  const diagnosisNotifications = useDiagnosisNotifications(openDiagnosis);
   const split = Boolean(session.right);
   const focused = split ? (session.focused ?? "left") : "left";
-  const left = useBrowsePane(session, hidden);
-  const right = useBrowsePane(session.right, hidden);
+  const left = useBrowsePane(
+    session,
+    hidden,
+    preferences.density === "compact",
+  );
+  const right = useBrowsePane(
+    session.right,
+    hidden,
+    preferences.density === "compact",
+  );
   const pane = focused === "left" ? left : right;
   const otherFolder = (focused === "left" ? right : left).listing?.path;
   const splitRatio = session.splitRatio ?? 0.5;
@@ -277,11 +359,39 @@ export default function App() {
   const marquee = useMarquee(fileDrag.suppressClick);
   const { tasks, undo, refreshActivity } = useFileActivity();
   const previewPdf = desktop && Boolean(preview?.name.match(/\.pdf$/i));
-  const { text: previewContent, image: imageUrl } =
-    useFilePreview(previewPdf ? null : preview) ?? {};
+  const previewOpen = Boolean(preview);
+  useEffect(() => {
+    if (!previewOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    document
+      .querySelector<HTMLButtonElement>('.preview [aria-label="关闭预览"]')
+      ?.focus({ preventScroll: true });
+    return () => {
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, [previewOpen]);
+  const {
+    text: previewContent,
+    image: imageUrl,
+    error: previewError,
+  } = useFilePreview(previewPdf ? null : preview) ?? {};
   const running = tasks.filter(activeTask);
   const conflict = tasks.find((t) => t.status === "conflict" && t.conflict);
   const applyAll = conflict?.id === applyAllTask;
+  function recordFileChanges(changes: FileChange[]) {
+    if (!changes.length) return;
+    const sequence = ++mutationSequence.current;
+    setFileChangeBatches((batches) => [...batches, { sequence, changes }]);
+  }
+  useEffect(() => {
+    if (!desktop) return;
+    const stop = listen<FileChange[]>("files-mutated", ({ payload }) =>
+      recordFileChanges(payload),
+    );
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, []);
   function updatePane(
     side: PaneSide,
     update: (pane: PaneSession) => PaneSession,
@@ -358,7 +468,10 @@ export default function App() {
     setEditingPath(null);
     setRename(null);
   }
-  function openStoragePage(page: "overview" | "analysis", path?: string) {
+  function openStoragePage(
+    page: "overview" | "analysis" | "duplicates",
+    path?: string,
+  ) {
     setMenu(null);
     setTaskPanel(false);
     setSearchScope(null);
@@ -366,7 +479,28 @@ export default function App() {
     if (page === "analysis") {
       setStorageScope(path || storageScope || listing?.path || tab?.path || "");
     }
+    if (page === "duplicates")
+      setDuplicateScope(path || listing?.path || tab?.path || "");
     setStoragePage(page);
+  }
+  function openDiagnosis(scope: string) {
+    openStoragePage("analysis", scope);
+    setDiagnosisOpen((current) => ({
+      scope,
+      request: (current?.request ?? 0) + 1,
+    }));
+    setDiagnosisNotice(null);
+  }
+  function handleDiagnosisStatus(status: DiagnosisStatus) {
+    setDiagnosisStatus(status);
+    if (status.phase === "preparing") {
+      setDiagnosisNotice(null);
+      void diagnosisNotifications.prepare();
+    }
+  }
+  function handleDiagnosisComplete(status: DiagnosisStatus) {
+    setDiagnosisNotice(status);
+    void diagnosisNotifications.notify(status);
   }
   function openSearch(path = listing?.path ?? tab?.path) {
     if (!path) return;
@@ -374,7 +508,26 @@ export default function App() {
     setTaskPanel(false);
     setStoragePage("");
     setSettingsSection(null);
-    setSearchScope({ path, pane: focused });
+    const location = { path, pane: focused };
+    setSearchSessions((sessions) =>
+      [
+        ...sessions.filter(
+          (item) => item.path !== path || item.pane !== focused,
+        ),
+        location,
+      ].slice(-6),
+    );
+    setSearchScope(location);
+  }
+  function returnToSearch(location: SearchLocation) {
+    setStoragePage("");
+    setSettingsSection(null);
+    setSearchScope(location);
+    focusPane(location.pane === "right" && !split ? "left" : location.pane);
+  }
+  function openSavedSearch(search: SavedSearch) {
+    openSearch(search.path);
+    setRestoreSearch({ search: { ...search }, pane: focused });
   }
   function openSettings(section: SettingsSection = "browse") {
     setMenu(null);
@@ -473,7 +626,9 @@ export default function App() {
         const saved = await call<Session | null>("load_session");
         if (disposed) return;
         setPlaces(ps);
-        setSession(restoreSession(saved, ps[0]?.path || "/", preferences.defaultView));
+        setSession(
+          restoreSession(saved, ps[0]?.path || "/", preferences.defaultView),
+        );
       } catch (e) {
         if (!disposed) setBootError(String(e));
       }
@@ -509,7 +664,11 @@ export default function App() {
   }
   const recoveryShown = useRef(false);
   useEffect(() => {
-    if (recoveryShown.current || !tasks.some((task) => task.id.startsWith("recovery-"))) return;
+    if (
+      recoveryShown.current ||
+      !tasks.some((task) => task.id.startsWith("recovery-"))
+    )
+      return;
     recoveryShown.current = true;
     setTaskPanel(true);
     setNotice("上次文件操作中断，请在文件任务中核对保留位置。");
@@ -540,16 +699,19 @@ export default function App() {
     if (!desktop) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let changed: Set<string> | null = new Set();
-    const unlisten = listen<string[] | null>("directory-changed", ({ payload }) => {
-      if (!payload) changed = null;
-      else if (changed) for (const path of payload) changed.add(path);
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        invalidateDirectories(changed ? [...changed] : null);
-        changed = new Set();
-      }, 120);
-    });
+    const unlisten = listen<string[] | null>(
+      "directory-changed",
+      ({ payload }) => {
+        if (!payload) changed = null;
+        else if (changed) for (const path of payload) changed.add(path);
+        if (timer) return;
+        timer = setTimeout(() => {
+          timer = undefined;
+          invalidateDirectories(changed ? [...changed] : null);
+          changed = new Set();
+        }, 120);
+      },
+    );
     return () => {
       unlisten.then((f) => f());
       clearTimeout(timer);
@@ -557,15 +719,18 @@ export default function App() {
   }, []);
   const watchGeneration = useRef(0);
   const watchedPaths = JSON.stringify(
-    [left.tab, right.tab].flatMap((tab) => tab ? (tab.view === "columns" ? columnPaths(tab) : [tab.path]) : []),
+    [left.tab, right.tab].flatMap((tab) =>
+      tab ? (tab.view === "columns" ? columnPaths(tab) : [tab.path]) : [],
+    ),
   );
   useEffect(() => {
     if (!desktop) return;
     const paths = JSON.parse(watchedPaths) as string[];
-    const watch = () => void call("watch_directories", {
-      paths,
-      generation: ++watchGeneration.current,
-    }).catch(() => {});
+    const watch = () =>
+      void call("watch_directories", {
+        paths,
+        generation: ++watchGeneration.current,
+      }).catch(() => {});
     watch();
     const recheck = () => {
       watch();
@@ -586,7 +751,10 @@ export default function App() {
     const observer = new ResizeObserver(placeMenu);
     observer.observe(element);
     window.addEventListener("resize", placeMenu);
-    return () => { observer.disconnect(); window.removeEventListener("resize", placeMenu); };
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", placeMenu);
+    };
   }, [menu]);
   useEffect(() => {
     if (!notice) return;
@@ -601,15 +769,29 @@ export default function App() {
     return () => window.removeEventListener("storage", sync);
   }, []);
   useEffect(() => {
+    const sync = () => setSavedSearchList(readSavedSearches());
+    window.addEventListener(savedSearchesChanged, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(savedSearchesChanged, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  useEffect(() => {
     if (editingPath) {
       pathRef.current?.focus();
       pathRef.current?.select();
     }
   }, [editingPath]);
   useEffect(() => {
-    const paths = [left.listing?.path, right.listing?.path].filter((path): path is string => Boolean(path));
+    const paths = [left.listing?.path, right.listing?.path].filter(
+      (path): path is string => Boolean(path),
+    );
     if (!paths.length) return;
-    const next = [...new Set([...paths, ...readRecentDirectories()])].slice(0, 20);
+    const next = [...new Set([...paths, ...readRecentDirectories()])].slice(
+      0,
+      20,
+    );
     localStorage.setItem("filepace-recent-directories", JSON.stringify(next));
     setRecentDirectories(next);
   }, [left.listing?.path, right.listing?.path]);
@@ -619,11 +801,16 @@ export default function App() {
     let active = true;
     const timer = setTimeout(() => {
       void call<string[]>("suggest_directories", { input: address }).then(
-        (paths) => { if (active && Array.isArray(paths)) setPathSuggestions(paths); },
+        (paths) => {
+          if (active && Array.isArray(paths)) setPathSuggestions(paths);
+        },
         () => {},
       );
     }, 180);
-    return () => { active = false; clearTimeout(timer); };
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [editingPath, address]);
   useEffect(() => {
     for (const side of ["left", "right"] as const) {
@@ -640,10 +827,18 @@ export default function App() {
     setAddress(target.listing?.path ?? target.tab.path);
     setEditingPath(side);
   }
-  async function copy(cut = false, paths = selected) {
+  async function copy(
+    cut = false,
+    paths = selected,
+    duplicateGuard?: DuplicateGuard,
+  ) {
     if (!paths.length) return;
     try {
-      await call("clipboard_set", { paths, cut });
+      await call("clipboard_set", {
+        paths,
+        cut,
+        ...(cut && duplicateGuard ? { duplicateGuard } : {}),
+      });
       setCutPaths(cut ? paths : []);
       setNotice(
         cut ? "已剪切，前往目标文件夹粘贴" : "已复制，前往目标文件夹粘贴",
@@ -658,6 +853,138 @@ export default function App() {
       await action();
     } catch (e) {
       setNotice(String(e));
+    }
+  }
+  function submittedResultTask(id: string) {
+    submittedTasks.current.add(id);
+    setTaskPanel(true);
+    void refreshActivity();
+  }
+  async function resultAction(request: ResultActionRequest) {
+    const { action, entries: items, target, scope, duplicateGuard } = request;
+    const entry = target ?? items[0];
+    const paths = items.map((item) => item.path);
+    const requestedSide = searchScope?.pane ?? focused;
+    const side = requestedSide === "right" && !split ? "left" : requestedSide;
+    const otherSide = side === "left" ? "right" : "left";
+    const other = (otherSide === "left" ? left : right).listing?.path;
+    const parent = (path: string) =>
+      path.slice(
+        0,
+        Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1,
+      ) || "/";
+    if (
+      ["reveal", "other-pane"].includes(action) ||
+      (action === "open" && entry?.isDir)
+    ) {
+      if (searchScope) setReturnContext("search");
+      else if (storagePage === "analysis" || storagePage === "duplicates")
+        setReturnContext(storagePage);
+    }
+    if (action === "preview" && entry && !entry.isDir) {
+      previewEntries.current = (request.allEntries ?? items).filter(
+        (item) => !item.isDir,
+      );
+      setPreview(entry);
+    } else if (action === "open" && entry) {
+      if (entry.isDir && storagePage === "analysis") setAnalysisReturn(true);
+      if (entry.isDir && storagePage === "duplicates") setDuplicateReturn(true);
+      await open(entry, side);
+    } else if ((action === "reveal" || action === "other-pane") && entry) {
+      if (storagePage === "analysis") setAnalysisReturn(true);
+      if (storagePage === "duplicates") setDuplicateReturn(true);
+      if (action === "other-pane" && !split) {
+        const next = makeTab(parent(entry.path), preferences.defaultView);
+        next.selected = [entry.path];
+        setSession((current) => ({
+          ...current,
+          right: { tabs: [next], active: next.id },
+          focused: "right",
+        }));
+        right.reveal.current = entry.path;
+        setStoragePage("");
+        setSearchScope(null);
+      } else {
+        const destinationSide = action === "other-pane" ? otherSide : side;
+        focusPane(destinationSide);
+        go(parent(entry.path), destinationSide, entry.path);
+      }
+    } else if (action === "copy" || action === "cut") {
+      await copy(action === "cut", paths, duplicateGuard);
+    } else if (action === "copy-path") {
+      await runMenuAction(async () => {
+        await call("clipboard_copy_paths", { paths });
+        setCutPaths([]);
+        setNotice("已复制路径");
+      });
+    } else if (action === "properties" && entry) {
+      await openProperties(entry);
+    } else if (action === "open-with" && entry) {
+      await chooseOpenWith(entry);
+    } else if (action === "rename" && items.length) {
+      if (
+        items.length > 1 &&
+        new Set(items.map((item) => parent(item.path))).size > 1
+      )
+        setNotice("批量改名需要选择同一个文件夹内的项目，请分组处理。");
+      else if (items.length > 1) {
+        setBatchDuplicateGuard(duplicateGuard);
+        setBatchEntries(items);
+      } else
+        setFileOperation({
+          kind: "rename",
+          entries: items,
+          destination: "",
+          duplicateGuard,
+        });
+    } else if (action === "trash" && paths.length) {
+      await start(
+        "trash",
+        paths,
+        scope || parent(paths[0]),
+        undefined,
+        duplicateGuard,
+      );
+    } else if (
+      (action === "copy-other" || action === "move-other") &&
+      paths.length
+    ) {
+      if (other)
+        await start(
+          action === "copy-other" ? "copy" : "move",
+          paths,
+          other,
+          undefined,
+          action === "move-other" ? duplicateGuard : undefined,
+        );
+      else setNotice("请先打开左右分栏并选择目标目录。");
+    } else if ((action === "copy-to" || action === "move-to") && paths.length) {
+      setFileOperation({
+        kind: action === "copy-to" ? "copy" : "move",
+        entries: items,
+        destination: other ?? scope,
+        duplicateGuard: action === "move-to" ? duplicateGuard : undefined,
+      });
+    } else if (action === "paste") {
+      if (target?.isDir) {
+        await paste(target.path);
+        return;
+      }
+      try {
+        const [sources, cut] = await call<[string[], boolean]>("clipboard_get");
+        if (!sources.length) {
+          setNotice("剪贴板中没有文件");
+          return;
+        }
+        setFileOperation({
+          kind: cut ? "move" : "copy",
+          sources,
+          entries: [],
+          destination: scope,
+        });
+      } catch (error) {
+        setNotice(String(error));
+      }
     }
   }
   async function openProperties(entry: Entry) {
@@ -697,6 +1024,7 @@ export default function App() {
     paths = selected,
     destination = tab?.path,
     within?: string,
+    duplicateGuard?: DuplicateGuard,
   ) {
     if (!paths.length || !destination) return false;
     setMenu(null);
@@ -706,6 +1034,7 @@ export default function App() {
         sources: paths,
         destination,
         ...(within ? { within } : {}),
+        ...(duplicateGuard ? { duplicateGuard } : {}),
       });
       submittedTasks.current.add(id);
       void refreshActivity();
@@ -798,6 +1127,7 @@ export default function App() {
     const items = entries.filter((entry) => paths.has(entry.path));
     if (items.length < 2) return;
     setMenu(null);
+    setBatchDuplicateGuard(undefined);
     setBatchEntries(items);
   }
   async function submitRename() {
@@ -885,9 +1215,24 @@ export default function App() {
   }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.defaultPrevented || e.isComposing || !tab || fileDrag.preview || marquee.frame) return;
+      if (
+        e.defaultPrevented ||
+        e.isComposing ||
+        !tab ||
+        fileDrag.preview ||
+        marquee.frame
+      )
+        return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (layoutsOpen) {
+        if (key === "escape") {
+          e.preventDefault();
+          setLayoutsOpen(false);
+        }
+        return;
+      }
+      if (fileOperation || commandPalette) return;
       if (menu && key === "escape") {
         e.preventDefault();
         setMenu(null);
@@ -911,6 +1256,53 @@ export default function App() {
           e.preventDefault();
           setNewEntry(null);
         }
+        return;
+      }
+      if (conflict || closePrompt) return;
+      if (preview) {
+        if (key === "escape" || key === " ") {
+          e.preventDefault();
+          setPreview(null);
+        }
+        if (
+          ["arrowleft", "arrowright"].includes(key) &&
+          !(e.target as HTMLElement).closest("input,textarea,select")
+        ) {
+          e.preventDefault();
+          const files = previewEntries.current.some(
+            (item) => item.path === preview.path,
+          )
+            ? previewEntries.current
+            : entries.filter((item) => !item.isDir);
+          const index = files.findIndex((item) => item.path === preview.path);
+          const next = files[index + (key === "arrowleft" ? -1 : 1)];
+          if (next) setPreview(next);
+        }
+        return;
+      }
+      if (openWith || properties) {
+        if (key === "escape") {
+          setOpenWith(null);
+          setProperties(null);
+        }
+        return;
+      }
+      if (mod && (key === "k" || (e.shiftKey && key === "p"))) {
+        e.preventDefault();
+        setMenu(null);
+        setCommandPalette(true);
+        return;
+      }
+      if (
+        mod &&
+        !e.shiftKey &&
+        key === "z" &&
+        !(e.target as HTMLElement).closest(
+          'input,textarea,select,[contenteditable="true"]',
+        )
+      ) {
+        e.preventDefault();
+        void undoLast();
         return;
       }
       if (mod && key === ",") {
@@ -939,33 +1331,28 @@ export default function App() {
         if (!list) return;
         e.preventDefault();
         const entry = entries.find((entry) => entry.path === selected.at(-1));
-        const row = entry && list.querySelector(`[data-path="${CSS.escape(entry.path)}"]`);
+        const row =
+          entry &&
+          list.querySelector(`[data-path="${CSS.escape(entry.path)}"]`);
         const bounds = (row || list).getBoundingClientRect();
         setMenu({ x: bounds.left + 16, y: bounds.top + 18, entry });
         return;
       }
-      if (desktop && split && mod && e.shiftKey && (key === "c" || key === "m")) {
+      if (
+        desktop &&
+        split &&
+        mod &&
+        e.shiftKey &&
+        (key === "c" || key === "m")
+      ) {
         e.preventDefault();
         const other = focused === "left" ? right : left;
-        if (other.listing) void start(key === "c" ? "copy" : "move", selected, other.listing.path);
-        return;
-      }
-      if (openWith) {
-        if (key === "escape") setOpenWith(null);
-        return;
-      }
-      if (properties) {
-        if (key === "escape") setProperties(null);
-        return;
-      }
-      if (preview) {
-        if (key === "escape") setPreview(null);
-        if (["arrowleft", "arrowright"].includes(key)) {
-          const files = entries.filter((x) => !x.isDir);
-          const i = files.findIndex((x) => x.path === preview.path);
-          const next = files[i + (key === "arrowleft" ? -1 : 1)];
-          if (next) setPreview(next);
-        }
+        if (other.listing)
+          void start(
+            key === "c" ? "copy" : "move",
+            selected,
+            other.listing.path,
+          );
         return;
       }
       if (storageVisible) {
@@ -1138,6 +1525,155 @@ export default function App() {
         <p>{bootError || "正在打开你的工作空间…"}</p>
       </div>
     );
+  const browsingFiles = !storageVisible && !searchScope && !settingsSection;
+  const hasFiles = browsingFiles && selected.length > 0;
+  const fileCommands: FileCommand[] = [
+    {
+      id: "search",
+      label: "搜索子文件夹",
+      detail: listing?.path ?? tab.path,
+      shortcut: `${commandKey}F`,
+      run: () => openSearch(),
+    },
+    {
+      id: "analysis",
+      label: "分析当前目录",
+      detail: "查看占用分析和智能诊断",
+      run: () => openStoragePage("analysis", listing?.path ?? tab.path),
+    },
+    {
+      id: "duplicates",
+      label: "检查重复文件",
+      detail: "逐字节核对相同内容，手动选择保留项",
+      disabled: !desktop,
+      run: () => openStoragePage("duplicates", listing?.path ?? tab.path),
+    },
+    { id: "tasks", label: "查看文件任务", run: () => setTaskPanel(true) },
+    { id: "split", label: split ? "合并分栏" : "左右分栏", run: toggleSplit },
+    {
+      id: "layouts",
+      label: "保存或恢复工作布局",
+      detail: "保存左右目录、标签页和视图",
+      run: () => setLayoutsOpen(true),
+    },
+    {
+      id: "density",
+      label:
+        preferences.density === "compact" ? "切换舒适列表" : "切换紧凑列表",
+      run: () =>
+        changePreferences({
+          density:
+            preferences.density === "compact" ? "comfortable" : "compact",
+        }),
+    },
+    {
+      id: "copy",
+      label: "复制所选文件",
+      shortcut: `${commandKey}C`,
+      disabled: !desktop || !hasFiles,
+      run: () => void copy(),
+    },
+    {
+      id: "cut",
+      label: "剪切所选文件",
+      shortcut: `${commandKey}X`,
+      disabled: !desktop || !hasFiles,
+      run: () => void copy(true),
+    },
+    {
+      id: "paste",
+      label: "粘贴到当前目录",
+      detail: listing?.path ?? tab.path,
+      shortcut: `${commandKey}V`,
+      disabled: !desktop || !browsingFiles,
+      run: () => void paste(),
+    },
+    {
+      id: "copy-other",
+      label: "复制到另一栏",
+      shortcut: isMac ? "⇧⌘C" : "Ctrl+Shift+C",
+      disabled: !desktop || !hasFiles || !otherFolder || !split,
+      run: () => void start("copy", selected, otherFolder),
+    },
+    {
+      id: "move-other",
+      label: "移动到另一栏",
+      shortcut: isMac ? "⇧⌘M" : "Ctrl+Shift+M",
+      disabled: !desktop || !hasFiles || !otherFolder || !split,
+      run: () => void start("move", selected, otherFolder),
+    },
+    {
+      id: "rename",
+      label: selected.length > 1 ? "批量重命名" : "重命名",
+      disabled: !desktop || !hasFiles,
+      run: () => (selected.length > 1 ? openBatchRename() : renameSelected()),
+    },
+    {
+      id: "preview",
+      label: "快速预览所选文件",
+      shortcut: "Space",
+      disabled: !hasFiles || selected.length !== 1,
+      run: () => {
+        const entry = entries.find(
+          (item) => item.path === selected[0] && !item.isDir,
+        );
+        if (entry) {
+          previewEntries.current = [];
+          setPreview(entry);
+        }
+      },
+    },
+    {
+      id: "undo",
+      label: undo || "撤销上次移动或改名",
+      shortcut: `${commandKey}Z`,
+      disabled: !desktop || !undo || running.length > 0,
+      run: () => void undoLast(),
+    },
+    {
+      id: "folder",
+      label: "新建文件夹",
+      shortcut: isMac ? "⇧⌘N" : "Ctrl+Shift+N",
+      disabled: !desktop || !browsingFiles,
+      run: () => promptCreate("folder", listing?.path ?? tab.path),
+    },
+    {
+      id: "settings",
+      label: "打开设置",
+      shortcut: `${commandKey},`,
+      run: () => openSettings(),
+    },
+    ...savedSearchList.map((search) => ({
+      id: `saved-${search.id}`,
+      label: `搜索：${search.name}`,
+      detail: search.path,
+      run: () => openSavedSearch(search),
+    })),
+    ...(searchSessions.length
+      ? [
+          {
+            id: "return-search",
+            label: "返回搜索结果",
+            detail: searchSessions.at(-1)!.path,
+            run: () => returnToSearch(searchSessions.at(-1)!),
+          },
+        ]
+      : []),
+    ...(duplicateReturn
+      ? [
+          {
+            id: "return-duplicates",
+            label: "返回重复检查结果",
+            detail: duplicateScope,
+            run: () => {
+              setSearchScope(null);
+              setSettingsSection(null);
+              setStoragePage("duplicates");
+            },
+          },
+        ]
+      : []),
+  ];
   const menuPath = menu?.entry?.path ?? tab.path;
   const commonIndex = commonPlaces.findIndex(
     (place) => place.path === menuPath,
@@ -1212,8 +1748,18 @@ export default function App() {
       entry,
       paths: selection.has(entry.path) ? selected : [entry.path],
     });
-    const availableScroll = Math.max(0, Math.ceil(entries.length / layout.columns) * layout.step + 2 * layout.padding - height);
-    const range = visibleRange(entries.length, Math.min(tab.scroll, availableScroll), height, layout);
+    const availableScroll = Math.max(
+      0,
+      Math.ceil(entries.length / layout.columns) * layout.step +
+        2 * layout.padding -
+        height,
+    );
+    const range = visibleRange(
+      entries.length,
+      Math.min(tab.scroll, availableScroll),
+      height,
+      layout,
+    );
     const shown = entries.slice(range.start, range.end);
     const path = tab.path;
     const crumbs = path.split(/[\\/]/).filter(Boolean);
@@ -1403,7 +1949,10 @@ export default function App() {
               commit: (paths) => setSelection(paths, side),
             });
         }}
-        onScroll={(e) => { if (!restoringScroll.current) patchPane({ scroll: e.currentTarget.scrollTop }); }}
+        onScroll={(e) => {
+          if (!restoringScroll.current)
+            patchPane({ scroll: e.currentTarget.scrollTop });
+        }}
         onClick={(e) => {
           if (!(e.target as Element).closest("button, input"))
             setSelection([], side);
@@ -1508,18 +2057,9 @@ export default function App() {
         onFocusCapture={() => focusPane(side)}
       >
         <nav className="tabs" aria-label="文件标签">
-          {loading && listing && <span className="pane-read-status" title="正在读取文件夹">读取中 · {listing.entries.length.toLocaleString()} 项</span>}
-          {split && (
-            <span
-              className={`pane-focus-badge${focused === side ? " current" : ""}`}
-              title={
-                focused === side
-                  ? "侧栏和快捷键作用于此栏"
-                  : "点击此栏以操作其中的文件"
-              }
-            >
-              {label}
-              {focused === side && " · 当前"}
+          {loading && listing && (
+            <span className="pane-read-status" title="正在读取文件夹">
+              读取中 · {listing.entries.length.toLocaleString()} 项
             </span>
           )}
           {tabs.map((t) => (
@@ -1661,12 +2201,10 @@ export default function App() {
                           x: bounds.left,
                           y: bounds.bottom + 5,
                           pane: side,
-                          ancestors: crumbs
-                            .slice(0, -1)
-                            .map((name, index) => ({
-                              name,
-                              path: crumbPath(index),
-                            })),
+                          ancestors: crumbs.slice(0, -1).map((name, index) => ({
+                            name,
+                            path: crumbPath(index),
+                          })),
                         });
                       }}
                     >
@@ -1861,6 +2399,7 @@ export default function App() {
   return (
     <div
       className={`app${dragPreview ? " dragging-files" : ""}`}
+      data-density={preferences.density}
       onPointerDownCapture={() => {
         fileDrag.suppressClick.current = false;
       }}
@@ -1887,12 +2426,60 @@ export default function App() {
             : storageVisible
               ? storagePage === "analysis"
                 ? "目录分析"
-                : "存储概览"
+                : storagePage === "duplicates"
+                  ? "重复文件检查"
+                  : "存储概览"
               : searchScope
                 ? "搜索子文件夹"
                 : basename(tab.path)}
         </span>
         <div className="title-actions">
+          {!searchScope &&
+            !storageVisible &&
+            !settingsSection &&
+            returnContext === "search" &&
+            searchSessions.length > 0 && (
+              <button
+                className="window-action return-results"
+                onClick={() => returnToSearch(searchSessions.at(-1)!)}
+                title={searchSessions.at(-1)!.path}
+              >
+                <ArrowLeft size={15} /> 返回搜索结果
+              </button>
+            )}
+          {!storageVisible &&
+            !searchScope &&
+            !settingsSection &&
+            returnContext === "analysis" &&
+            analysisReturn && (
+              <button
+                className="window-action return-results"
+                onClick={() => openStoragePage("analysis")}
+              >
+                <ArrowLeft size={15} /> 返回分析结果
+              </button>
+            )}
+          {!storageVisible &&
+            !searchScope &&
+            !settingsSection &&
+            returnContext === "duplicates" &&
+            duplicateReturn && (
+              <button
+                className="window-action return-results"
+                onClick={() => setStoragePage("duplicates")}
+              >
+                <ArrowLeft size={15} /> 返回重复检查结果
+              </button>
+            )}
+          <Tool
+            label={`命令面板（${commandKey}K）`}
+            onClick={() => {
+              setMenu(null);
+              setCommandPalette(true);
+            }}
+          >
+            <Search size={16} />
+          </Tool>
           <button
             className="window-action"
             aria-label="搜索子文件夹"
@@ -1995,6 +2582,24 @@ export default function App() {
                   <div className="sidebar-hint">用加号添加当前文件夹</div>
                 )}
               </SidebarGroup>
+              {savedSearchList.some((search) => search.pinned) && (
+                <section className="sidebar-group" aria-label="保存的搜索">
+                  <div className="section-label">保存的搜索</div>
+                  {savedSearchList
+                    .filter((search) => search.pinned)
+                    .map((search) => (
+                      <button
+                        key={search.id}
+                        className="place"
+                        title={`${search.name}\n${search.path}`}
+                        onClick={() => openSavedSearch(search)}
+                      >
+                        <FolderSearch size={16} />
+                        <span>{search.name}</span>
+                      </button>
+                    ))}
+                </section>
+              )}
               <SidebarGroup
                 label="收藏目录"
                 collapsed={preferences.collapsedSidebar.includes("favorites")}
@@ -2037,6 +2642,14 @@ export default function App() {
                 ))}
             </div>
             <div className="sidebar-bottom">
+              <DiagnosisActivity
+                status={diagnosisStatus}
+                onOpen={openDiagnosis}
+              />
+              <UpdateNotice
+                status={updates.status}
+                onClick={() => openSettings("update")}
+              />
               <button
                 className="place"
                 aria-pressed={Boolean(settingsSection)}
@@ -2063,9 +2676,14 @@ export default function App() {
             }
           >
             {renderPane("left")}
-            {split && <PaneDivider ratio={splitRatio} onChange={(splitRatio) =>
-              setSession((current) => ({ ...current, splitRatio }))
-            } />}
+            {split && (
+              <PaneDivider
+                ratio={splitRatio}
+                onChange={(splitRatio) =>
+                  setSession((current) => ({ ...current, splitRatio }))
+                }
+              />
+            )}
             {split && renderPane("right")}
           </div>
           <StorageDashboard
@@ -2076,6 +2694,9 @@ export default function App() {
           />
           <DirectoryAnalysis
             visible={storagePage === "analysis"}
+            onDiagnosisStatus={handleDiagnosisStatus}
+            onDiagnosisComplete={handleDiagnosisComplete}
+            diagnosisOpen={diagnosisOpen}
             currentPath={listing?.path ?? tab.path}
             scope={storageScope}
             places={[
@@ -2088,19 +2709,56 @@ export default function App() {
               })),
             ]}
             onChoose={setStorageScope}
-            onBrowse={(path, selectedPath) => go(path, focused, selectedPath)}
+            onBrowse={(path, selectedPath) => {
+              setAnalysisReturn(true);
+              setReturnContext("analysis");
+              go(path, focused, selectedPath);
+            }}
+            onFileAction={(request) => void resultAction(request)}
+            fileChangeBatches={fileChangeBatches}
             onClose={() => setStoragePage("")}
           />
-          {searchScope && (
+          <DuplicatePanel
+            path={duplicateScope || listing?.path || tab.path}
+            hidden={hidden}
+            visible={storagePage === "duplicates"}
+            onBrowse={(path, selectedPath) => {
+              setDuplicateReturn(true);
+              setReturnContext("duplicates");
+              go(path, focused, selectedPath);
+            }}
+            onClose={() => setStoragePage("")}
+            onFileAction={(request) => void resultAction(request)}
+            fileChangeBatches={fileChangeBatches}
+          />
+          {searchSessions.map((location) => (
             <SearchPanel
-              path={searchScope.path}
-              hidden={hidden}
-              onBrowse={(path, selectedPath) =>
-                go(path, searchScope.pane, selectedPath)
+              key={`${location.pane}:${location.path}`}
+              path={location.path}
+              visible={
+                searchScope?.path === location.path &&
+                searchScope.pane === location.pane
               }
+              hidden={hidden}
+              restoreSearch={
+                restoreSearch?.pane === location.pane &&
+                restoreSearch.search.path === location.path
+                  ? restoreSearch.search
+                  : undefined
+              }
+              onBrowse={(path, selectedPath) => {
+                setReturnContext("search");
+                go(
+                  path,
+                  location.pane === "right" && !split ? "left" : location.pane,
+                  selectedPath,
+                );
+              }}
+              onFileAction={(request) => void resultAction(request)}
+              fileChangeBatches={fileChangeBatches}
               onClose={() => setSearchScope(null)}
             />
-          )}
+          ))}
           {settingsSection && (
             <Settings
               section={settingsSection}
@@ -2121,7 +2779,13 @@ export default function App() {
           {settingsSection ? (
             "应用设置"
           ) : storageVisible ? (
-            storagePage === "analysis" ? "目录分析 · 只读扫描" : "本地存储概览"
+            storagePage === "analysis" ? (
+              "目录分析 · 扫描快照"
+            ) : storagePage === "duplicates" ? (
+              "重复文件检查 · 内容校验"
+            ) : (
+              "本地存储概览"
+            )
           ) : searchScope ? (
             "搜索子文件夹"
           ) : (
@@ -2156,16 +2820,22 @@ export default function App() {
         </span>
         <div className="status-actions">
           {!sidebar && (
+            <DiagnosisActivity
+              status={diagnosisStatus}
+              onOpen={openDiagnosis}
+              compact
+            />
+          )}
+          {!sidebar && (
+            <UpdateNotice
+              status={updates.status}
+              onClick={() => openSettings("update")}
+              compact
+            />
+          )}
+          {!sidebar && (
             <button onClick={() => openSettings()}>
               <SettingsIcon size={14} /> 设置
-            </button>
-          )}
-          {updates.status.phase === "ready" && !settingsSection && (
-            <button
-              className="task-active"
-              onClick={() => openSettings("update")}
-            >
-              更新已就绪
             </button>
           )}
           <button
@@ -2225,6 +2895,13 @@ export default function App() {
             <X size={14} />
           </button>
         </div>
+      )}
+      {diagnosisNotice && (
+        <DiagnosisCompletion
+          status={diagnosisNotice}
+          onOpen={openDiagnosis}
+          onDismiss={() => setDiagnosisNotice(null)}
+        />
       )}
       {menu && (
         <div
@@ -2633,13 +3310,65 @@ export default function App() {
           )}
         </div>
       )}
-      {taskPanel && <TaskPanel
-        tasks={tasks}
-        onClose={() => setTaskPanel(false)}
-        onBrowse={(path) => { setTaskPanel(false); go(path, focused); }}
-        onAction={runMenuAction}
-        onSubmitted={(id) => { submittedTasks.current.add(id); void refreshActivity(); }}
-      />}
+      {taskPanel && (
+        <TaskPanel
+          tasks={tasks}
+          onClose={() => setTaskPanel(false)}
+          onBrowse={(path) => {
+            setTaskPanel(false);
+            go(path, focused);
+          }}
+          onAction={runMenuAction}
+          onSubmitted={(id) => {
+            submittedTasks.current.add(id);
+            void refreshActivity();
+          }}
+        />
+      )}
+      {commandPalette && (
+        <CommandPalette
+          commands={fileCommands}
+          onClose={() => setCommandPalette(false)}
+        />
+      )}
+      {layoutsOpen && (
+        <WorkLayouts
+          session={session}
+          onRestore={(next) => {
+            setSession(next);
+            setStoragePage("");
+            setSearchScope(null);
+            setSettingsSection(null);
+          }}
+          onClose={() => setLayoutsOpen(false)}
+        />
+      )}
+      {fileOperation && (
+        <FileOperationDialog
+          key={`${fileOperation.kind}:${fileOperation.entries[0]?.path ?? fileOperation.sources?.[0]}`}
+          operation={fileOperation}
+          locations={[
+            ...new Set(
+              [
+                otherFolder,
+                listing?.path,
+                ...commonPlaces.map((place) => place.path),
+                ...favorites,
+                ...recentDirectories,
+              ].filter((path): path is string => Boolean(path)),
+            ),
+          ]}
+          onClose={() => setFileOperation(null)}
+          onSubmitted={(id) => {
+            submittedResultTask(id);
+            setCutPaths([]);
+          }}
+          onRenamed={() => {
+            void refreshActivity();
+            refresh();
+          }}
+        />
+      )}
       {openWith && (
         <div className="overlay" onClick={() => setOpenWith(null)}>
           <section
@@ -2685,10 +3414,15 @@ export default function App() {
       {batchEntries && (
         <BatchRename
           entries={batchEntries}
-          onClose={() => setBatchEntries(null)}
+          duplicateGuard={batchDuplicateGuard}
+          onClose={() => {
+            setBatchEntries(null);
+            setBatchDuplicateGuard(undefined);
+          }}
           onStarted={(id) => {
             submittedTasks.current.add(id);
             setBatchEntries(null);
+            setBatchDuplicateGuard(undefined);
             void refreshActivity();
           }}
         />
@@ -2756,6 +3490,9 @@ export default function App() {
         <div className="overlay" onClick={() => setPreview(null)}>
           <section
             className="preview modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`预览 ${preview.name}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="panel-title">
@@ -2776,7 +3513,12 @@ export default function App() {
               ) : imageUrl ? (
                 <img src={imageUrl} alt={preview.name} />
               ) : (
-                <pre>{previewContent || "正在读取…"}</pre>
+                <TextPreview
+                  key={preview.path}
+                  name={preview.name}
+                  text={previewContent}
+                  error={previewError}
+                />
               )}
             </div>
             <div className="preview-footer">

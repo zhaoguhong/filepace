@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ArrowUpRight,
-  File,
-  Folder,
-  RefreshCw,
-  Sparkles,
-  Square,
-} from "lucide-react";
+import { RefreshCw, Sparkles, Square } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
 import { formatSize } from "./model";
+import ResultFiles from "./ResultFiles";
+import type { ResultActionProps } from "./resultActions";
 import type {
   ScanCounts,
   StorageReport,
@@ -84,6 +79,23 @@ type DiagnosisRun = {
   scanId: string;
   phase: "preparing" | "analyzing";
   cancelled: boolean;
+  changeBaseline?: number;
+};
+export type DiagnosisStatus = {
+  id: string;
+  scope: string;
+  phase: DiagnosisRun["phase"] | "complete" | "error" | "cancelled" | "empty";
+  message?: string;
+};
+export type DiagnosisCallbacks = {
+  onDiagnosisStatus?: (status: DiagnosisStatus) => void;
+  onDiagnosisComplete?: (status: DiagnosisStatus) => void;
+};
+type DiagnosisRecord = {
+  result?: DiagnosisReport | null;
+  error?: string;
+  message?: string;
+  changeBaseline?: number;
 };
 const preferenceKey = "filepace-diagnosis";
 type Preferences = {
@@ -125,19 +137,32 @@ export default function StorageDiagnosis({
   onCancelScan,
   onBrowse,
   onShowUsage,
-}: {
-  visible: boolean;
-  scopePath: string;
-  report: StorageReport | null;
-  scanId: string;
-  scanBusy: boolean;
-  scanStale: boolean;
-  scanProgress: ScanCounts | null;
-  onPrepare: (id: string, refresh: boolean) => Promise<StorageSnapshot | null>;
-  onCancelScan: (id: string) => Promise<void>;
-  onBrowse: (path: string, selected?: string) => void;
-  onShowUsage: () => void;
-}) {
+  onFileAction,
+  fileChanges,
+  fileChangeBatches,
+  resultsVisible = visible,
+  changeBaseline,
+  onDiagnosisStatus,
+  onDiagnosisComplete,
+}: ResultActionProps &
+  DiagnosisCallbacks & {
+    visible: boolean;
+    scopePath: string;
+    report: StorageReport | null;
+    scanId: string;
+    scanBusy: boolean;
+    scanStale: boolean;
+    scanProgress: ScanCounts | null;
+    onPrepare: (
+      id: string,
+      refresh: boolean,
+    ) => Promise<(StorageSnapshot & { changeBaseline?: number }) | null>;
+    onCancelScan: (id: string) => Promise<void>;
+    onBrowse: (path: string, selected?: string) => void;
+    onShowUsage: () => void;
+    resultsVisible?: boolean;
+    changeBaseline?: number;
+  }) {
   const [saved] = useState(preferences);
   const [agent, setAgent] = useState(saved.agent);
   const [goal, setGoal] = useState<DiagnosisGoal>("overview");
@@ -150,18 +175,23 @@ export default function StorageDiagnosis({
   const [selectionNotice, setSelectionNotice] = useState("");
   const [agents, setAgents] = useState<DiagnosisAgentInfo[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [detectionError, setDetectionError] = useState("");
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<DiagnosisRun["phase"]>("preparing");
   const [stopping, setStopping] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<DiagnosisReport | null>(null);
+  const [records, setRecords] = useState<Record<string, DiagnosisRecord>>({});
+  const record = records[scopePath];
+  const message = record?.message ?? "";
+  const error = record?.error || detectionError;
+  const result = record?.result ?? null;
   const request = useRef<DiagnosisRun | null>(null);
-  const context = useRef({ scope: scopePath, scanId });
+  const callbacks = useRef({ onDiagnosisStatus, onDiagnosisComplete });
+  callbacks.current = { onDiagnosisStatus, onDiagnosisComplete };
   const detection = useRef(0);
   const pathsRef = useRef(paths);
   const tool = agents.find((item) => item.id === agent);
+  const runningHere = running && request.current?.scope === scopePath;
   const noToolsDetected =
     desktop &&
     !detecting &&
@@ -181,11 +211,38 @@ export default function StorageDiagnosis({
     })
     .sort((a, b) => a.rank - b.rank);
 
+  function updateRecord(scope: string, update: Partial<DiagnosisRecord>) {
+    setRecords((previous) => {
+      const next = { ...previous };
+      const entry = { ...next[scope], ...update };
+      delete next[scope];
+      return Object.fromEntries(
+        [...Object.entries(next), [scope, entry]].slice(-8),
+      );
+    });
+  }
+  function setMessage(message: string) {
+    updateRecord(scopePath, { message });
+  }
+  function setError(error: string) {
+    updateRecord(scopePath, { error });
+  }
+  function publish(
+    current: DiagnosisRun,
+    phase: DiagnosisStatus["phase"],
+    message?: string,
+  ) {
+    const status = { id: current.id, scope: current.scope, phase, message };
+    callbacks.current.onDiagnosisStatus?.(status);
+    if (phase === "complete" || phase === "error" || phase === "empty")
+      callbacks.current.onDiagnosisComplete?.(status);
+  }
+
   async function detect() {
     if (!desktop) return;
     const revision = ++detection.current;
     setDetecting(true);
-    setError("");
+    setDetectionError("");
     try {
       const next = await call<DiagnosisAgentInfo[]>("diagnosis_agents", {
         paths: pathsRef.current,
@@ -213,7 +270,7 @@ export default function StorageDiagnosis({
     } catch (error) {
       if (detection.current === revision) {
         setAgents([]);
-        setError(String(error));
+        setDetectionError(String(error));
       }
     } finally {
       if (detection.current === revision) setDetecting(false);
@@ -248,38 +305,10 @@ export default function StorageDiagnosis({
   useEffect(() => {
     if (visible) void detect();
     else {
-      cancelRequest();
-      setRunning(false);
-      setStopping(false);
       ++detection.current;
       setDetecting(false);
     }
   }, [visible]);
-  useEffect(() => {
-    const current = request.current;
-    // Effects may run after a fast agent has already completed. Remember the
-    // adopted snapshot beyond the request lifetime so publishing our own scan
-    // cannot clear its result (or its error).
-    if (
-      context.current.scope === scopePath &&
-      context.current.scanId === scanId
-    )
-      return;
-    if (
-      current &&
-      current.scope === scopePath &&
-      current.phase === "preparing" &&
-      !scanId
-    )
-      return;
-    cancelRequest();
-    context.current = { scope: scopePath, scanId };
-    setResult(null);
-    setError("");
-    setMessage("");
-    setRunning(false);
-    setStopping(false);
-  }, [scopePath, scanId]);
   useEffect(
     () => () => {
       ++detection.current;
@@ -301,8 +330,9 @@ export default function StorageDiagnosis({
       id: string;
       message: string;
     }>("filepace-diagnosis-progress", ({ payload }) => {
-      if (request.current?.id === payload.id && !request.current.cancelled)
-        setMessage(payload.message);
+      const current = request.current;
+      if (current?.id === payload.id && !current.cancelled)
+        updateRecord(current.scope, { message: payload.message });
     });
     return () => {
       void listener.then((stop) => stop()).catch(() => {});
@@ -328,21 +358,26 @@ export default function StorageDiagnosis({
       scanId: !refresh && !scanStale && report && scanId ? scanId : id,
       phase: "preparing",
       cancelled: false,
+      changeBaseline,
     };
     request.current = current;
-    context.current = { scope: current.scope, scanId: current.scanId };
     setRunning(true);
     setPhase("preparing");
     setStopping(false);
     setSeconds(0);
-    setError("");
-    setResult(null);
-    setMessage("正在准备目录信息…");
+    updateRecord(current.scope, {
+      error: "",
+      result: null,
+      message: "正在准备目录信息…",
+      changeBaseline,
+    });
+    publish(current, "preparing", "正在准备目录信息…");
     try {
       const snapshot = await onPrepare(id, refresh || scanStale);
       if (request.current !== current) return;
       if (current.cancelled || !snapshot) {
         setMessage("诊断已停止。");
+        publish(current, "cancelled");
         return;
       }
       if (snapshot.scope !== current.scope || snapshot.id !== current.scanId) {
@@ -350,11 +385,17 @@ export default function StorageDiagnosis({
       }
       if (snapshot.report.counts.files === 0) {
         setMessage("");
+        publish(current, "empty", "这个范围没有可分析的文件。");
         return;
       }
       current.phase = "analyzing";
+      current.changeBaseline = snapshot.changeBaseline ?? changeBaseline;
+      updateRecord(current.scope, {
+        changeBaseline: current.changeBaseline,
+      });
       setPhase("analyzing");
       setMessage(`正在启动 ${agentNames[agent]}…`);
+      publish(current, "analyzing", `正在使用 ${agentNames[agent]} 进行诊断…`);
       const next = await call<DiagnosisReport | null>("diagnose_storage", {
         id,
         scanId: snapshot.id,
@@ -367,6 +408,7 @@ export default function StorageDiagnosis({
       if (request.current !== current) return;
       if (current.cancelled) {
         setMessage("诊断已停止。");
+        publish(current, "cancelled");
         return;
       }
       if (
@@ -376,17 +418,26 @@ export default function StorageDiagnosis({
         next.goal === goal &&
         next.instructions === instructions.trim()
       ) {
-        setResult(next);
-        setMessage("");
+        updateRecord(current.scope, { result: next, message: "", error: "" });
+        publish(current, "complete");
       } else if (next) {
-        setError("诊断结果与当前请求不一致，请重新诊断。");
-      } else setMessage("诊断已停止。");
+        const message = "诊断结果与当前请求不一致，请重新诊断。";
+        setError(message);
+        setMessage("");
+        publish(current, "error", message);
+      } else {
+        setMessage("诊断已停止。");
+        publish(current, "cancelled");
+      }
     } catch (error) {
       if (request.current === current) {
-        if (current.cancelled) setMessage("诊断已停止。");
-        else {
+        if (current.cancelled) {
+          setMessage("诊断已停止。");
+          publish(current, "cancelled");
+        } else {
           setError(String(error));
           setMessage("");
+          publish(current, "error", String(error));
         }
       }
     } finally {
@@ -405,10 +456,11 @@ export default function StorageDiagnosis({
     setStopping(true);
     try {
       await cancelRun(current);
-      if (request.current === current) setMessage("正在停止诊断…");
+      if (request.current === current)
+        updateRecord(current.scope, { message: "正在停止诊断…" });
     } catch (error) {
       if (request.current === current) {
-        setError(String(error));
+        updateRecord(current.scope, { error: String(error) });
         setStopping(false);
       }
     }
@@ -449,7 +501,8 @@ export default function StorageDiagnosis({
             }
             onClick={start}
           >
-            <Sparkles size={15} /> {result ? "重新诊断" : "开始诊断"}
+            <Sparkles size={15} />{" "}
+            {result?.agent === agent ? "重新诊断" : "开始诊断"}
           </button>
         )}
       </div>
@@ -551,7 +604,6 @@ export default function StorageDiagnosis({
               setAgent(event.target.value as DiagnosisAgent);
               autoSelected.current = true;
               setSelectionNotice("");
-              setResult(null);
               setError("");
               setMessage("");
             }}
@@ -593,11 +645,26 @@ export default function StorageDiagnosis({
           </p>
         )}
         {desktop && tool?.path && (
-          <section
+          <details
+            key={agent}
             className="diagnosis-connection"
             aria-label="AI 连接配置"
             aria-busy={detecting}
+            open={tool.configurationError ? true : undefined}
           >
+            <summary className="diagnosis-connection-summary">
+              <span>连接配置</span>
+              <small>
+                {tool.configurationError
+                  ? "配置需要处理"
+                  : [
+                      tool.configuration?.model || "工具默认模型",
+                      tool.configuration?.provider,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+              </small>
+            </summary>
             <div className="diagnosis-connection-heading">
               <strong>使用已有配置</strong>
               <span>
@@ -619,7 +686,6 @@ export default function StorageDiagnosis({
                     const next = { ...profiles, [agent]: event.target.value };
                     profilesRef.current = next;
                     setProfiles(next);
-                    setResult(null);
                     setMessage("");
                     void detect();
                   }}
@@ -665,7 +731,7 @@ export default function StorageDiagnosis({
                 </p>
               </>
             )}
-          </section>
+          </details>
         )}
         <details className="diagnosis-path-settings">
           <summary>指定命令路径</summary>
@@ -713,15 +779,21 @@ export default function StorageDiagnosis({
         {report?.counts.files === 0 && (
           <p className="storage-muted">这个范围没有可分析的文件。</p>
         )}
-        {(message || running) && (
+        {running && !runningHere && (
           <p className="diagnosis-progress" role="status">
-            {running && <RefreshCw size={14} className="spin" />}{" "}
-            {running && stopping
+            <RefreshCw size={14} className="spin" />
+            正在后台诊断：{request.current?.scope}。完成后会通知你。
+          </p>
+        )}
+        {(message || runningHere) && (
+          <p className="diagnosis-progress" role="status">
+            {runningHere && <RefreshCw size={14} className="spin" />}{" "}
+            {runningHere && stopping
               ? "正在停止诊断…"
-              : running && phase === "preparing"
+              : runningHere && phase === "preparing"
                 ? `正在收集目录信息${scanProgress ? `：${scanProgress.files.toLocaleString("zh-CN")} 个文件，${formatSize(scanProgress.bytes)}` : "…"}`
                 : message}
-            {running && <span aria-hidden="true">已等待 {seconds} 秒</span>}
+            {runningHere && <span aria-hidden="true">已等待 {seconds} 秒</span>}
           </p>
         )}
         {error && (
@@ -730,7 +802,7 @@ export default function StorageDiagnosis({
           </p>
         )}
       </div>
-      {result && result.scanId === scanId && (
+      {result && (
         <div className="diagnosis-results" aria-label="智能诊断报告">
           <section className="storage-card diagnosis-summary">
             <div>
@@ -757,33 +829,26 @@ export default function StorageDiagnosis({
                 <p>{finding.reason}</p>
                 <p className="diagnosis-suggestion">{finding.suggestion}</p>
                 {finding.items.length > 0 && (
-                  <ul className="storage-items">
-                    {finding.items.map((item) => (
-                      <li key={item.id}>
-                        <button
-                          className="storage-item"
-                          title={item.path}
-                          onClick={() =>
-                            item.isDir
-                              ? onBrowse(item.path)
-                              : onBrowse(item.parent, item.path)
-                          }
-                        >
-                          {item.isDir ? (
-                            <Folder size={17} />
-                          ) : (
-                            <File size={17} />
-                          )}
-                          <span>
-                            <b>{item.name}</b>
-                            <small>{item.parent}</small>
-                          </span>
-                          <strong>{formatSize(item.size)}</strong>
-                          <ArrowUpRight size={14} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <ResultFiles
+                    key={`${result.scanId}-${result.createdAt}`}
+                    scope={scopePath}
+                    label={`相关文件 · ${finding.title}`}
+                    visible={resultsVisible}
+                    changeBaseline={record?.changeBaseline}
+                    items={finding.items.map((item) => ({
+                      entry: {
+                        ...item,
+                        isLink: false,
+                        hidden: item.name.startsWith("."),
+                        modified: 0,
+                      },
+                      parent: item.parent,
+                    }))}
+                    onBrowse={onBrowse}
+                    onFileAction={onFileAction}
+                    fileChanges={fileChanges}
+                    fileChangeBatches={fileChangeBatches}
+                  />
                 )}
               </article>
             ))}

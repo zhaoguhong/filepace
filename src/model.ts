@@ -58,6 +58,11 @@ export type Task = {
   completed: number;
   skipped?: number;
   bytes: number;
+  totalBytes?: number | null;
+  currentBytes?: number;
+  currentTotalBytes?: number | null;
+  transferMillis?: number;
+  fileChanges?: { from: string; to?: string; kind: "move" | "rename" | "trash" }[];
   errors: string[];
   failedSources?: string[];
   conflict: { id: string; source: ConflictItem | null; destination: ConflictItem } | null;

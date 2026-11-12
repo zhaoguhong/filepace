@@ -13,8 +13,8 @@ export type UpdateStatus = {
     | "ready"
     | "installing"
     | "error";
-  version?: string;
-  message?: string;
+  version?: string | null;
+  message?: string | null;
 };
 
 export function useUpdates(autoUpdate: boolean) {
@@ -25,13 +25,18 @@ export function useUpdates(autoUpdate: boolean) {
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
-    const stop = listen<UpdateStatus>("filepace-update", ({ payload }) =>
-      setStatus(payload),
-    );
+    let revision = 0;
+    const stop = listen<UpdateStatus>("filepace-update", ({ payload }) => {
+      if (disposed) return;
+      ++revision;
+      setStatus(payload);
+    });
     void stop
-      .then(() => call<UpdateStatus>("update_status"))
-      .then((snapshot) => {
-        if (!disposed && snapshot) setStatus(snapshot);
+      .then(async () => {
+        const requestedAt = revision;
+        const snapshot = await call<UpdateStatus>("update_status");
+        if (!disposed && requestedAt === revision && snapshot)
+          setStatus(snapshot);
       })
       .catch(() => {});
     return () => {

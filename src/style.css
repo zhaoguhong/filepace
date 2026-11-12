@@ -286,16 +286,8 @@ main {
 .split .file-pane.focused .tab.current {
   border-color: var(--accent-border);
 }
-.pane-focus-badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--muted);
-  padding: 3px 6px;
-  border-radius: 4px;
-}
-.pane-focus-badge.current {
-  color: var(--accent-text);
-  background: var(--accent-tint);
+.split .file-pane.focused > .tabs {
+  box-shadow: inset 0 2px var(--accent-border);
 }
 .split .file-pane:not(.focused) .file-row.selected {
   background: var(--inset);
