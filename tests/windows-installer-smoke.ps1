@@ -167,7 +167,7 @@ $main.focused = 'left'
 $null = New-Item -ItemType Directory -Path $config -Force
 [IO.File]::WriteAllText($sessionFile, (@{ main = $main } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
-function Wait-ForElement($area, $label, [System.Windows.Automation.ControlType]$ControlType = $null) {
+function Wait-ForElement($area, $label, [System.Windows.Automation.ControlType]$ControlType = $null, [switch]$ScrollToBottom) {
     $deadline = (Get-Date).AddSeconds(15)
     do {
         $elements = $area.FindAll(
@@ -178,8 +178,12 @@ function Wait-ForElement($area, $label, [System.Windows.Automation.ControlType]$
             if ($element.Current.Name -like $label -and -not $element.Current.IsOffscreen -and
                 ($null -eq $ControlType -or $element.Current.ControlType -eq $ControlType)) { return $element }
         }
+        if ($ScrollToBottom) { Scroll-Analysis $area $true }
         Start-Sleep -Milliseconds 150
     } while ((Get-Date) -lt $deadline)
+    $elements | Where-Object { $_.Current.Name -like $label } | ForEach-Object {
+        Write-Host "Matching UI element: Name='$($_.Current.Name)' Type=$($_.Current.ControlType.ProgrammaticName) Offscreen=$($_.Current.IsOffscreen) Bounds=$($_.Current.BoundingRectangle)"
+    }
     $elements | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 45 | Write-Host
     throw "Did not find visible UI element '$label'"
 }
@@ -207,20 +211,23 @@ function Enter-Text($element, [string]$value) {
 }
 
 function Scroll-Analysis($area, [bool]$ToBottom) {
-    $elements = $area.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
-    foreach ($element in $elements) {
-        if ($element.Current.IsOffscreen) { continue }
-        $pattern = $null
-        if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern) -and
-            $pattern.Current.VerticallyScrollable) {
-            $position = if ($ToBottom) { 100 } else { 0 }
-            $pattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $position)
-            Start-Sleep -Milliseconds 200
-            return
+    # Layout and WebView scroll restoration can finish after the initial click.
+    # Visit every visible scroll container; the sidebar may be the first one.
+    foreach ($attempt in 1..3) {
+        $elements = $area.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+        foreach ($element in $elements) {
+            if ($element.Current.IsOffscreen) { continue }
+            $pattern = $null
+            if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern) -and
+                $pattern.Current.VerticallyScrollable) {
+                $position = if ($ToBottom) { 100 } else { 0 }
+                $pattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $position)
+            }
         }
+        Start-Sleep -Milliseconds 150
     }
 }
 
@@ -327,8 +334,7 @@ try {
     if (Test-Path $diagnosisFinished) { throw 'Diagnosis completed before background directory navigation' }
     [IO.File]::WriteAllText($diagnosisRelease, 'ready')
     Click-Element (Wait-ForElement $window ('诊断已完成：' + [IO.Path]::GetFileName($source)))
-    Scroll-Analysis $window $true
-    $null = Wait-ForElement $window 'FILEPACE_NATIVE_DIAGNOSIS_FIXTURE_OK'
+    $null = Wait-ForElement $window 'FILEPACE_NATIVE_DIAGNOSIS_FIXTURE_OK' -ScrollToBottom
     Scroll-Analysis $window $false
     $null = Wait-ForElement $window $source
     if (-not (Test-Path $diagnosisFinished)) { throw 'The local diagnosis fixture did not finish' }

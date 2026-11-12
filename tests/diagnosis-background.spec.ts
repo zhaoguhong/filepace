@@ -211,6 +211,7 @@ test("prepares and diagnoses in the background while browsing another directory,
   page,
 }) => {
   await setup(page, true);
+  await page.setViewportSize({ width: 1180, height: 560 });
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect(page.locator(".diagnosis-activity")).toContainText(
     "正在收集目录信息",
@@ -249,6 +250,21 @@ test("prepares and diagnoses in the background while browsing another directory,
   ).toHaveAttribute("aria-selected", "true");
   const report = page.getByLabel("智能诊断报告", { exact: true });
   await expect(report).toContainText(`${first} 的独立诊断结果`);
+  const summary = report.getByText(`${first} 的独立诊断结果`, { exact: true });
+  await expect(summary).toBeInViewport({ ratio: 1 });
+  await page.locator(".directory-analysis").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(summary).not.toBeInViewport();
+  await page.getByRole("tab", { name: "占用分析", exact: true }).click();
+  await page.locator(".diagnosis-activity").click();
+  await expect(summary).toBeInViewport({ ratio: 1 });
   await report
     .getByRole("checkbox", { name: "选择 report.txt", exact: true })
     .check();
@@ -304,12 +320,18 @@ test("restores background failures and rejects mismatched results before allowin
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect.poll(() => calls(page, "diagnose_storage")).toHaveLength(1);
   await page.getByRole("button", { name: "返回文件", exact: true }).click();
+  await page.locator(".diagnosis-activity").click();
+  await expect(
+    page.getByRole("button", { name: "停止诊断", exact: true }),
+  ).toBeInViewport({ ratio: 1 });
+  await page.getByRole("button", { name: "返回文件", exact: true }).click();
   await finish(page, "error");
   await page
     .locator(".diagnosis-completion")
     .getByRole("button", { name: "查看诊断", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText("测试连接失败");
+  await expect(page.getByRole("alert")).toBeInViewport({ ratio: 1 });
   await page.getByRole("button", { name: "开始诊断", exact: true }).click();
   await expect.poll(() => calls(page, "diagnose_storage")).toHaveLength(2);
   await finish(page, "mismatch");

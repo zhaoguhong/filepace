@@ -186,15 +186,41 @@ export default function DirectoryAnalysis({
   const observedSequence = useRef(fileChangeBatches?.at(-1)?.sequence ?? 0);
   useEffect(() => {
     if (
-      visible &&
-      diagnosisOpen &&
-      diagnosisOpen.scope === path &&
-      diagnosisOpen.request !== openedDiagnosis.current
-    ) {
-      openedDiagnosis.current = diagnosisOpen.request;
+      !visible ||
+      !diagnosisOpen ||
+      diagnosisOpen.scope !== path ||
+      diagnosisOpen.request === openedDiagnosis.current
+    )
+      return;
+    if (view !== "diagnosis") {
       setView("diagnosis");
+      return;
     }
-  }, [diagnosisOpen, path, visible]);
+    let scrollFrame = 0;
+    // Showing the page restores its old scroll position in the first frame.
+    // A requested report takes precedence once that restoration has finished.
+    const layoutFrame = requestAnimationFrame(() => {
+      scrollFrame = requestAnimationFrame(() => {
+        const container = preservedScroll.ref.current;
+        const panel = container?.querySelector("#analysis-panel-diagnosis");
+        const target =
+          panel?.querySelector(".diagnosis-results") ??
+          panel?.querySelector(".diagnosis-controls > .storage-error") ??
+          panel?.querySelector(".storage-error") ??
+          panel?.querySelector(".storage-section-heading");
+        if (!container || !target) return;
+        container.scrollTop +=
+          target.getBoundingClientRect().top -
+          container.getBoundingClientRect().top -
+          16;
+        openedDiagnosis.current = diagnosisOpen.request;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(layoutFrame);
+      cancelAnimationFrame(scrollFrame);
+    };
+  }, [diagnosisOpen, path, visible, view, preservedScroll.ref]);
   useEffect(() => {
     const batches =
       fileChangeBatches?.filter(
