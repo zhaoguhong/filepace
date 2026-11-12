@@ -413,7 +413,8 @@ try {
     Click-Element (Wait-ForElement $window '搜索子文件夹')
     Enter-Text (Wait-ForElement $window '文件名关键词') '会议查找'
     Click-Element (Wait-ForElement $window '开始搜索')
-    Click-Element (Wait-ForElement $window '会议查找.txt*')
+    $null = Wait-ForElement $window '会议查找.txt*'
+    Click-Element (Wait-ForElement $window '打开所在目录并选中')
     $leftPane = Wait-ForElement $window '左栏'
     $null = Wait-ForElement $leftPane '会议查找.txt*'
     Click-Element (Wait-ForElement $leftPane '后退')
