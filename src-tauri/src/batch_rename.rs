@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn exchanges_names_and_undoes_as_one_batch() {
         let folder = tempfile::tempdir().unwrap();
-        let root = folder.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(folder.path()).unwrap();
         let first = root.join("first.txt");
         let second = root.join("second.txt");
         fs::write(&first, b"first").unwrap();
