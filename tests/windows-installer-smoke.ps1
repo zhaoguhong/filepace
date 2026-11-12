@@ -321,7 +321,7 @@ try {
     Click-Element (Wait-ForElement $window '返回文件')
     $leftPane = Wait-ForElement $window '左栏'
     Click-Element (Wait-ForElement $leftPane '编辑路径')
-    Enter-Text (Wait-ForElement $leftPane '完整路径' ([System.Windows.Automation.ControlType]::Edit)) $destination
+    Enter-Text (Wait-ForElement $leftPane '完整路径') $destination
     [FilepaceSmokeMouse]::PressKey(13)
     $null = Wait-ForElement $leftPane '这个文件夹还是空的'
     if (Test-Path $diagnosisFinished) { throw 'Diagnosis completed before background directory navigation' }
@@ -336,7 +336,7 @@ try {
     $leftPane = Wait-ForElement $window '左栏'
     $null = Wait-ForElement $leftPane '这个文件夹还是空的'
     Click-Element (Wait-ForElement $leftPane '编辑路径')
-    Enter-Text (Wait-ForElement $leftPane '完整路径' ([System.Windows.Automation.ControlType]::Edit)) $source
+    Enter-Text (Wait-ForElement $leftPane '完整路径') $source
     [FilepaceSmokeMouse]::PressKey(13)
     $null = Wait-ForElement $leftPane 'copy.txt*'
     Write-Host 'Verified native background diagnosis, directory switching, completion entry, and original report using a local CLI fixture without account usage.'
