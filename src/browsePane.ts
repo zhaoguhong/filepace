@@ -191,6 +191,7 @@ export function useBrowsePane(
     null,
   );
   const reveal = useRef<string | null>(null);
+  const restoringScroll = useRef(false);
   const group = tab?.view === "list" ? tab.group : undefined;
   const selected = useMemo(() => new Set(tab?.selected ?? []), [tab?.selected]);
   const sorted = useMemo(
@@ -231,17 +232,35 @@ export function useBrowsePane(
   );
 
   useLayoutEffect(() => {
-    if (listRef.current && tab) listRef.current.scrollTop = tab.scroll;
-  }, [tab?.id, tab?.view, tab?.gridSize, path, listing, viewport.element]);
+    const list = listRef.current;
+    if (!list || !tab) return;
+    // A partial list may clamp the viewport. Keep the intended offset in the
+    // session while showing available rows; ignore that temporary scroll event.
+    restoringScroll.current =
+      directory.loading && list.scrollHeight - list.clientHeight < tab.scroll;
+    list.scrollTop = tab.scroll;
+  }, [
+    tab?.id,
+    tab?.view,
+    tab?.gridSize,
+    path,
+    listing,
+    viewport.element,
+    directory.loading,
+  ]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
     const selected = reveal.current;
     if (!listing || !tab || !list || !selected) return;
+    if (!tab.selected.includes(selected)) {
+      reveal.current = null;
+      return;
+    }
     if (tab.view === "grid" && viewport.height === 0) return;
     const index = entries.findIndex((entry) => entry.path === selected);
     if (index < 0 && directory.loading) return;
-    reveal.current = null;
+    if (!directory.loading) reveal.current = null;
     if (index >= 0) revealItem(list, index, layout, true);
   }, [entries, tab?.selected, viewport.height, directory.loading]);
 
@@ -257,5 +276,6 @@ export function useBrowsePane(
     ...viewport,
     anchor,
     reveal,
+    restoringScroll,
   };
 }

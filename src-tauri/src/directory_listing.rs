@@ -192,12 +192,10 @@ mod tests {
             )
             .unwrap();
         }
+        let expected_path = strpath(&dunce::canonicalize(directory.path()).unwrap());
         let mut received = Vec::new();
         let result = read(directory.path(), &AtomicBool::new(false), |batch| {
-            assert_eq!(
-                batch.path,
-                strpath(&directory.path().canonicalize().unwrap())
-            );
+            assert_eq!(batch.path, expected_path);
             assert!(!batch.entries.is_empty() && batch.entries.len() <= 256);
             received.extend(batch.entries);
             true

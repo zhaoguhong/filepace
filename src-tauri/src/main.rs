@@ -17,6 +17,8 @@ mod system_actions;
 mod system_process;
 mod task_feed;
 mod transfer;
+#[cfg(windows)]
+mod windows_sparse;
 mod undo;
 mod updates;
 

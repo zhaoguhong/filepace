@@ -1193,6 +1193,7 @@ export default function App() {
       total,
       hiddenCount,
       hiddenMatches,
+      restoringScroll,
       loading,
       error,
       attachList,
@@ -1211,7 +1212,8 @@ export default function App() {
       entry,
       paths: selection.has(entry.path) ? selected : [entry.path],
     });
-    const range = visibleRange(entries.length, tab.scroll, height, layout);
+    const availableScroll = Math.max(0, Math.ceil(entries.length / layout.columns) * layout.step + 2 * layout.padding - height);
+    const range = visibleRange(entries.length, Math.min(tab.scroll, availableScroll), height, layout);
     const shown = entries.slice(range.start, range.end);
     const path = tab.path;
     const crumbs = path.split(/[\\/]/).filter(Boolean);
@@ -1401,7 +1403,7 @@ export default function App() {
               commit: (paths) => setSelection(paths, side),
             });
         }}
-        onScroll={(e) => patchPane({ scroll: e.currentTarget.scrollTop })}
+        onScroll={(e) => { if (!restoringScroll.current) patchPane({ scroll: e.currentTarget.scrollTop }); }}
         onClick={(e) => {
           if (!(e.target as Element).closest("button, input"))
             setSelection([], side);

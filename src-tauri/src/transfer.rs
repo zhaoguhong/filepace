@@ -439,9 +439,8 @@ impl<'a> Transfer<'a> {
     fn copy_file(&mut self, source: &Source, path: &Path) -> Result<(), String> {
         use std::{ffi::c_void, os::windows::fs::OpenOptionsExt};
         use windows_sys::Win32::Storage::FileSystem::{
-            CopyFileExW, COPY_FILE_COPY_SYMLINK, COPY_FILE_ENABLE_SPARSE_COPY,
-            COPY_FILE_FAIL_IF_EXISTS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-            PROGRESS_CANCEL, PROGRESS_CONTINUE,
+            CopyFileExW, COPY_FILE_COPY_SYMLINK, COPY_FILE_FAIL_IF_EXISTS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, PROGRESS_CANCEL, PROGRESS_CONTINUE,
         };
         // Deny source replacement and writing while the native pathname-based
         // copier is using it. Its read-only handle also verifies our snapshot.
@@ -497,13 +496,7 @@ impl<'a> Transfer<'a> {
         let to = crate::fs_safety::wide_path(path).map_err(|error| error.to_string())?;
         use std::os::windows::fs::MetadataExt;
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
-        let flags = COPY_FILE_FAIL_IF_EXISTS
-            | COPY_FILE_COPY_SYMLINK
-            | if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0 {
-                COPY_FILE_ENABLE_SPARSE_COPY
-            } else {
-                0
-            };
+        let flags = COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_COPY_SYMLINK;
         let mut context = Progress {
             shared: self.shared,
             id: self.id,
@@ -526,16 +519,11 @@ impl<'a> Transfer<'a> {
         }
         source.check()?;
         self.check_cancelled()?;
-        // CopyFileEx preserves native streams/attributes. Copying onto a file
-        // system that drops sparse allocation is rejected before source removal.
+        // Keep native streams/attributes, then reconstruct holes explicitly:
+        // CopyFileExW does not accept COPY_FILE_ENABLE_SPARSE_COPY.
         let copied = path.symlink_metadata().map_err(|error| error.to_string())?;
         if is_link(&copied) {
             return Err("源项目在复制期间已变更，保留源项目".into());
-        }
-        if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0
-            && copied.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE == 0
-        {
-            return Err("目标文件系统未保留稀疏文件属性，已保留源项目".into());
         }
         let readonly = copied.permissions().readonly();
         if readonly {
@@ -543,11 +531,26 @@ impl<'a> Transfer<'a> {
             permissions.set_readonly(false);
             fs::set_permissions(path, permissions).map_err(|error| error.to_string())?;
         }
-        let flush = fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| error.to_string());
+        let flush = (|| -> Result<(), String> {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|error| error.to_string())?;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0 {
+                crate::windows_sparse::restore(&input, &file, metadata.len(), || {
+                    self.check_cancelled()
+                })?;
+                source.check()?;
+                filetime::set_file_handle_times(
+                    &file,
+                    Some(filetime::FileTime::from_last_access_time(&metadata)),
+                    Some(filetime::FileTime::from_last_modification_time(&metadata)),
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            file.sync_all().map_err(|error| error.to_string())
+        })();
         let restore =
             fs::set_permissions(path, copied.permissions()).map_err(|error| error.to_string());
         flush?;
@@ -780,6 +783,14 @@ mod tests {
         file.write_all(b"last").unwrap();
         file.sync_all().unwrap();
         drop(file);
+        fs::write(
+            format!("{}:sparse-metadata", source_path.display()),
+            b"sparse alternate stream",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&source_path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&source_path, permissions).unwrap();
         let source = Source::at(source_path.clone()).unwrap();
         Transfer::new(&state, "task", false)
             .stage(&source, &target, &Directory::parent(&target).unwrap(), None)
@@ -789,6 +800,29 @@ mod tests {
             0
         );
         assert_eq!(fs::read(&source_path).unwrap(), fs::read(&target).unwrap());
+        assert_eq!(
+            fs::read(format!("{}:sparse-metadata", target.display())).unwrap(),
+            b"sparse alternate stream"
+        );
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        let wide = crate::fs_safety::wide_path(&target).unwrap();
+        let mut high = 0;
+        let allocated = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW(
+                wide.as_ptr(),
+                &mut high,
+            )
+        };
+        assert_eq!(high, 0);
+        assert!(
+            allocated < 1024 * 1024,
+            "the 8 MiB hole was allocated: {allocated}"
+        );
+        for path in [&source_path, &target] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions).unwrap();
+        }
     }
 
     #[cfg(windows)]

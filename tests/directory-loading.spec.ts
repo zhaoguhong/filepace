@@ -1,8 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function installListingFixture(page: Page, selected = false) {
+async function installListingFixture(page: Page, selected = false, scroll = 0) {
   await page.addInitScript(
-    ({ selected }) => {
+    ({ selected, scroll }) => {
       const root = "/fixture";
       type Entry = {
         name: string;
@@ -57,12 +57,12 @@ async function installListingFixture(page: Page, selected = false) {
               entries,
             });
           },
-          finish(index: number, count = 2) {
+          finish(index: number, count = 2, target = "destination-only.txt") {
             const request = requests[index];
             const entries =
               request.path === root
                 ? rows
-                : [entry("destination-only.txt", false, request.path)];
+                : [entry(target, false, request.path)];
             request.finish({
               path: request.path,
               parent: request.path === root ? "/" : root,
@@ -73,7 +73,11 @@ async function installListingFixture(page: Page, selected = false) {
                       ...Array.from(
                         { length: count - entries.length },
                         (_, index) =>
-                          entry(`file-${String(index).padStart(5, "0")}.txt`),
+                          entry(
+                            `file-${String(index).padStart(5, "0")}.txt`,
+                            false,
+                            request.path,
+                          ),
                       ),
                     ]
                   : entries,
@@ -114,12 +118,24 @@ async function installListingFixture(page: Page, selected = false) {
                     selected: selected ? [`${root}/keep.txt`] : [],
                     query: "",
                     view: "list",
-                    scroll: 0,
+                    scroll,
                     sort: "name",
                     gridSize: "medium",
                   },
                 ],
                 active: "initial",
+              });
+            if (command === "search_files")
+              return Promise.resolve({
+                hits: [
+                  {
+                    entry: entry("zz-final.txt", false, `${root}/Destination`),
+                    parent: `${root}/Destination`,
+                  },
+                ],
+                indexed: false,
+                limited: false,
+                skipped: 0,
               });
             if (command === "tasks")
               return Promise.resolve({ tasks: [], revision: 0, undo: null });
@@ -145,7 +161,7 @@ async function installListingFixture(page: Page, selected = false) {
         },
       });
     },
-    { selected },
+    { selected, scroll },
   );
   await page.goto("/");
   await expect
@@ -264,4 +280,57 @@ test("keeps the complete snapshot and selection during refresh until the final r
   await expect(selected).toBeVisible();
   await page.evaluate(() => (window as any).filepaceListingFixture.finish(1));
   await expect(selected).toBeVisible();
+});
+
+test("restores a saved scroll position only after partial content can accommodate it", async ({
+  page,
+}) => {
+  await installListingFixture(page, false, 50_000);
+  await page.evaluate(() =>
+    (window as any).filepaceListingFixture.batch(0, 300),
+  );
+  const files = page.getByLabel("文件列表");
+  await expect(page.locator(".pane-read-status")).toContainText("300");
+  // Force a real scroll event while the partial list is too short. It must not
+  // replace the saved viewport with a clamped position.
+  await files.evaluate((element) => {
+    element.scrollTop = 100;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await page.evaluate(() =>
+    (window as any).filepaceListingFixture.finish(0, 10_000),
+  );
+  await expect
+    .poll(() => files.evaluate((element) => element.scrollTop))
+    .toBe(50_000);
+});
+
+test("reveals a search result that arrives only in the final directory batch", async ({
+  page,
+}) => {
+  await installListingFixture(page);
+  await page.evaluate(() => (window as any).filepaceListingFixture.finish(0));
+  await page.getByRole("button", { name: "搜索子文件夹", exact: true }).click();
+  await page.getByLabel("文件名关键词").fill("zz-final");
+  await page.getByRole("button", { name: "开始搜索", exact: true }).click();
+  await page.getByRole("button", { name: /zz-final.txt/ }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).filepaceListingFixture.requests.length,
+      ),
+    )
+    .toBe(2);
+  await page.evaluate(() =>
+    (window as any).filepaceListingFixture.batch(1, 300),
+  );
+  await expect(
+    page.getByRole("option", { name: /file-00000.txt/ }),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    (window as any).filepaceListingFixture.finish(1, 10_000, "zz-final.txt"),
+  );
+  await expect(
+    page.getByRole("option", { name: /zz-final.txt/, selected: true }),
+  ).toBeVisible();
 });
