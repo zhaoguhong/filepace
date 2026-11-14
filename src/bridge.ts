@@ -102,9 +102,16 @@ export async function call<T>(
       counts: { bytes: 0, files: 0, folders: 0, skipped: 0 },
       categories: {},
       folders: [],
+      tree: [],
+      treeComplete: true,
     };
     if (path === root || path === "/") {
       for (const entry of demo) {
+        report.tree!.push({
+          ...entry,
+          parent: path,
+          files: entry.isDir ? 0 : 1,
+        });
         if (entry.isDir) {
           report.counts.folders++;
           report.folders.push({

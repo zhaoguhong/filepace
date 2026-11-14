@@ -14,6 +14,8 @@ import { fileCategoryLabels } from "./fileTypes";
 import { basename, formatSize, type Place } from "./model";
 import StorageDiagnosis, { type DiagnosisCallbacks } from "./StorageDiagnosis";
 import ResultFiles from "./ResultFiles";
+import StorageTreemap from "./StorageTreemap";
+import StorageComparison from "./StorageComparison";
 import type { ResultActionProps } from "./resultActions";
 import { usePreservedScroll } from "./preservedScroll";
 import "./storage.css";
@@ -763,6 +765,22 @@ export default function DirectoryAnalysis({
                     />
                   </div>
                 </div>
+                <StorageTreemap
+                  key={`map-${scanResult?.id}`}
+                  report={report}
+                  visible={visible && view === "usage"}
+                  onBrowse={browseResult}
+                  onFileAction={onFileAction}
+                  fileChanges={fileChanges}
+                  fileChangeBatches={fileChangeBatches}
+                  changeBaseline={scanResult?.changeBaseline}
+                />
+                <StorageComparison
+                  report={report}
+                  scannedAt={scannedAt!}
+                  stale={stale}
+                  onBrowse={browseResult}
+                />
               </>
             )}
           </div>

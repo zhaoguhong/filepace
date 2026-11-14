@@ -80,9 +80,10 @@ test("shows storage volumes, filters scan results, and locates a file", async ({
   await expect(page.getByRole("heading", { name: "占用最多的子目录" })).toBeVisible();
   await page.getByRole("button", { name: /压缩包.*个/ }).click();
   await expect(page.getByRole("heading", { name: "最大的文件 · 压缩包" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /数据备份\.zip/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /季度汇报\.pptx/ })).toHaveCount(0);
-  await page.locator(".result-row").filter({ hasText: "数据备份.zip" }).getByRole("button", { name: "打开所在目录并选中" }).click();
+  const rankings = page.getByRole("listbox", { name: "最大的文件 · 压缩包", exact: true });
+  await expect(rankings.getByRole("button", { name: /数据备份\.zip/ })).toBeVisible();
+  await expect(rankings.getByRole("button", { name: /季度汇报\.pptx/ })).toHaveCount(0);
+  await rankings.locator(".result-row").filter({ hasText: "数据备份.zip" }).getByRole("button", { name: "打开所在目录并选中" }).click();
   await expect(page.getByRole("heading", { name: "存储概览" })).toHaveCount(0);
   await expect(page.getByRole("option", { name: /数据备份\.zip/, selected: true })).toBeVisible();
   await page.getByRole("button", { name: "目录分析", exact: true }).click();

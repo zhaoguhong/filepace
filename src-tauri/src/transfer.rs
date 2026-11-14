@@ -189,6 +189,7 @@ fn commit_with_recovery_using_trash(
         .prefix(".filepace-replaced-")
         .tempdir_in(&parent.path)
         .map_err(|error| error.to_string())?;
+    let _protected_backup = crate::fs_safety::protect_mutation_path(backup_dir.path());
     let backup = backup_dir
         .path()
         .join(target.file_name().ok_or("目标名称无效")?);
@@ -246,6 +247,8 @@ pub(crate) struct Transfer<'a> {
     #[cfg(not(windows))]
     buffer: Vec<u8>,
     pub(crate) journal: Vec<Change>,
+    published_changes: usize,
+    checkpoint: Option<&'a mut dyn FnMut() -> Result<(), String>>,
 }
 
 impl<'a> Transfer<'a> {
@@ -258,7 +261,31 @@ impl<'a> Transfer<'a> {
             #[cfg(not(windows))]
             buffer: Vec::new(),
             journal: Vec::new(),
+            published_changes: 0,
+            checkpoint: None,
         }
+    }
+
+    pub(crate) fn set_checkpoint(&mut self, checkpoint: &'a mut dyn FnMut() -> Result<(), String>) {
+        self.checkpoint = Some(checkpoint);
+    }
+
+    pub(crate) fn flush_changes(&mut self) {
+        let changes = crate::moved_file_changes(&self.journal[self.published_changes..]);
+        self.published_changes = self.journal.len();
+        if !changes.is_empty() {
+            update(self.shared, self.id, |task| {
+                task.file_changes.extend(changes)
+            });
+        }
+    }
+
+    pub(crate) fn checkpoint(&mut self) -> Result<(), String> {
+        self.flush_changes();
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            checkpoint()?;
+        }
+        self.check_cancelled()
     }
 
     pub(crate) fn set_duplicate_guard(&mut self, guard: Option<&'a crate::duplicates::Guard>) {
@@ -287,7 +314,9 @@ impl<'a> Transfer<'a> {
         target: &Path,
         parent: &Directory,
     ) -> Result<bool, String> {
-        self.check_cancelled()?;
+        self.checkpoint()?;
+        crate::fs_safety::ensure_mutation_path(&source.path)?;
+        crate::fs_safety::ensure_mutation_path(target)?;
         source.check_transferable()?;
         parent.check()?;
         update(self.shared, self.id, |task| {
@@ -354,7 +383,7 @@ impl<'a> Transfer<'a> {
         source.check()?;
         let mut all = true;
         for entry in fs::read_dir(&source.path).map_err(|error| error.to_string())? {
-            self.check_cancelled()?;
+            self.checkpoint()?;
             source_directory.check()?;
             let entry = entry.map_err(|error| error.to_string())?;
             let result = Source::at(entry.path())
@@ -385,13 +414,14 @@ impl<'a> Transfer<'a> {
         parent: &Directory,
         replace: Option<&Snapshot>,
     ) -> Result<(), String> {
-        self.check_cancelled()?;
+        self.checkpoint()?;
         source.check_transferable()?;
         parent.check()?;
         let temporary = tempfile::Builder::new()
             .prefix(".filepace-stage-")
             .tempdir_in(&parent.path)
             .map_err(|error| error.to_string())?;
+        let _protected_stage = crate::fs_safety::protect_mutation_path(temporary.path());
         let payload = temporary.path().join("item");
         let mut recovery = self.shared.recovery.begin(
             self.id,
@@ -442,7 +472,7 @@ impl<'a> Transfer<'a> {
             .follow_links(false)
             .min_depth(1)
         {
-            self.check_cancelled()?;
+            self.checkpoint()?;
             let entry = entry.map_err(|error| error.to_string())?;
             let relative = entry
                 .path()
@@ -453,7 +483,7 @@ impl<'a> Transfer<'a> {
         source.check()?;
         fs::create_dir(&payload).map_err(|error| error.to_string())?;
         for (child, relative) in &children {
-            self.check_cancelled()?;
+            self.checkpoint()?;
             update(self.shared, self.id, |task| {
                 task.current = strpath(&child.path);
                 task.current_bytes = 0;
@@ -561,10 +591,11 @@ impl<'a> Transfer<'a> {
         {
             return Err(format!("源项目已变更：{}", source.path.display()));
         }
-        struct Progress<'a> {
+        struct Progress<'a, 'b> {
             shared: &'a Shared,
             id: &'a str,
             bytes: u64,
+            checkpoint: &'a mut Option<&'b mut dyn FnMut() -> Result<(), String>>,
         }
         unsafe extern "system" fn progress(
             _total: i64,
@@ -579,16 +610,24 @@ impl<'a> Transfer<'a> {
         ) -> u32 {
             // No Rust unwind may cross the Windows callback boundary.
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let context = unsafe { &mut *(data as *mut Progress<'_>) };
-                if cancelled(context.shared, context.id) {
-                    return PROGRESS_CANCEL;
-                }
+                let context = unsafe { &mut *(data as *mut Progress<'_, '_>) };
+                // Account for the completed native chunk before a checkpoint:
+                // Windows may report the entire payload in one final callback.
+                // A pause must expose those bytes and may still stop before commit.
                 let bytes = transferred.max(0) as u64;
                 let delta = bytes.saturating_sub(context.bytes);
                 context.bytes = bytes;
                 update(context.shared, context.id, |task| {
                     task.advance_transfer(delta)
                 });
+                if context
+                    .checkpoint
+                    .as_mut()
+                    .is_some_and(|checkpoint| checkpoint().is_err())
+                    || cancelled(context.shared, context.id)
+                {
+                    return PROGRESS_CANCEL;
+                }
                 PROGRESS_CONTINUE
             }))
             .unwrap_or(PROGRESS_CANCEL)
@@ -606,6 +645,7 @@ impl<'a> Transfer<'a> {
             shared: self.shared,
             id: self.id,
             bytes: 0,
+            checkpoint: &mut self.checkpoint,
         };
         let result = unsafe {
             CopyFileExW(
@@ -672,6 +712,7 @@ impl<'a> Transfer<'a> {
             return Err(format!("源项目已变更：{}", source.path.display()));
         }
         let mut output = fs::File::create_new(path).map_err(|error| error.to_string())?;
+        let output_identity = Identity::at(path).map_err(|error| error.to_string())?;
         update(self.shared, self.id, |task| {
             task.begin_transfer(&source.path, metadata.len());
         });
@@ -679,7 +720,10 @@ impl<'a> Transfer<'a> {
             self.buffer.resize(1024 * 1024, 0);
         }
         loop {
-            self.check_cancelled()?;
+            self.checkpoint()?;
+            if Identity::at(path).as_ref().ok() != Some(&output_identity) {
+                return Err("暂存文件在暂停期间已变更，保留源项目".into());
+            }
             let size = input
                 .read(&mut self.buffer)
                 .map_err(|error| error.to_string())?;

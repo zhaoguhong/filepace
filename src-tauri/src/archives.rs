@@ -94,7 +94,9 @@ pub(crate) fn start(
         },
         move |state, id, _| {
             folder.check()?;
+            crate::fs_safety::ensure_mutation_path(&target)?;
             for original in &originals {
+                crate::fs_safety::ensure_mutation_path(&original.path)?;
                 original.check()?;
             }
             if unpack {

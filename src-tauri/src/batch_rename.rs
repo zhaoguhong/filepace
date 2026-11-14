@@ -176,9 +176,11 @@ pub(crate) fn batch_rename(
             destination: strpath(&plan.parent.path),
             ..Default::default()
         },
-        move |state, id, app| {
+        move |state, id, execution| {
             let result = execute(&plan, state, id);
-            let _ = app.emit("directory-changed", [strpath(&plan.parent.path)]);
+            if let Some(app) = execution.app {
+                let _ = app.emit("directory-changed", [strpath(&plan.parent.path)]);
+            }
             let changes = result?;
             undo::record(state, "撤销批量改名", vec![Change::BatchRename(changes)]);
             Ok(())
@@ -188,6 +190,10 @@ pub(crate) fn batch_rename(
 
 fn execute(plan: &Plan, state: &Shared, id: &str) -> Result<Vec<Renamed>, String> {
     plan.parent.check()?;
+    for (source, target) in &plan.items {
+        crate::fs_safety::ensure_mutation_path(&source.path)?;
+        crate::fs_safety::ensure_mutation_path(target)?;
+    }
     if let Some(guard) = &plan.duplicate_guard {
         guard.verify(|| cancelled(state, id))?;
     }

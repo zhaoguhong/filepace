@@ -40,3 +40,30 @@
   display: block;
   margin-top: 5px;
 }
+.task-queue-controls {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.task-queue-controls button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--accent-text);
+  font-size: 11px;
+}
+.task-queue-controls button:disabled {
+  opacity: 0.4;
+}
+.task-queue-controls small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.task .task-control-note {
+  white-space: normal;
+}
+.task .progress.paused i {
+  animation-play-state: paused;
+  opacity: 0.5;
+}

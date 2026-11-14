@@ -17,6 +17,7 @@ use crate::{strpath, Place};
 
 const TOP_ITEMS: usize = 12;
 const RECENT_SCANS: usize = 8;
+const TREE_ITEMS: usize = 8192;
 const PROGRESS_EVENT: &str = "filepace-storage-progress";
 
 #[derive(Serialize)]
@@ -212,11 +213,26 @@ pub(crate) struct Category {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StorageTreeNode {
+    path: String,
+    name: String,
+    parent: String,
+    size: u64,
+    files: u64,
+    is_dir: bool,
+    modified: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageReport {
     pub(crate) path: String,
     pub(crate) counts: ScanCounts,
     pub(crate) categories: BTreeMap<&'static str, Category>,
     pub(crate) folders: Vec<RankedItem>,
+    tree: Vec<StorageTreeNode>,
+    tree_complete: bool,
 }
 
 pub(crate) fn category_for(path: &Path) -> &'static str {
@@ -277,6 +293,8 @@ pub(crate) fn scan(
         counts: ScanCounts::default(),
         categories: BTreeMap::new(),
         folders: Vec::new(),
+        tree: Vec::new(),
+        tree_complete: true,
     };
     let mut walker = WalkDir::new(&root)
         .min_depth(1)
@@ -285,6 +303,7 @@ pub(crate) fn scan(
         .same_file_system(true)
         .into_iter();
     let mut branch: Option<RankedItem> = None;
+    let mut ancestors: Vec<Option<usize>> = Vec::new();
     let mut last_update = Instant::now();
     while let Some(entry) = walker.next() {
         if cancelled.load(Ordering::Relaxed) {
@@ -321,7 +340,38 @@ pub(crate) fn scan(
             }
             continue;
         }
+        ancestors.truncate(entry.depth().saturating_sub(1));
+        let node_index = if report.tree.len() < TREE_ITEMS {
+            let item = RankedItem::new(
+                entry.path(),
+                if metadata.is_file() {
+                    metadata.len()
+                } else {
+                    0
+                },
+                u64::from(metadata.is_file()),
+            );
+            let index = report.tree.len();
+            report.tree.push(StorageTreeNode {
+                path: item.path,
+                name: item.name,
+                parent: item.parent,
+                size: item.size,
+                files: item.files,
+                is_dir: metadata.is_dir(),
+                modified: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |time| time.as_secs()),
+            });
+            Some(index)
+        } else {
+            report.tree_complete = false;
+            None
+        };
         if metadata.is_dir() {
+            ancestors.push(node_index);
             report.counts.folders += 1;
             if entry.depth() == 1 {
                 branch = Some(RankedItem::new(entry.path(), 0, 0));
@@ -329,6 +379,11 @@ pub(crate) fn scan(
             continue;
         }
         let size = metadata.len();
+        for index in ancestors.iter().flatten() {
+            let node = &mut report.tree[*index];
+            node.size = node.size.saturating_add(size);
+            node.files += 1;
+        }
         report.counts.files += 1;
         report.counts.bytes = report.counts.bytes.saturating_add(size);
         #[cfg(unix)]
@@ -644,6 +699,23 @@ mod tests {
             ),
             (4, 3, 155)
         );
+        let work = report.tree.iter().find(|node| node.name == "work").unwrap();
+        let deep = report.tree.iter().find(|node| node.name == "deep").unwrap();
+        assert_eq!(
+            (work.size, work.files, deep.size, deep.files),
+            (55, 2, 40, 1)
+        );
+        assert!(report.tree_complete);
+        assert_eq!(
+            report
+                .tree
+                .iter()
+                .filter(|node| !node.is_dir)
+                .map(|node| node.size)
+                .sum::<u64>(),
+            report.counts.bytes
+        );
+        assert_eq!(fs::read(path.join("work/deep/预算.XLSX")).unwrap(), [0; 40]);
         assert_eq!(report.categories["documents"].bytes, 40);
         assert_eq!(report.categories["images"].files, 1);
         assert_eq!(report.categories["other"].files, 1);
@@ -657,5 +729,22 @@ mod tests {
         assert!(scan(path, &AtomicBool::new(true), |_| {})
             .unwrap()
             .is_none());
+    }
+    #[test]
+    fn bounded_tree_keeps_directory_totals_after_truncation() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("many")).unwrap();
+        for index in 0..TREE_ITEMS + 3 {
+            fs::write(root.path().join("many").join(index.to_string()), [1u8; 2]).unwrap();
+        }
+        let report = scan(root.path(), &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.tree.len(), TREE_ITEMS);
+        assert!(!report.tree_complete);
+        assert_eq!(report.tree[0].size, ((TREE_ITEMS + 3) * 2) as u64);
+        assert_eq!(report.tree[0].files, (TREE_ITEMS + 3) as u64);
+        assert_eq!(report.counts.bytes, report.tree[0].size);
+        assert_eq!(fs::read(root.path().join("many/0")).unwrap(), [1u8; 2]);
     }
 }

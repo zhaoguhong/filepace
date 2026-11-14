@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
   Download,
   FileWarning,
+  ExternalLink,
+  Info,
   LayoutList,
   Palette,
   RefreshCw,
@@ -14,12 +17,15 @@ import { modeLabels, themeLabels, type Preferences } from "./preferences";
 import type { UpdateStatus } from "./updates";
 import "./settings.css";
 
-export type SettingsSection = "browse" | "appearance" | "update" | "errors";
+export type SettingsSection =
+  "browse" | "appearance" | "update" | "errors" | "about";
+const projectUrl = "https://github.com/zhaoguhong/filepace";
 const sections = [
   { id: "browse", label: "浏览", icon: LayoutList },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "update", label: "更新", icon: Download },
   { id: "errors", label: "错误日志", icon: FileWarning },
+  { id: "about", label: "关于", icon: Info },
 ] as const;
 
 type ErrorRecord = {
@@ -131,6 +137,7 @@ export default function Settings({
   onClose: () => void;
 }) {
   const [error, setError] = useState("");
+  const [projectError, setProjectError] = useState("");
   const processing = ["checking", "downloading", "installing"].includes(
     status.phase,
   );
@@ -150,7 +157,7 @@ export default function Settings({
         </span>
         <div>
           <h1>设置</h1>
-          <p>浏览、外观、更新与错误日志</p>
+          <p>浏览、外观、更新、错误日志与关于</p>
         </div>
         <button className="storage-secondary" onClick={onClose}>
           <ArrowLeft size={15} /> 返回文件
@@ -316,6 +323,50 @@ export default function Settings({
             </>
           )}
           {section === "errors" && <ErrorLog />}
+          {section === "about" && (
+            <>
+              <h2>关于 Filepace</h2>
+              <div className="setting-row">
+                <span>
+                  <b>Filepace</b>
+                  <small>v{status.current} · MIT 许可证</small>
+                </span>
+              </div>
+              <div className="setting-row setting-project">
+                <span>
+                  <b>开源项目</b>
+                  <small>查看源码、提交问题或参与贡献。</small>
+                </span>
+                <a
+                  className="setting-project-link"
+                  href={projectUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(event) => {
+                    if (!desktop) return;
+                    event.preventDefault();
+                    setProjectError("");
+                    void openUrl(projectUrl).catch(() => {
+                      setProjectError("无法打开浏览器，请复制项目地址后打开。");
+                    });
+                  }}
+                >
+                  <ExternalLink size={16} aria-hidden="true" />
+                  <span>GitHub · zhaoguhong/filepace</span>
+                </a>
+              </div>
+              {projectError && (
+                <>
+                  <p role="alert" className="danger-text">
+                    {projectError}
+                  </p>
+                  <p className="setting-note setting-project-address">
+                    {projectUrl}
+                  </p>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
     </section>

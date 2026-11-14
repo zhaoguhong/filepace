@@ -49,6 +49,9 @@ export type ConflictItem = {
 export type Task = {
   id: string;
   sequence?: number;
+  queuePosition?: number | null;
+  pauseRequested?: boolean;
+  canPause?: boolean;
   kind: string;
   sources: string[];
   destination: string;

@@ -1,11 +1,18 @@
-import { ArrowDownToLine, X } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUp,
+  ArrowDown,
+  Pause,
+  Play,
+  X,
+} from "lucide-react";
 import { call, desktop } from "./bridge";
 import { basename, formatSize, type Task } from "./model";
 import { formatRemaining, taskProgress } from "./taskProgress";
+import { activeTask, orderedTasks } from "./taskQueue";
 import "./tasks.css";
 
-export const activeTask = (task: { status: string }) =>
-  ["queued", "running", "conflict"].includes(task.status);
+export { activeTask } from "./taskQueue";
 
 function Progress({ task }: { task: Task }) {
   const progress = taskProgress(task);
@@ -43,9 +50,9 @@ function Progress({ task }: { task: Task }) {
             ` · ${progress.overall ? "传输" : "当前文件"}约剩 ${formatRemaining(progress.remaining)}`}
         </small>
       )}
-      {task.status === "running" && (
+      {["running", "pausing", "paused", "resuming"].includes(task.status) && (
         <div
-          className={`progress${progress.fraction !== null ? " determinate" : ""}`}
+          className={`progress${progress.fraction !== null ? " determinate" : ""}${["paused", "resuming"].includes(task.status) ? " paused" : ""}`}
           role="progressbar"
           aria-label={progress.overall ? "文件传输进度" : "当前文件进度"}
           aria-valuemin={0}
@@ -85,6 +92,10 @@ export default function TaskPanel({
   onAction: (action: () => Promise<unknown>) => Promise<void>;
   onSubmitted: (id: string) => void;
 }) {
+  const ordered = orderedTasks(tasks);
+  const pending = ordered.filter((task) => task.queuePosition != null);
+  const control = (id: string, decision: string) =>
+    void onAction(() => call("task_action", { id, decision, applyAll: false }));
   return (
     <section className="task-panel" aria-label="文件任务">
       <div className="panel-title">
@@ -113,8 +124,8 @@ export default function TaskPanel({
           <span>复制与移动的进度会显示在这里</span>
         </div>
       ) : (
-        tasks.map((t) => (
-          <div className="task" key={t.id}>
+        ordered.map((t) => (
+          <div className="task" key={t.id} data-task-id={t.id}>
             <div className="task-top">
               <b>
                 {
@@ -138,6 +149,9 @@ export default function TaskPanel({
                       queued: "排队中",
                       running: "进行中",
                       conflict: "等待处理",
+                      pausing: "正在暂停",
+                      paused: "已暂停",
+                      resuming: "等待继续",
                       done: "已完成",
                       error: t.kind === "undo" ? "未能撤销" : "部分失败",
                       cancelled: "已取消",
@@ -161,6 +175,58 @@ export default function TaskPanel({
                 </button>
               )}
             </div>
+            {desktop && activeTask(t) && (
+              <div className="task-controls task-queue-controls">
+                {t.status === "paused" ||
+                t.status === "pausing" ||
+                t.pauseRequested ? (
+                  <button onClick={() => control(t.id, "resume")}>
+                    <Play size={13} /> 继续
+                  </button>
+                ) : (
+                  t.canPause !== false &&
+                  ["queued", "running"].includes(t.status) && (
+                    <button onClick={() => control(t.id, "pause")}>
+                      <Pause size={13} /> 暂停
+                    </button>
+                  )
+                )}
+                {t.queuePosition != null && pending.length > 1 && (
+                  <>
+                    <button
+                      aria-label="任务上移"
+                      title="在等待队列中上移"
+                      disabled={pending[0]?.id === t.id}
+                      onClick={() =>
+                        void onAction(() =>
+                          call("reorder_task", { id: t.id, direction: "up" }),
+                        )
+                      }
+                    >
+                      <ArrowUp size={13} /> 上移
+                    </button>
+                    <button
+                      aria-label="任务下移"
+                      title="在等待队列中下移"
+                      disabled={pending.at(-1)?.id === t.id}
+                      onClick={() =>
+                        void onAction(() =>
+                          call("reorder_task", { id: t.id, direction: "down" }),
+                        )
+                      }
+                    >
+                      <ArrowDown size={13} /> 下移
+                    </button>
+                  </>
+                )}
+                {t.queuePosition != null && (
+                  <small>等待顺序 {t.queuePosition + 1}</small>
+                )}
+              </div>
+            )}
+            {t.status === "pausing" && (
+              <p className="task-control-note">完成当前安全步骤后暂停。</p>
+            )}
             <dl className="task-paths">
               {t.sources.length > 0 && (
                 <>

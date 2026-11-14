@@ -16,6 +16,7 @@ mod storage;
 mod storage_diagnosis;
 mod system_actions;
 mod system_process;
+mod task_control;
 mod task_feed;
 mod transfer;
 mod undo;
@@ -42,6 +43,7 @@ use std::{
 };
 use storage::{cancel_storage_scan, scan_storage, storage_volumes};
 use system_actions::{open_properties, open_system_storage, open_with};
+use task_control::TaskExecution;
 use tauri::{Emitter, Manager, Window};
 use tauri_plugin_opener::OpenerExt;
 use transfer::{Source, Transfer};
@@ -174,6 +176,9 @@ struct Task {
     decision: Option<String>,
     policy: Option<String>,
     cancelled: bool,
+    can_pause: bool,
+    pause_requested: bool,
+    queue_position: Option<usize>,
 }
 
 impl Task {
@@ -211,12 +216,13 @@ impl Task {
     }
 }
 
-type TaskWork = Box<dyn FnOnce(&Shared, &str, &tauri::AppHandle) -> Result<(), String> + Send>;
+type TaskWork = Box<dyn FnOnce(&Shared, &str, &mut TaskExecution<'_>) -> Result<(), String> + Send>;
 
 #[derive(Default)]
 struct TaskQueue {
     pending: VecDeque<(String, TaskWork)>,
     running: bool,
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -510,6 +516,7 @@ fn make_directory(parent: String, name: String, app: tauri::AppHandle) -> Result
     let tasks = shared.tasks.lock().unwrap();
     ensure_mutation_allowed(&shared, &tasks)?;
     let path = canonical(&parent)?.join(name);
+    fs_safety::ensure_mutation_path(&path)?;
     fs::create_dir(&path).map_err(|e| e.to_string())?;
     drop(tasks);
     let _ = app.emit("directory-changed", [strpath(&path)]);
@@ -523,15 +530,15 @@ fn create_text_file(parent: &str, name: &str) -> Result<(), String> {
     } else {
         format!("{name}.txt")
     };
-    fs::File::create_new(canonical(parent)?.join(name))
-        .map(drop)
-        .map_err(|error| {
-            if error.kind() == ErrorKind::AlreadyExists {
-                "同名项目已存在，请换个名称".into()
-            } else {
-                error.to_string()
-            }
-        })
+    let path = canonical(parent)?.join(name);
+    fs_safety::ensure_mutation_path(&path)?;
+    fs::File::create_new(path).map(drop).map_err(|error| {
+        if error.kind() == ErrorKind::AlreadyExists {
+            "同名项目已存在，请换个名称".into()
+        } else {
+            error.to_string()
+        }
+    })
 }
 
 #[tauri::command]
@@ -601,6 +608,8 @@ fn rename_entry_checked(
     if let Some(guard) = &duplicate_guard {
         guard.check_source(&src)?;
     }
+    fs_safety::ensure_mutation_path(&src)?;
+    fs_safety::ensure_mutation_path(&dst)?;
     rename_exclusive(&src, &dst).map_err(|error| {
         if error.kind() == ErrorKind::AlreadyExists {
             "同名文件已存在".into()
@@ -890,82 +899,111 @@ fn prepare_task(
             duplicate_guard: duplicate_guard.clone(),
             ..Default::default()
         },
-        move |state, id, app| {
-            if let Some(guard) = &duplicate_guard {
-                guard.verify(|| cancelled(state, id))?;
-            }
-            if kind == "copy" {
-                update(state, id, |task| task.phase = "正在统计总量".into());
-                let total = transfer::total_copy_bytes(
-                    items.iter().map(|(source, _)| source.path.as_path()),
-                    || cancelled(state, id),
-                );
-                update(state, id, |task| {
-                    task.total_bytes = total;
-                    task.phase = "准备传输".into();
-                });
-            }
-            let mut operation = Transfer::new(state, id, kind == "move");
-            operation.set_duplicate_guard(duplicate_guard.as_ref());
-            for (source, target) in items {
-                if cancelled(state, id) {
-                    break;
-                }
-                let path = strpath(&source.path);
-                update(state, id, |task| task.current = path.clone());
-                let verified = duplicate_guard
-                    .as_ref()
-                    .map(|guard| {
-                        guard.check_source(&source.path)?;
-                        if let Some(target) = &target {
-                            guard.check_destination(target)?;
-                        }
-                        Ok(())
-                    })
-                    .unwrap_or(Ok(()));
-                let result = verified.and_then(|()| {
-                    if let (Some(target), Some(folder)) = (&target, folder.as_ref()) {
-                        operation.run(&source, target, folder).map(|_| ())
-                    } else {
-                        source.check().and_then(|()| {
-                            trash::delete(&source.path).map_err(|error| error.to_string())?;
-                            update(state, id, |task| {
-                                task.completed += 1;
-                                task.file_changes.push(FileChange {
-                                    from: path.clone(),
-                                    to: None,
-                                    kind: "trash".into(),
-                                });
-                            });
-                            Ok(())
-                        })
-                    }
-                });
-                if let Err(error) = result {
-                    update(state, id, |task| {
-                        task.errors.push(format!("{path}: {error}"));
-                        if !task.cancelled {
-                            task.failed_sources.push(FailedSource {
-                                path: path.clone(),
-                                identity: source.identity().clone(),
-                            });
-                        }
-                    });
-                }
-                let changed: Vec<_> = std::iter::once(path)
-                    .chain(folder.as_ref().map(|folder| strpath(&folder.path)))
-                    .chain(target.as_ref().map(|target| strpath(target)))
-                    .collect();
-                let _ = app.emit("directory-changed", changed);
-            }
-            update(state, id, |task| {
-                task.file_changes
-                    .extend(moved_file_changes(&operation.journal));
-            });
-            undo::record(state, "撤销移动", operation.journal);
-            Ok(())
+        move |state, id, execution| {
+            let app = execution.app.cloned();
+            execution.checkpoint(id)?;
+            let mut checkpoint = || execution.checkpoint(id);
+            execute_transfer_plan(
+                state,
+                id,
+                &kind,
+                items,
+                folder,
+                duplicate_guard,
+                app.as_ref(),
+                &mut checkpoint,
+            )
         },
     )
+}
+
+fn execute_transfer_plan(
+    state: &Shared,
+    id: &str,
+    kind: &str,
+    items: Vec<(Source, Option<PathBuf>)>,
+    folder: Option<Arc<Directory>>,
+    duplicate_guard: Option<duplicates::Guard>,
+    app: Option<&tauri::AppHandle>,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(guard) = &duplicate_guard {
+        guard.verify(|| cancelled(state, id))?;
+    }
+    if kind == "copy" {
+        update(state, id, |task| task.phase = "正在统计总量".into());
+        let total = transfer::total_copy_bytes(
+            items.iter().map(|(source, _)| source.path.as_path()),
+            || cancelled(state, id),
+        );
+        update(state, id, |task| {
+            task.total_bytes = total;
+            task.phase = "准备传输".into();
+        });
+    }
+    let mut operation = Transfer::new(state, id, kind == "move");
+    operation.set_duplicate_guard(duplicate_guard.as_ref());
+    operation.set_checkpoint(checkpoint);
+    for (source, target) in items {
+        if operation.checkpoint().is_err() {
+            break;
+        }
+        if cancelled(state, id) {
+            break;
+        }
+        let path = strpath(&source.path);
+        update(state, id, |task| task.current = path.clone());
+        let verified = duplicate_guard
+            .as_ref()
+            .map(|guard| {
+                guard.check_source(&source.path)?;
+                if let Some(target) = &target {
+                    guard.check_destination(target)?;
+                }
+                Ok(())
+            })
+            .unwrap_or(Ok(()));
+        let result = verified.and_then(|()| {
+            if let (Some(target), Some(folder)) = (&target, folder.as_ref()) {
+                operation.run(&source, target, folder).map(|_| ())
+            } else {
+                fs_safety::ensure_mutation_path(&source.path)?;
+                source.check().and_then(|()| {
+                    trash::delete(&source.path).map_err(|error| error.to_string())?;
+                    update(state, id, |task| {
+                        task.completed += 1;
+                        task.file_changes.push(FileChange {
+                            from: path.clone(),
+                            to: None,
+                            kind: "trash".into(),
+                        });
+                    });
+                    Ok(())
+                })
+            }
+        });
+        if let Err(error) = result {
+            update(state, id, |task| {
+                task.errors.push(format!("{path}: {error}"));
+                if !task.cancelled {
+                    task.failed_sources.push(FailedSource {
+                        path: path.clone(),
+                        identity: source.identity().clone(),
+                    });
+                }
+            });
+        }
+        let changed: Vec<_> = std::iter::once(path)
+            .chain(folder.as_ref().map(|folder| strpath(&folder.path)))
+            .chain(target.as_ref().map(|target| strpath(target)))
+            .collect();
+        if let Some(app) = &app {
+            let _ = app.emit("directory-changed", changed);
+        }
+    }
+    operation.flush_changes();
+    undo::record(state, "撤销移动", operation.journal);
+    Ok(())
 }
 
 struct TransferPlan {
@@ -1017,6 +1055,7 @@ fn plan_transfer(
     });
     for source in sources {
         let path = entry_path(Path::new(source))?;
+        fs_safety::ensure_mutation_path(&path)?;
         if !seen.insert(path.clone()) {
             continue;
         }
@@ -1025,6 +1064,7 @@ fn plan_transfer(
             let target = folder
                 .path
                 .join(path.file_name().ok_or("需要选择文件或文件夹")?);
+            fs_safety::ensure_mutation_path(&target)?;
             if resolved.parent().is_none()
                 || folder.path.starts_with(&resolved)
                 || target == resolved
@@ -1055,7 +1095,10 @@ fn plan_transfer(
 }
 
 fn active(task: &Task) -> bool {
-    matches!(task.status.as_str(), "queued" | "running" | "conflict")
+    matches!(
+        task.status.as_str(),
+        "queued" | "running" | "conflict" | "pausing" | "paused" | "resuming"
+    )
 }
 
 fn ensure_mutation_allowed(shared: &Shared, tasks: &HashMap<String, Task>) -> Result<(), String> {
@@ -1074,7 +1117,7 @@ fn ensure_mutation_allowed(shared: &Shared, tasks: &HashMap<String, Task>) -> Re
 fn enqueue_task(
     app: tauri::AppHandle,
     mut task: Task,
-    work: impl FnOnce(&Shared, &str, &tauri::AppHandle) -> Result<(), String> + Send + 'static,
+    work: impl FnOnce(&Shared, &str, &mut TaskExecution<'_>) -> Result<(), String> + Send + 'static,
 ) -> Result<String, String> {
     let state = app.state::<Arc<Shared>>().inner().clone();
     let id = uuid::Uuid::new_v4().to_string();
@@ -1093,6 +1136,7 @@ fn enqueue_task(
         task.id = id.clone();
         task.sequence = state.task_sequence.fetch_add(1, Ordering::Relaxed);
         task.status = "queued".into();
+        task.can_pause = task.kind != "undo";
         if tasks.len() >= 100 {
             if let Some(oldest) = tasks
                 .values()
@@ -1110,83 +1154,10 @@ fn enqueue_task(
         state.task_feed.change(Some(&id));
     }
     queue.pending.push_back((id.clone(), Box::new(work)));
-    if !queue.running {
-        queue.running = true;
-        let worker_state = state.clone();
-        std::thread::spawn(move || run_tasks(worker_state, app));
-    }
+    task_control::refresh_positions(&state, &queue);
+    state.task_wake.notify_all();
+    task_control::start_worker(&state, Some(app), &mut queue);
     Ok(id)
-}
-
-fn run_tasks(state: Arc<Shared>, app: tauri::AppHandle) {
-    loop {
-        let (task_id, work) = {
-            let mut queue = state.task_queue.lock().unwrap();
-            match queue.pending.pop_front() {
-                Some(job) => job,
-                None => {
-                    queue.running = false;
-                    return;
-                }
-            }
-        };
-        let _mutation = state.mutation.lock().unwrap();
-        if !cancelled(&state, &task_id) {
-            update(&state, &task_id, |task| task.status = "running".into());
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                work(&state, &task_id, &app)
-            }))
-            .unwrap_or_else(|_| Err("文件任务意外停止，请检查源和目标位置".into()));
-            if let Err(error) = result {
-                update(&state, &task_id, |task| task.errors.push(error));
-            }
-        }
-        let mut failure = None;
-        update(&state, &task_id, |t| {
-            t.conflict = None;
-            t.status = if t.cancelled {
-                "cancelled"
-            } else if let Some(error) = t.errors.first() {
-                let path = if t.destination.is_empty() {
-                    &t.current
-                } else {
-                    &t.destination
-                };
-                failure = Some(Failure::new(
-                    "文件任务",
-                    &t.kind,
-                    Path::new(path),
-                    error.clone(),
-                ));
-                "error"
-            } else {
-                "done"
-            }
-            .into()
-        });
-        // Emit one committed batch while the mutation guard is still held.
-        // Single-entry renames use this same event under that guard, keeping
-        // task changes, rename cycles and subsequent renames in commit order.
-        let file_changes = state
-            .tasks
-            .lock()
-            .unwrap()
-            .get(&task_id)
-            .map(|task| task.file_changes.clone())
-            .unwrap_or_default();
-        if !file_changes.is_empty() {
-            let _ = app.emit("files-mutated", file_changes);
-        }
-        if let Some(failure) = failure {
-            diagnostics::record(&app, failure);
-        }
-        let changed = state.tasks.lock().unwrap().get(&task_id).and_then(|task| {
-            matches!(task.kind.as_str(), "zip" | "unzip" | "undo").then(|| task.destination.clone())
-        });
-        if let Some(path) = changed {
-            let _ = app.emit("directory-changed", (!path.is_empty()).then_some([path]));
-        }
-    }
 }
 
 #[tauri::command]
@@ -1275,8 +1246,20 @@ fn task_action(
     apply_all: bool,
     conflict_id: Option<String>,
     state: tauri::State<Arc<Shared>>,
+    app: tauri::AppHandle,
 ) {
     act_on_task(&state, &id, decision, apply_all, conflict_id);
+    let mut queue = state.task_queue.lock().unwrap();
+    task_control::start_worker(state.inner(), Some(app), &mut queue);
+}
+
+#[tauri::command]
+fn reorder_task(
+    id: String,
+    direction: String,
+    state: tauri::State<Arc<Shared>>,
+) -> Result<(), String> {
+    task_control::reorder(&state, &id, &direction)
 }
 
 fn act_on_task(
@@ -1287,7 +1270,29 @@ fn act_on_task(
     conflict_id: Option<String>,
 ) {
     update(shared, id, |task| {
-        if decision == "cancel" && active(task) {
+        if decision == "pause"
+            && task.can_pause
+            && matches!(task.status.as_str(), "queued" | "running")
+        {
+            task.pause_requested = true;
+            task.status = if task.status == "queued" {
+                "paused"
+            } else {
+                "pausing"
+            }
+            .into();
+        } else if decision == "resume" && task.pause_requested && active(task) {
+            task.pause_requested = false;
+            // A suspended execution promotes itself after reacquiring the mutation lock.
+            task.status = if task.queue_position.is_some() {
+                "queued"
+            } else if task.status == "pausing" {
+                "running"
+            } else {
+                "resuming"
+            }
+            .into();
+        } else if decision == "cancel" && active(task) {
             task.cancelled = true;
         } else if ["replace", "skip", "keep"].contains(&decision.as_str())
             && task.status == "conflict"
@@ -1746,6 +1751,7 @@ fn main() {
             clear_task_history,
             retry_task,
             task_action,
+            reorder_task,
             read_preview,
             thumbnail,
             read_image,

@@ -90,6 +90,30 @@
 .setting-note {
   color: var(--muted);
 }
+.setting-project {
+  flex-wrap: wrap;
+}
+.setting-project-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: var(--accent-text);
+  background: var(--accent-tint);
+  text-decoration: none;
+}
+.setting-project-link:hover {
+  text-decoration: underline;
+}
+.setting-project-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.setting-project-address {
+  user-select: text;
+  overflow-wrap: anywhere;
+}
 .error-log-heading {
   display: flex;
   align-items: center;

@@ -1,9 +1,151 @@
 use std::{
+    collections::HashMap,
     fs::{File, Metadata},
     io::{self, ErrorKind},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::SystemTime,
 };
+
+fn protected_paths() -> &'static Mutex<HashMap<PathBuf, usize>> {
+    static PATHS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+    PATHS.get_or_init(Mutex::default)
+}
+
+fn protected_path_key(path: &Path) -> PathBuf {
+    // Windows and most macOS volumes resolve names without case sensitivity.
+    // Conservatively protect case aliases even on case-sensitive volumes.
+    #[cfg(any(windows, target_os = "macos"))]
+    return PathBuf::from(path.to_string_lossy().to_lowercase());
+    #[cfg(not(any(windows, target_os = "macos")))]
+    path.to_path_buf()
+}
+
+/// Keep a transfer's private staging area out of other user mutations while
+/// its task releases the mutation lock. Internal transfer commits do not use
+/// this user-entry-point check.
+pub(crate) struct ProtectedPath(PathBuf);
+
+pub(crate) fn protect_mutation_path(path: &Path) -> ProtectedPath {
+    let path = protected_path_key(path);
+    *protected_paths()
+        .lock()
+        .unwrap()
+        .entry(path.clone())
+        .or_default() += 1;
+    ProtectedPath(path)
+}
+
+impl Drop for ProtectedPath {
+    fn drop(&mut self) {
+        let mut paths = protected_paths().lock().unwrap();
+        if let Some(count) = paths.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                paths.remove(&self.0);
+            }
+        }
+    }
+}
+
+pub(crate) fn ensure_not_internal_path(path: &Path) -> Result<(), String> {
+    if path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+        name.starts_with(".filepace-stage-") || name.starts_with(".filepace-replaced-")
+    }) {
+        return Err("这是 Filepace 的传输暂存或恢复位置，请先完成文件任务".into());
+    }
+    Ok(())
+}
+
+/// Check the concrete item being created, removed or replaced. Destination
+/// folders may enclose a staging area, so callers should check the final child
+/// target, rather than disallowing all writes to that containing folder.
+pub(crate) fn ensure_mutation_path(path: &Path) -> Result<(), String> {
+    ensure_not_internal_path(path)?;
+    let path = protected_path_key(path);
+    if protected_paths()
+        .lock()
+        .unwrap()
+        .keys()
+        .any(|protected| path.starts_with(protected) || protected.starts_with(&path))
+    {
+        return Err("此位置包含正在传输的暂存文件，请先完成文件任务".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod mutation_path_tests {
+    use super::*;
+
+    #[test]
+    fn reserves_private_stage_and_backup_components() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            ".filepace-stage-active",
+            ".filepace-replaced-old",
+            ".FILEPACE-STAGE-CASE",
+        ] {
+            let private = root.path().join(name);
+            assert!(ensure_mutation_path(&private).is_err());
+            assert!(ensure_mutation_path(&private.join("item")).is_err());
+        }
+        assert!(ensure_mutation_path(&root.path().join("filepace-stage-not-private")).is_ok());
+    }
+
+    #[test]
+    fn protects_active_stage_ancestors_but_allows_unrelated_destination_children() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let source = root.join("source.txt");
+        let destination = root.join("destination");
+        std::fs::write(&source, b"source bytes").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let stage = destination.join("private-transfer");
+        std::fs::create_dir(&stage).unwrap();
+        let payload = stage.join("item");
+        std::fs::write(&payload, b"staged bytes").unwrap();
+        let protection = protect_mutation_path(&stage);
+        assert!(ensure_mutation_path(&stage).is_err());
+        assert!(ensure_mutation_path(&payload).is_err());
+        assert!(ensure_mutation_path(&destination).is_err());
+        assert!(ensure_mutation_path(&root).is_err());
+        assert!(ensure_mutation_path(&source).is_ok());
+        assert!(ensure_mutation_path(&destination.join("other.txt")).is_ok());
+        assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
+        assert_eq!(std::fs::read(&payload).unwrap(), b"staged bytes");
+        drop(protection);
+        assert!(ensure_mutation_path(&destination).is_ok());
+    }
+
+    #[test]
+    fn protection_lasts_until_the_last_guard_is_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let first = protect_mutation_path(&root);
+        let second = protect_mutation_path(&root);
+        drop(first);
+        assert!(ensure_mutation_path(&root).is_err());
+        drop(second);
+        assert!(ensure_mutation_path(&root).is_ok());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn protects_case_aliases_of_active_staging_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let destination = root.join("MixedDestination");
+        let stage = destination.join("private-transfer");
+        let _protection = protect_mutation_path(&stage);
+        assert!(ensure_mutation_path(&root.join("MIXEDDESTINATION")).is_err());
+        assert!(
+            ensure_mutation_path(&root.join("mixeddestination/private-transfer/item")).is_err()
+        );
+        assert!(ensure_mutation_path(&root.join("MixedDestination/other.txt")).is_ok());
+    }
+}
 
 pub(crate) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]

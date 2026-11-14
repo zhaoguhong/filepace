@@ -17,7 +17,7 @@ Filepace is a local file manager for macOS and Windows. Organize files with tabs
 
 ## Download and install
 
-Download the v0.8.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.8.0).
+Download the v0.9.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.9.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -47,6 +47,8 @@ Choose a directory, then switch between Usage Analysis and Smart Diagnosis. Scan
 - Open **Storage Overview (存储概览)** in the window toolbar to see mounted volumes, their capacity, available space, and usage. Use a volume card to browse it or open its dedicated directory analysis page.
 - Open **Directory Analysis (目录分析)** from the toolbar or a folder’s **Analyze This Directory (分析此目录)** context action. **Usage Analysis / Smart Diagnosis** share the selected directory and scan. Choose the current directory, a favorite, or a volume and start a scan. The report shows logical file sizes and counts by category, the largest files, and the largest subfolders. A donut chart shows category proportions. You can stop a scan or select a category to filter the largest files.
 - Each window retains the eight most recent directory scan snapshots with their scan times. Switching scopes reuses the available snapshot. Diagnosis automatically rescans snapshots older than five minutes or marked changed. Snapshots describe a past scan and are not guaranteed to stay current.
+- The directory treemap below the rankings represents logical file sizes by area. Drill into folders or select a file to preview and organize it in the linked list. Scans retain up to 8192 tree entries; gray areas aggregate omitted sizes. Rescan a subfolder for more detail.
+- Save a scan baseline to compare logical size, file count and immediate subfolder changes after rescanning the same directory. Up to eight directory baselines persist across restarts and can be replaced or cleared. Skipped entries and incomplete detail are labeled, and missing records are not assumed deleted. Logical size changes do not measure reclaimed disk space.
 - Click a result to locate it in Filepace or set a subfolder as the next scan scope. Scanning reads file metadata locally and skips links and inaccessible entries.
 - Choose an installed **Codex, Claude Code, OpenCode, or DeepSeek Harness** CLI under **Smart Diagnosis (智能诊断)** and start diagnosis directly. Filepace collects directory metadata automatically before analysis when needed, reuses an existing scan of the selected scope, or rescans when requested. Filepace discovers commands automatically; expand the command-path setting to specify an executable and detect again. Install and sign in to the chosen tool from your terminal first.
 - Choose Comprehensive, Free Up Space, Organize and Archive, Understand Folder, or Custom. Add optional requirements to any preset; Custom requires your own direction, up to 2,000 characters. Reports show the direction and requirements used. Understand Folder focuses on composition and space distribution without proactively suggesting file changes.
@@ -85,6 +87,8 @@ Click the sidebar's **Common Locations (常用位置)** or **Favorites (收藏�
 
 Open **Settings (设置)** at the bottom of the sidebar to set the default view. Under **Appearance (外观)**, choose the display mode and theme separately. Display mode follows the system by default. The default theme uses a pure white background in light mode. Mist Blue, Warm Sand, Sage, Sea Salt Teal, Lilac, Rose, and Slate each support light and dark modes.
 
+**Settings → About (关于)** shows the version, MIT license and GitHub project link, which opens in the default browser.
+
 Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
 
 ## App updates
@@ -114,6 +118,8 @@ Press **Command+K / Ctrl+K** to find actions and shortcuts in the command palett
 Open **File Tasks (文件任务)** in the status bar to see progress and results. When names conflict, compare the source and destination paths, file sizes, and modification times before choosing to skip, replace, or keep both. Moves on the same volume rename the original when the destination is vacant. Moves across volumes commit the staged destination before removing the source. Deletions and successfully replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue it or cancel it and close the window. View recent local errors under **Settings → Error Log (错误日志)**.
 
 Tasks show their sources and destination, scanned totals where available, transferred bytes and measured rate/ETA when meaningful. Unknown or invalid totals stay explicit; same-volume moves retain their fast rename behavior. Space previews also render Markdown, format JSON, display CSV/TSV tables and highlight code, with a source-text option.
+
+Copy, move and trash tasks support pause, resume and cancel. Pausing takes effect at a safe checkpoint and lets other waiting tasks run; native calls and commit steps can delay acknowledgement. Paused tasks resume independently, showing a waiting state while another task executes. Move waiting tasks up or down in the displayed execution order. Archive and batch-rename tasks can pause before starting. Pauses last for the current session; restart recovery continues to show review notices.
 
 - After an interrupted staged transfer or replacement, the next launch shows review notices in File Tasks with the last recorded phase and source, target, stage, and old-target backup paths. It does not resume or delete files automatically. Clearing task history acknowledges the notice and removes only its recovery journal. Undo remains limited to the current session.
 - Windows copies use the native API to preserve alternate data streams and file attributes. Destination permissions follow Windows inheritance. A target that fails to preserve sparse attributes is rejected before removing the source.
@@ -162,5 +168,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.8.0/Filepace_0.8.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.8.0/Filepace_0.8.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_x64-setup.exe

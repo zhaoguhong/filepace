@@ -1,0 +1,126 @@
+.storage-treemap,
+.storage-comparison {
+  margin-top: 18px;
+}
+.storage-map-navigation,
+.storage-baseline-actions,
+.storage-deltas,
+.storage-map-list-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.storage-map-navigation strong {
+  flex: 1;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.storage-map {
+  position: relative;
+  height: 300px;
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--inset);
+}
+.storage-map-tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  overflow: hidden;
+  padding: 7px;
+  border: 1px solid var(--surface);
+  color: white;
+  text-align: left;
+  min-width: 0;
+}
+.storage-map-tile span {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.storage-map-tile small {
+  display: block;
+  font-size: 10px;
+  white-space: nowrap;
+}
+button.storage-map-tile:hover {
+  filter: brightness(1.12);
+}
+button.storage-map-tile:focus-visible,
+button.storage-map-tile[aria-pressed="true"] {
+  outline: 3px solid var(--focus);
+  outline-offset: -4px;
+  z-index: 1;
+}
+.storage-map-remainder {
+  opacity: 0.8;
+}
+.storage-map-empty {
+  padding: 28px;
+  color: var(--muted);
+}
+.storage-map-list-heading h4 {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.storage-comparison > .storage-muted {
+  overflow-wrap: anywhere;
+}
+.storage-deltas {
+  margin: 14px 0;
+  color: var(--strong);
+  font-size: 13px;
+  gap: 24px;
+}
+.storage-folder-changes {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+.storage-folder-changes li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid var(--hairline);
+  padding: 8px 0;
+  font-size: 12px;
+}
+.storage-folder-changes button {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  color: var(--accent-text);
+}
+.storage-folder-changes button:disabled {
+  color: var(--muted);
+}
+.storage-folder-changes small {
+  color: var(--muted);
+}
+@media (max-width: 700px) {
+  .storage-map {
+    height: 240px;
+  }
+  .storage-map-tile {
+    padding: 3px;
+  }
+  .storage-map-tile span {
+    font-size: 10px;
+  }
+}

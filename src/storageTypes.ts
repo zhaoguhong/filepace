@@ -19,11 +19,17 @@ export type RankedItem = {
   files: number;
 };
 export type Category = { files: number; bytes: number; largest: RankedItem[] };
+export type StorageTreeNode = RankedItem & {
+  isDir: boolean;
+  modified: number;
+};
 export type StorageReport = {
   path: string;
   counts: ScanCounts;
   categories: Record<string, Category>;
   folders: RankedItem[];
+  tree?: StorageTreeNode[];
+  treeComplete?: boolean;
 };
 export type StorageSnapshot = {
   scope: string;
