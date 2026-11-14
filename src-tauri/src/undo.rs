@@ -189,8 +189,22 @@ mod tests {
             changes: Vec::new(),
         };
         assert!(!copy_entry(&source, &target, &shared, "task", true, &mut record.changes).unwrap());
+        assert_eq!(record.changes.len(), 1);
+        assert!(!source.join("moved.txt").exists());
+        assert_eq!(fs::read(target.join("moved.txt")).unwrap(), b"moved");
+        // Directory enumeration order differs across platforms. If the moved
+        // item precedes the skipped item, its forward mutation is flushed at
+        // the next transfer checkpoint; undo must append its inverse exactly
+        // once regardless of when that earlier event was published.
+        let forward_changes = shared.tasks.lock().unwrap()["task"].file_changes.len();
         fs::write(source.join("moved.txt"), b"new at original path").unwrap();
         assert!(reverse(&mut record, &shared, "task").is_err());
+        assert_eq!(record.changes.len(), 1);
+        assert_eq!(
+            shared.tasks.lock().unwrap()["task"].file_changes.len(),
+            forward_changes,
+            "a rejected undo must not publish any inverse mutation"
+        );
         assert_eq!(fs::read(target.join("moved.txt")).unwrap(), b"moved");
         assert_eq!(
             fs::read(source.join("moved.txt")).unwrap(),
@@ -211,7 +225,8 @@ mod tests {
         assert!(!target.join("moved.txt").exists());
         let tasks = shared.tasks.lock().unwrap();
         let changes = &tasks["task"].file_changes;
-        assert_eq!(changes.len(), 1);
+        assert_eq!(changes.len(), forward_changes + 1);
+        let changes = &changes[forward_changes..];
         assert_eq!(changes[0].from, strpath(&target.join("moved.txt")));
         assert_eq!(changes[0].to, Some(strpath(&source.join("moved.txt"))));
     }

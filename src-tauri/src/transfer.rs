@@ -281,9 +281,14 @@ impl<'a> Transfer<'a> {
     }
 
     pub(crate) fn checkpoint(&mut self) -> Result<(), String> {
-        self.flush_changes();
-        if let Some(checkpoint) = self.checkpoint.as_mut() {
-            checkpoint()?;
+        if self.checkpoint.is_some() {
+            // Publish before the scheduler can release the mutation lock.
+            // Without a scheduler hook, callers (including undo) own journal
+            // publication and must not receive an implicit duplicate batch.
+            self.flush_changes();
+            if let Some(checkpoint) = self.checkpoint.as_mut() {
+                checkpoint()?;
+            }
         }
         self.check_cancelled()
     }
@@ -791,6 +796,34 @@ mod tests {
             .unwrap()
             .insert("task".into(), Task::default());
         (tempfile::tempdir().unwrap(), state)
+    }
+
+    #[test]
+    fn checkpoint_without_scheduler_keeps_journal_publication_with_the_caller() {
+        let (fixture, state) = setup();
+        let source_path = fixture.path().join("source.txt");
+        let target = fixture.path().join("target.txt");
+        fs::write(&source_path, b"original moved bytes").unwrap();
+        let source = Source::at(source_path.clone()).unwrap();
+        let parent = Directory::parent(&target).unwrap();
+        let mut operation = Transfer::new(&state, "task", true);
+        assert!(operation.run(&source, &target, &parent).unwrap());
+        assert_eq!(operation.journal.len(), 1);
+        assert!(!source_path.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"original moved bytes");
+        // Exercise the boundary deterministically instead of relying on the
+        // platform's read_dir ordering to visit another entry after the move.
+        operation.checkpoint().unwrap();
+        assert!(state.tasks.lock().unwrap()["task"].file_changes.is_empty());
+        update(&state, "task", |task| {
+            task.file_changes
+                .extend(crate::moved_file_changes(&operation.journal));
+        });
+        let tasks = state.tasks.lock().unwrap();
+        let changes = &tasks["task"].file_changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].from, strpath(&source_path));
+        assert_eq!(changes[0].to, Some(strpath(&target)));
     }
 
     #[test]
