@@ -182,10 +182,12 @@ export default function FileIcon({
   entry,
   type = describeFile(entry),
   showThumbnail = true,
+  showNativeIcon = true,
 }: {
   entry: Entry;
   type?: ReturnType<typeof describeFile>;
   showThumbnail?: boolean;
+  showNativeIcon?: boolean;
 }) {
   const src =
     type.kind === "folder" && type.windows
@@ -194,8 +196,13 @@ export default function FileIcon({
   const icon = <img src={src} alt="" draggable={false} />;
   return (
     <span className="entry-icon" data-file-kind={type.kind} aria-hidden="true">
-      {type.nativeIcon || (type.thumbnail && showThumbnail) ? (
-        <Thumbnail entry={entry} fallback={icon} nativeIcon={type.nativeIcon} />
+      {(type.nativeIcon && showNativeIcon) ||
+      (type.thumbnail && showThumbnail) ? (
+        <Thumbnail
+          entry={entry}
+          fallback={icon}
+          nativeIcon={type.nativeIcon && showNativeIcon}
+        />
       ) : (
         icon
       )}

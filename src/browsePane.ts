@@ -184,7 +184,9 @@ export function useBrowsePane(
   const tab =
     session?.tabs.find((t) => t.id === session.active) ?? session?.tabs[0];
   const path = tab?.path;
-  const directory = useDirectoryListing(path);
+  const directory = useDirectoryListing(
+    path === "filepace://trash" ? undefined : path,
+  );
   const { listing } = directory;
   const viewport = useFileViewport(tab?.view, tab?.gridSize, compact);
   const { listRef, layout } = viewport;

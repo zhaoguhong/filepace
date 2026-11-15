@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Filepace 使用 Finder 显示所选文件或文件夹的系统简介。</string>
+  <string>Filepace 使用 Finder 读取系统回收站、将文件移到回收站，并显示所选文件或文件夹的系统简介。</string>
 </dict>
 </plist>

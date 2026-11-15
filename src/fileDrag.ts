@@ -9,6 +9,12 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { call, desktop } from "./bridge";
 import type { PaneSide } from "./browsePane";
 import type { Entry } from "./model";
+import {
+  locationDropAt,
+  sameLocationDrop,
+  scrollLocations,
+  type LocationDrop,
+} from "./locationDrop";
 
 export const isMac = navigator.platform.includes("Mac");
 type FileTransfer = "copy" | "move";
@@ -33,7 +39,7 @@ type NativeDrag =
     }
   | { type: "leave" };
 
-type DragSelection = { entry: Entry; paths: string[] };
+type DragSelection = { entry: Entry; paths: string[]; entries?: Entry[] };
 type Source = DragSelection & DragOrigin;
 type Preview = { entry: Entry; pane: PaneSide; paths: Set<string> };
 type Gesture = Source & {
@@ -175,6 +181,11 @@ export function useFileDrag(options: {
   transfer: (kind: FileTransfer, paths: string[], path: string) => void;
   onError: (error: string) => void;
   onStart: () => void;
+  addLocations?: (
+    paths: string[],
+    target: LocationDrop,
+    entries?: Entry[],
+  ) => void;
 }) {
   const latest = useRef(options);
   latest.current = options;
@@ -182,6 +193,7 @@ export function useFileDrag(options: {
   const suppressClick = useRef(false);
   const [hint, setHint] = useState<DropHint | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [locationHint, setLocationHint] = useState<LocationDrop | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
   function nativeDrag(selection: Gesture) {
@@ -230,7 +242,13 @@ export function useFileDrag(options: {
     function scrollFrame(now: number) {
       animation = 0;
       const elapsed = lastFrame ? Math.min(now - lastFrame, 32) : 16;
-      if (!edge || !scrollColumnEdge(edge.position, elapsed)) {
+      if (
+        !edge ||
+        !(
+          scrollLocations(edge.position, elapsed) ||
+          scrollColumnEdge(edge.position, elapsed)
+        )
+      ) {
         lastFrame = 0;
         return;
       }
@@ -239,8 +257,15 @@ export function useFileDrag(options: {
       animation = requestAnimationFrame(scrollFrame);
     }
     function track(position: Position, target: () => DropHint | null) {
-      updateHint(target());
-      edge = { position, target };
+      const resolve = () => {
+        const location = locationDropAt(position);
+        setLocationHint((previous) =>
+          sameLocationDrop(previous, location) ? previous : location,
+        );
+        return location ? null : target();
+      };
+      updateHint(resolve());
+      edge = { position, target: resolve };
       if (!animation) animation = requestAnimationFrame(scrollFrame);
     }
 
@@ -256,7 +281,19 @@ export function useFileDrag(options: {
       }
       stopEdgeScroll();
       setHint(null);
+      setLocationHint(null);
       if (event.type === "leave") return;
+      const location = locationDropAt(event.position);
+      if (location) {
+        latest.current.addLocations?.(event.paths, location);
+        return;
+      }
+      if (
+        document
+          .elementFromPoint(event.position.x, event.position.y)
+          ?.closest(".sidebar")
+      )
+        return;
       const target = targetAt(event.position);
       const internal = event.betweenWindows || Boolean(event.source);
       const path =
@@ -281,6 +318,7 @@ export function useFileDrag(options: {
       if (gesture?.row.hasPointerCapture(gesture.pointerId))
         gesture.row.releasePointerCapture(gesture.pointerId);
       setHint(null);
+      setLocationHint(null);
       setPreview(null);
     }
     function move(event: PointerEvent) {
@@ -322,8 +360,19 @@ export function useFileDrag(options: {
       const gesture = pointer.current;
       if (!gesture || event.pointerId !== gesture.pointerId) return;
       gesture.position = { x: event.clientX, y: event.clientY };
+      const location = gesture.started
+        ? locationDropAt(gesture.position)
+        : null;
       const target = gesture.started ? pointerTarget(gesture, event) : null;
       clear();
+      if (location) {
+        latest.current.addLocations?.(
+          gesture.paths,
+          location,
+          gesture.entries ?? [gesture.entry],
+        );
+        return;
+      }
       if (target)
         latest.current.transfer(target.kind, gesture.paths, target.path);
     }
@@ -386,5 +435,5 @@ export function useFileDrag(options: {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  return { hint, preview, previewRef, suppressClick, begin };
+  return { hint, locationHint, preview, previewRef, suppressClick, begin };
 }

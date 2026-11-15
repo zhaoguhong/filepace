@@ -154,7 +154,7 @@ fn commit_with_recovery(
         shared,
         id,
         recovery,
-        |backup| trash::delete(backup).map_err(|error| error.to_string()),
+        |backup| crate::trash_browser::trash_item(backup),
     )
 }
 

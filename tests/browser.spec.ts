@@ -1343,55 +1343,100 @@ test("marquee selects folders and supports keyboard ranges and cancellation", as
   await expect(selected).toHaveCount(1);
 });
 
-test("remembers sidebar groups and edits common locations while retaining saved favorites", async ({ page, context }) => {
+test("merges old favorites, remembers custom groups and keeps Settings visible", async ({
+  page,
+  context,
+}) => {
   await page.addInitScript(() => {
-    localStorage.setItem("filepace-favorites", JSON.stringify(["/Users/demo/设计素材"]));
+    if (!localStorage.getItem("filepace-location-groups-v1"))
+      localStorage.setItem(
+        "filepace-favorites",
+        JSON.stringify(["/Users/demo/设计素材"]),
+      );
   });
   await page.goto("/");
-  const common = page.getByRole("region", { name: "常用位置" });
-  const favorites = page.getByRole("region", { name: "收藏目录" });
-  const menu = page.locator(".context-menu");
-  const commonToggle = common.getByRole("button", { name: "常用位置", exact: true });
-  const favoritesToggle = favorites.getByRole("button", { name: "收藏目录", exact: true });
-  await expect(favorites.getByRole("button", { name: "设计素材" })).toBeVisible();
-  await page.getByRole("option", { name: "项目" }).click({ button: "right" });
-  await menu.getByRole("button", { name: "添加到常用位置", exact: true }).click();
-  const project = common.getByRole("button", { name: "项目" });
-  await expect(common.locator(".place").last()).toHaveText("项目");
-  await project.click({ button: "right" });
-  await menu.getByRole("button", { name: "上移", exact: true }).click();
-  await expect(common.locator(".place").last()).toHaveText("图片");
-  await common.getByRole("button", { name: "下载", exact: true }).click({ button: "right" });
-  await menu.getByRole("button", { name: "从常用位置移除" }).click();
-  await expect(common.getByRole("button", { name: "下载", exact: true })).toHaveCount(0);
-  await commonToggle.press("Enter");
-  await favoritesToggle.press("Space");
-  await expect(commonToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(favoritesToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(project).toBeHidden();
+  const common = page.getByRole("region", { name: "常用位置", exact: true });
+  await expect(page.getByRole("region", { name: "收藏目录" })).toHaveCount(0);
+  await expect(
+    common.getByRole("button", { name: "设计素材", exact: true }),
+  ).toBeVisible();
+  await common
+    .getByRole("button", { name: "下载", exact: true })
+    .click({ button: "right" });
+  await page
+    .getByRole("menu", { name: "管理常用位置" })
+    .getByRole("menuitem", { name: "从常用位置移除" })
+    .click();
+  await common
+    .getByRole("button", { name: "管理分组 常用位置", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "新建分组", exact: true }).click();
+  await page.getByLabel("分组名称", { exact: true }).fill("工作");
+  await page
+    .getByRole("dialog", { name: "新建分组", exact: true })
+    .getByRole("button", { name: "保存" })
+    .click();
+  const work = page.getByRole("region", { name: "工作", exact: true });
+  await common
+    .getByRole("button", { name: "设计素材", exact: true })
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "移动到分组", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "工作", exact: true }).click();
+  await expect(
+    work.getByRole("button", { name: "设计素材", exact: true }),
+  ).toBeVisible();
+  await work.getByRole("button", { name: "工作", exact: true }).click();
   await page.reload();
-  await expect(commonToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(favoritesToggle).toHaveAttribute("aria-expanded", "false");
-
-  const secondWindow = await context.newPage();
-  await secondWindow.goto("/");
-  await secondWindow.getByRole("button", { name: "常用位置", exact: true }).click();
-  await expect(commonToggle).toHaveAttribute("aria-expanded", "true");
-  await expect(common.locator(".place").nth(3)).toHaveText("项目");
-  await expect(common.getByRole("button", { name: "下载", exact: true })).toHaveCount(0);
-  await favoritesToggle.click();
-  await expect(favorites.getByRole("button", { name: "设计素材" })).toBeVisible();
-  await secondWindow.evaluate(() => {
-    localStorage.setItem("filepace-favorites", JSON.stringify(
-      Array.from({ length: 30 }, (_, index) => `/Users/demo/目录 ${index + 1}`),
-    ));
+  await expect(
+    work.getByRole("button", { name: "工作", exact: true }),
+  ).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    common.getByRole("button", { name: "下载", exact: true }),
+  ).toHaveCount(0);
+  const second = await context.newPage();
+  await second.goto("/");
+  await second
+    .getByRole("region", { name: "工作", exact: true })
+    .getByRole("button", { name: "工作", exact: true })
+    .click();
+  await expect(
+    work.getByRole("button", { name: "设计素材", exact: true }),
+  ).toBeVisible();
+  await common
+    .getByRole("button", { name: "管理分组 常用位置", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "恢复默认位置", exact: true })
+    .click();
+  await expect(
+    common.getByRole("button", { name: "下载", exact: true }),
+  ).toBeVisible();
+  await expect(
+    work.getByRole("button", { name: "设计素材", exact: true }),
+  ).toBeVisible();
+  await second.evaluate(() => {
+    const groups = JSON.parse(
+      localStorage.getItem("filepace-location-groups-v1")!,
+    );
+    groups[0].places.push(
+      ...Array.from({ length: 30 }, (_, i) => ({
+        name: `目录 ${i}`,
+        path: `/Users/demo/目录 ${i}`,
+      })),
+    );
+    localStorage.setItem("filepace-location-groups-v1", JSON.stringify(groups));
   });
-  await expect(favorites.getByRole("button", { name: "目录 30", exact: true })).toHaveCount(1);
-  const settings = page.getByRole("complementary", { name: "位置侧栏" }).getByRole("button", { name: "设置", exact: true });
+  await expect(
+    common.getByRole("button", { name: "目录 29", exact: true }),
+  ).toHaveCount(1);
+  const settings = page
+    .getByRole("complementary", { name: "位置侧栏" })
+    .getByRole("button", { name: "设置", exact: true });
   await expect(settings).toBeInViewport({ ratio: 1 });
-  await settings.click();
-  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
-  await secondWindow.close();
+  await expect(
+    page.getByRole("button", { name: "回收站", exact: true }),
+  ).toBeInViewport({ ratio: 1 });
+  await second.close();
 });
 
 test("opens directory analysis from volumes and folder menus without changing pane selection", async ({ page }) => {
@@ -1474,7 +1519,6 @@ test("cancels the previous manual scan when entering analysis for another volume
   expect(scans.map((scan) => scan.args.path)).toEqual([home, "/Volumes/fixture"]);
 });
 
-
 test("keeps rescan secondary and inside Usage, with a visible diagnosis next step", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "目录分析", exact: true }).click();
@@ -1496,7 +1540,6 @@ test("blocks invalid connection settings without sending the scan to an agent", 
   const calls = await page.evaluate(() => (window as unknown as { filepaceDiagnosisFixture: DiagnosisFixture }).filepaceDiagnosisFixture.calls);
   expect(calls.filter((call) => call.command === "diagnose_storage")).toHaveLength(0);
 });
-
 
 test("selects an installed tool when the initial default is missing", async ({ page }) => {
   await mockStorageDiagnosis(page, "success", ["codex"]);
@@ -1574,7 +1617,6 @@ test("keeps missing tools configurable and blocks diagnosis when none are instal
   await expect(page.getByRole("button", { name: "开始诊断", exact: true })).toBeEnabled();
   await expect(notice).toHaveCount(0);
 });
-
 
 test("shows interrupted transfer locations once without retrying or deleting files", async ({ page }) => {
   await mockDesktop(page, "list");

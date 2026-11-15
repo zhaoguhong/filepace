@@ -130,13 +130,10 @@ hr {
 }
 .sidebar {
   width: 210px;
-  min-width: 165px;
-  max-width: 320px;
-  resize: horizontal;
+  min-width: 0;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--subtle);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   user-select: none;
@@ -556,7 +553,9 @@ main {
 .column-head,
 .file-row {
   display: grid;
-  grid-template-columns: minmax(100px, var(--list-column-0)) minmax(70px, var(--list-column-1)) minmax(65px, var(--list-column-2)) minmax(48px, var(--list-column-3));
+  grid-template-columns:
+    minmax(100px, var(--list-column-0)) minmax(70px, var(--list-column-1))
+    minmax(65px, var(--list-column-2)) minmax(48px, var(--list-column-3));
   align-items: center;
   gap: 12px;
   padding: 0 var(--list-padding);
@@ -1373,9 +1372,6 @@ main {
   }
 }
 @media (max-width: 1000px) {
-  .sidebar {
-    width: 180px;
-  }
   .file-pane {
     --list-padding: 18px;
     --list-column-1: 110px;
@@ -1402,7 +1398,9 @@ main {
 @container (max-width: 620px) {
   .column-head,
   .list .file-row {
-    grid-template-columns: minmax(100px, var(--list-column-0)) minmax(70px, var(--list-column-1)) minmax(48px, var(--list-column-3));
+    grid-template-columns:
+      minmax(100px, var(--list-column-0)) minmax(70px, var(--list-column-1))
+      minmax(48px, var(--list-column-3));
     gap: 7px;
     --list-padding: 11px;
   }
@@ -1421,7 +1419,10 @@ main {
   }
   .column-head,
   .list .file-row {
-    grid-template-columns: minmax(70px, var(--list-column-0)) minmax(48px, var(--list-column-3));
+    grid-template-columns: minmax(70px, var(--list-column-0)) minmax(
+        48px,
+        var(--list-column-3)
+      );
   }
   .file-date,
   .list-heading:nth-child(2) {

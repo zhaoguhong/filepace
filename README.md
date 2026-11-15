@@ -17,7 +17,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。用标�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.9.0) 下载适合你的 v0.9.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.0) 下载适合你的 v0.10.0 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -81,7 +81,13 @@ macOS 上已使用真实 Harness CLI 和本机模拟模型服务验证配置复�
 
 在三种视图中，都可以从空白处按住鼠标拖出选框，一次选中文件和文件夹。也可以按住 **Shift** 选取连续项目，或按住 macOS 的 **⌘**、Windows 的 **Ctrl** 逐个增减选区。
 
-点击侧栏的「常用位置」或「收藏目录」标题可折叠和展开。点击「常用位置」旁的加号可加入当前文件夹，右键快捷入口可调整顺序或移除。侧栏会记住这些设置。
+侧栏统一使用「常用位置」，旧收藏会自动合并，相同目录只保留一个入口。首次使用提供个人目录、桌面、下载、文档和图片；移除后不会在重启时自动补回。将文件区的文件夹拖到常用位置，即可按插入线添加快捷入口，不移动或复制原文件夹；普通文件会提示「请拖入文件夹」。也可从分组标题旁的「···」菜单选择「添加文件夹…」，添加当前目录、输入其他路径或打开系统文件夹选择器。
+
+从「···」菜单选择「新建分组」可按用途组织目录，每组支持折叠、改名和排序。上下拖动快捷入口可调整顺序，也可拖入其他组或右键管理。移除目录或分组只影响侧栏入口，不删除实际文件。「恢复默认位置」会补回缺少的系统入口，并保留自定义目录；移除全部分组后，可拖入文件夹或使用「新建分组」。分组和快捷入口会在窗口之间同步。
+
+拖动侧栏右边界可调整宽度，继续拖向最左侧可完全隐藏。隐藏后，从窗口左侧内边缘向右拖动，或点击右上角的侧栏按钮即可展开；按钮展开时恢复隐藏前的宽度。宽度和显示状态会保留到下次启动，双击分隔线可恢复默认宽度。
+
+左侧底部的「回收站」在当前窗格内显示系统已删除项目，另一栏可继续浏览普通目录。支持筛选、多选、恢复到原位置或指定目录、永久删除和清空。恢复时沿用文件任务和同名冲突处理；原目录不存在时需选择其他目标。永久删除和清空需要明确确认，清空只处理确认时显示的那批项目。macOS 如提示访问受限，请从回收站页打开系统隐私设置，授予 Filepace 完全磁盘访问权限后重新打开应用；无法取得的原位置和删除时间会标为未知。浏览器预览只读。
 
 从侧栏底部打开「设置」，在「浏览」中可选择新标签的默认视图。在「外观」中可以分别选择显示模式和主题。显示模式默认跟随系统，默认主题在浅色模式下使用纯白背景。雾蓝、暖砂、松雾绿、海盐青、暮藤紫、蔷薇粉和石板灰也各有浅色和深色版本。
 
@@ -164,5 +170,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_x64-setup.exe

@@ -34,6 +34,7 @@ export async function call<T>(
   args: Record<string, unknown> = {},
 ): Promise<T> {
   if (desktop) return invoke<T>(command, args);
+  if (command === "list_trash") return { items: [], warnings: [] } as T;
   if (command === "places")
     return [
       { name: "个人目录", path: root, kind: "favorite" },
@@ -53,24 +54,49 @@ export async function call<T>(
   if (command === "search_files") {
     const query = String(args.query).toLowerCase();
     const hits = (args.path === root || args.path === "/" ? demo : [])
-      .filter((entry) =>
-        (args.hidden || !entry.hidden) &&
-        entry.name.toLowerCase().includes(query) &&
-        (args.minSize === undefined || (!entry.isDir && entry.size >= Number(args.minSize))) &&
-        (args.modifiedAfter === undefined || entry.modified >= Number(args.modifiedAfter)) &&
-        (!args.category || describeFile(entry).category === args.category ||
-          (entry.isDir && args.category === "folder")),
+      .filter(
+        (entry) =>
+          (args.hidden || !entry.hidden) &&
+          entry.name.toLowerCase().includes(query) &&
+          (args.minSize === undefined ||
+            (!entry.isDir && entry.size >= Number(args.minSize))) &&
+          (args.modifiedAfter === undefined ||
+            entry.modified >= Number(args.modifiedAfter)) &&
+          (!args.category ||
+            describeFile(entry).category === args.category ||
+            (entry.isDir && args.category === "folder")),
       )
       .map((entry) => ({ entry, parent: root }));
-    return { hits, indexed: false, limited: false, skipped: 0 } satisfies SearchReport as T;
+    return {
+      hits,
+      indexed: false,
+      limited: false,
+      skipped: 0,
+    } satisfies SearchReport as T;
   }
   if (command === "cancel_search") return undefined as T;
   if (command === "find_duplicates") {
     const path = String(args.path);
-    const source = { ...demo.find((entry) => entry.name === "产品需求.md")!, path: path + "/产品需求.md" };
+    const source = {
+      ...demo.find((entry) => entry.name === "产品需求.md")!,
+      path: path + "/产品需求.md",
+    };
     return {
       path,
-      groups: [{ id: "demo-identical-document", size: source.size, files: [source, { ...source, name: "产品需求-副本.md", path: path + "/归档/产品需求-副本.md" }] }],
+      groups: [
+        {
+          id: "demo-identical-document",
+          size: source.size,
+          files: [
+            source,
+            {
+              ...source,
+              name: "产品需求-副本.md",
+              path: path + "/归档/产品需求-副本.md",
+            },
+          ],
+        },
+      ],
       scannedFiles: 12,
       scannedBytes: 34 * 1024 ** 2,
       skipped: 0,
@@ -145,12 +171,13 @@ export async function call<T>(
     return report as T;
   }
   if (command === "cancel_storage_scan") return undefined as T;
-  if (command === "diagnosis_agents") return [
-    { id: "codex", name: "Codex", path: null, error: null },
-    { id: "claude", name: "Claude Code", path: null, error: null },
-    { id: "opencode", name: "OpenCode", path: null, error: null },
-    { id: "deepseek", name: "DeepSeek Harness", path: null, error: null },
-  ] satisfies DiagnosisAgentInfo[] as T;
+  if (command === "diagnosis_agents")
+    return [
+      { id: "codex", name: "Codex", path: null, error: null },
+      { id: "claude", name: "Claude Code", path: null, error: null },
+      { id: "opencode", name: "OpenCode", path: null, error: null },
+      { id: "deepseek", name: "DeepSeek Harness", path: null, error: null },
+    ] satisfies DiagnosisAgentInfo[] as T;
   if (command === "load_session") return null as T;
   if (command === "save_session") return undefined as T;
   if (command === "read_preview")

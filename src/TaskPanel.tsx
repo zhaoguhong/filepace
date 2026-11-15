@@ -134,6 +134,8 @@ export default function TaskPanel({
                       copy: "复制",
                       move: "移动",
                       trash: "移到回收站",
+                      restore: "从回收站恢复",
+                      purge: "永久删除",
                       zip: "压缩",
                       unzip: "解压",
                       undo: "撤销",

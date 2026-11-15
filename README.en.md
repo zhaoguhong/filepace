@@ -17,7 +17,7 @@ Filepace is a local file manager for macOS and Windows. Organize files with tabs
 
 ## Download and install
 
-Download the v0.9.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.9.0).
+Download the v0.10.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.0).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -83,7 +83,13 @@ Large directories appear in batches, and leaving cancels further reads. Refresh 
 
 Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
 
-Click the sidebar's **Common Locations (常用位置)** or **Favorites (收藏目录)** heading to collapse or expand it. Use the plus button beside Common Locations to add the current folder. Right-click a shortcut to reorder or remove it. The sidebar remembers your changes.
+**Common Locations (常用位置)** merges the old favorites without duplicate paths. First launch provides Home, Desktop, Downloads, Documents and Pictures; removed entries stay removed. Drag folders from the file area into a group to add shortcuts at the insertion line without moving or copying the original folders. Ordinary files show a folder-only hint. The group heading’s ellipsis menu offers **Add Folder (添加文件夹…)** for the current directory, another path or the system folder picker.
+
+Use the ellipsis menu to create or manage groups; collapse groups from their heading and reorder them by dragging. Drag shortcuts up or down to reorder them or move them between groups, or use their context menu. Removing a group or shortcut changes only the sidebar. **Restore Default Locations (恢复默认位置)** adds missing system entries while retaining custom folders. An empty sidebar accepts dragged folders and offers a Create Group entry. Groups and shortcuts synchronize between windows.
+
+Drag the sidebar’s right border to resize it, or continue to the far left to hide it completely. Drag right from the window’s inner left edge to reopen it, or use the top-right sidebar button to restore its previous width. Width and visibility persist across launches. Double-click the divider to reset its width.
+
+**Trash (回收站)** above Settings opens the system trash inside the active pane while the other pane remains available. Filter and select items, restore to their original or a chosen folder, permanently delete selected items, or empty the displayed snapshot. Restoration uses file tasks and conflict handling; choose a new destination if the original parent is unavailable. Permanent deletion requires explicit confirmation and excludes items added after confirmation. On macOS, protected trash access may require enabling Full Disk Access for Filepace in System Settings and reopening the app; unavailable original locations and deletion dates are shown as unknown. The browser preview remains read-only.
 
 Open **Settings (设置)** at the bottom of the sidebar to set the default view. Under **Appearance (外观)**, choose the display mode and theme separately. Display mode follows the system by default. The default theme uses a pure white background in light mode. Mist Blue, Warm Sand, Sage, Sea Salt Teal, Lilac, Rose, and Slate each support light and dark modes.
 
@@ -168,5 +174,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.9.0/Filepace_0.9.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_x64-setup.exe

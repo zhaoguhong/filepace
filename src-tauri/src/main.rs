@@ -9,6 +9,7 @@ mod directory_watch;
 mod duplicates;
 mod file_icon;
 mod fs_safety;
+mod locations;
 mod native_drag;
 mod recovery;
 mod search;
@@ -19,6 +20,9 @@ mod system_process;
 mod task_control;
 mod task_feed;
 mod transfer;
+mod trash_browser;
+#[cfg(target_os = "macos")]
+mod trash_metadata;
 mod undo;
 mod updates;
 #[cfg(windows)]
@@ -969,7 +973,7 @@ fn execute_transfer_plan(
             } else {
                 fs_safety::ensure_mutation_path(&source.path)?;
                 source.check().and_then(|()| {
-                    trash::delete(&source.path).map_err(|error| error.to_string())?;
+                    trash_browser::trash_item(&source.path)?;
                     update(state, id, |task| {
                         task.completed += 1;
                         task.file_changes.push(FileChange {
@@ -1611,6 +1615,7 @@ fn main() {
     let shared = Arc::new(Shared::default());
     tauri::Builder::default()
         .manage(shared)
+        .manage(trash_browser::TrashState::default())
         .manage(batch_rename::Plans::default())
         .manage(diagnostics::ErrorLog::default())
         .manage(native_drag::DragState::default())
@@ -1715,6 +1720,12 @@ fn main() {
             directory_watch::watch_directories,
             diagnostics::error_log,
             places,
+            locations::resolve_location_shortcuts,
+            trash_browser::list_trash,
+            trash_browser::start_trash_task,
+            trash_browser::validate_location,
+            trash_browser::choose_location,
+            trash_browser::open_trash_permissions,
             open_entry,
             open_properties,
             open_with,
