@@ -958,8 +958,11 @@ test("sidebar edge resizes, collapses completely, reopens at the saved width and
   await expect(divider).toHaveAttribute("aria-valuenow", "240");
   expect(Math.round((await sidebar.boundingBox())!.width)).toBe(240);
   await page.setViewportSize({ width: 800, height: 650 });
+  await expect(divider).toHaveAttribute("aria-valuemax", "380");
   await divider.press("End");
-  expect((await sidebar.boundingBox())!.width).toBeLessThanOrEqual(380);
+  await expect
+    .poll(async () => (await sidebar.boundingBox())!.width)
+    .toBeLessThanOrEqual(380);
   await expect(
     page.getByRole("button", { name: "回收站", exact: true }),
   ).toBeInViewport({ ratio: 1 });
