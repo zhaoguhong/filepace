@@ -17,7 +17,7 @@ Filepace is a local file manager for macOS and Windows. Organize files with tabs
 
 ## Download and install
 
-Download the v0.10.0 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.0).
+Download the v0.10.1 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.1).
 
 | System | Installer | How to install |
 | --- | --- | --- |
@@ -174,5 +174,5 @@ Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks b
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_x64-setup.exe

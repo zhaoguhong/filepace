@@ -17,7 +17,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。用标�
 
 ## 下载安装
 
-在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.0) 下载适合你的 v0.10.0 安装包。
+在 [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.1) 下载适合你的 v0.10.1 安装包。
 
 | 系统 | 安装包 | 安装方式 |
 | --- | --- | --- |
@@ -170,5 +170,5 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [AGENTS.md](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)，依赖使用各自的许可证。
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.0/Filepace_0.10.0_x64-setup.exe
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_x64-setup.exe

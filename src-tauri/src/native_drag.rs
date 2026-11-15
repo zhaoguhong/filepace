@@ -8,6 +8,13 @@ use uuid::Uuid;
 
 const EVENT: &str = "filepace-file-drag";
 
+#[cfg(target_os = "macos")]
+#[path = "native_drag/macos.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "native_drag/windows.rs"]
+mod platform;
+
 #[derive(Default)]
 pub struct DragState(Mutex<Option<DragSession>>);
 
@@ -100,7 +107,11 @@ fn copy_key_down() -> bool {
 }
 
 fn operation(drag: &DragSession) -> &'static str {
-    if drag.copy_at_end.unwrap_or_else(copy_key_down) {
+    transfer_kind(drag.copy_at_end.unwrap_or_else(copy_key_down))
+}
+
+fn transfer_kind(copy: bool) -> &'static str {
+    if copy {
         "copy"
     } else {
         "move"
@@ -112,17 +123,19 @@ fn received_drop(
     paths: &[PathBuf],
     destination_window: &str,
     active: Option<&DragSession>,
+    copy: bool,
 ) -> FileDragEvent {
     let origin = active.filter(|drag| drag.matches(paths));
     let between_windows = origin.is_some_and(|drag| drag.source_window != destination_window);
     let source = origin
         .filter(|_| !between_windows)
         .and_then(|drag| drag.source.clone());
+    // Wry acknowledges the native drop as copy. Keep that acknowledgement:
+    // the external source must not delete anything while our asynchronous task
+    // is still pending. This event's kind controls the actual copy/move task.
     FileDragEvent::Drop {
         position,
-        kind: origin
-            .filter(|_| between_windows || source.is_some())
-            .map_or("copy", operation),
+        kind: origin.map_or_else(|| transfer_kind(copy), operation),
         paths: origin.map_or_else(|| paths.to_vec(), |drag| drag.paths.clone()),
         between_windows,
         source,
@@ -209,11 +222,12 @@ pub async fn start_file_drag(
             });
             drop(active);
 
+            let source = app.clone();
+            #[cfg(any(target_os = "macos", windows))]
+            let result = platform::start(&window, paths, image, move || finish_drag(&source, id));
             #[cfg(target_os = "linux")]
             let handle = window.gtk_window();
-            #[cfg(not(target_os = "linux"))]
-            let handle = Ok(window);
-            let source = app.clone();
+            #[cfg(target_os = "linux")]
             let result = handle
                 .map_err(|e: tauri::Error| e.to_string())
                 .and_then(|handle| {
@@ -222,8 +236,6 @@ pub async fn start_file_drag(
                         drag::DragItem::Files(paths),
                         image,
                         move |_, _| finish_drag(&source, id),
-                        // External apps receive a native copy drag. Filepace runs its
-                        // own file task after a drop inside Filepace.
                         drag::Options::default(),
                     )
                     .map_err(|error| error.to_string())
@@ -252,19 +264,15 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
     };
     let message = match event {
         DragDropEvent::Enter { position, .. } | DragDropEvent::Over { position } => {
-            let Some(drag) = active.as_ref() else { return };
-            let same_window = drag.source_window == window.label();
-            if same_window && drag.source.is_none() {
-                return;
-            }
             FileDragEvent::Hover {
                 position: position.to_logical(scale),
-                kind: operation(drag),
-                source: if same_window {
-                    drag.source.clone()
-                } else {
-                    None
-                },
+                kind: active
+                    .as_ref()
+                    .map_or_else(|| transfer_kind(copy_key_down()), operation),
+                source: active
+                    .as_ref()
+                    .filter(|drag| drag.source_window == window.label())
+                    .and_then(|drag| drag.source.clone()),
             }
         }
         DragDropEvent::Drop { paths, position } if !paths.is_empty() => received_drop(
@@ -272,6 +280,7 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
             paths,
             window.label(),
             active.as_ref(),
+            copy_key_down(),
         ),
         DragDropEvent::Drop { .. } | DragDropEvent::Leave => FileDragEvent::Leave,
         _ => return,
@@ -320,7 +329,7 @@ mod tests {
         let point = LogicalPosition::new(0.0, 0.0);
 
         assert!(matches!(
-            received_drop(point, &reversed_paths, "destination", Some(&drag)),
+            received_drop(point, &reversed_paths, "destination", Some(&drag), false),
             FileDragEvent::Drop {
                 kind: "move",
                 between_windows: true,
@@ -328,21 +337,21 @@ mod tests {
             }
         ));
         assert!(matches!(
-            received_drop(point, &paths, "source", Some(&drag)),
+            received_drop(point, &paths, "source", Some(&drag), false),
             FileDragEvent::Drop {
-                kind: "copy",
+                kind: "move",
                 between_windows: false,
                 ..
             }
         ));
         assert!(matches!(
-            received_drop(point, &external_paths, "destination", Some(&drag)),
-            FileDragEvent::Drop { kind: "copy", between_windows: false, paths, .. }
+            received_drop(point, &external_paths, "destination", Some(&drag), false),
+            FileDragEvent::Drop { kind: "move", between_windows: false, paths, .. }
                 if paths == external_paths
         ));
         drag.copy_at_end = Some(true);
         assert!(matches!(
-            received_drop(point, &paths, "destination", Some(&drag)),
+            received_drop(point, &paths, "destination", Some(&drag), false),
             FileDragEvent::Drop {
                 kind: "copy",
                 between_windows: true,
@@ -355,7 +364,7 @@ mod tests {
         });
         drag.copy_at_end = Some(false);
         assert!(matches!(
-            received_drop(point, &paths, "source", Some(&drag)),
+            received_drop(point, &paths, "source", Some(&drag), false),
             FileDragEvent::Drop {
                 kind: "move",
                 between_windows: false,
@@ -363,5 +372,52 @@ mod tests {
                 ..
             } if directory == "source-directory"
         ));
+    }
+
+    #[test]
+    fn external_drops_use_the_modifier_at_drop_and_transfer_real_files() {
+        for copy in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let source = fixture.path().join("from-finder.txt");
+            let destination = fixture.path().join("destination");
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(&source, b"external drag bytes").unwrap();
+            let FileDragEvent::Drop {
+                kind,
+                paths,
+                between_windows,
+                source: origin,
+                ..
+            } = received_drop(
+                LogicalPosition::new(12.0, 34.0),
+                std::slice::from_ref(&source),
+                "destination",
+                None,
+                copy,
+            )
+            else {
+                panic!("expected a drop")
+            };
+            assert_eq!(kind, if copy { "copy" } else { "move" });
+            assert!(!between_windows);
+            assert!(origin.is_none());
+            let state = crate::Shared::default();
+            state
+                .tasks
+                .lock()
+                .unwrap()
+                .insert("drop".into(), crate::Task::default());
+            let source_item = crate::transfer::Source::at(paths[0].clone()).unwrap();
+            let target = destination.join(source.file_name().unwrap());
+            let parent = crate::fs_safety::Directory::parent(&target).unwrap();
+            let mut transfer = crate::transfer::Transfer::new(&state, "drop", kind == "move");
+            assert!(transfer.run(&source_item, &target, &parent).unwrap());
+            assert_eq!(std::fs::read(&target).unwrap(), b"external drag bytes");
+            if copy {
+                assert_eq!(std::fs::read(&source).unwrap(), b"external drag bytes");
+            } else {
+                assert!(!source.exists());
+            }
+        }
     }
 }

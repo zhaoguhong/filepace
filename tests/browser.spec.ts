@@ -635,6 +635,18 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
             listings[parent] = [...entries, [fileName, false]];
             return null;
           }
+          if (command === "rename_entry") {
+            writes.push({ command, args });
+            const path = String(args.path);
+            const parent = path.slice(0, path.lastIndexOf(separator));
+            const name = String(args.name);
+            if (!name.trim() || /[\\/]/.test(name)) throw "请输入有效的文件名";
+            if (listings[parent]?.some(([entry]) => entry === name)) throw "同名文件已存在";
+            const entry = listings[parent]?.find(([name]) => `${parent}${separator}${name}` === path);
+            if (entry) entry[0] = name;
+            emit("directory-changed", [parent]);
+            return null;
+          }
           if (["start_task", "new_window", "start_file_drag", "clipboard_set", "task_action"].includes(command)) writes.push({ command, args });
           if (command === "start_task") return `task-${writes.length}`;
           if (command === "preview_batch_rename" || command === "batch_rename") {
@@ -785,6 +797,95 @@ test("dismisses one interaction at a time while preserving the file selection", 
   await expect(file).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
   await expect(files.getByRole("option", { selected: true })).toHaveCount(0);
+});
+
+for (const view of ["list", "columns"] as const) {
+  test(`commits inline rename on outside click and blur, but cancels on Escape (${view})`, async ({ page }) => {
+    await mockDesktop(page, view);
+    await page.goto("/");
+    await page.getByRole("button", { name: "左右分栏" }).click();
+    const left = page.getByRole("region", { name: "左栏" });
+    const right = page.getByRole("region", { name: "右栏" });
+    const field = page.getByRole("textbox", { name: "新文件名" });
+    const writes = () => page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites);
+    await left.getByRole("option", { name: /左栏文件/ }).click();
+    await page.keyboard.press("F2");
+    await field.fill("点击保存.txt");
+    await right.getByRole("option", { name: /补充文档/ }).click();
+    await expect(left.getByRole("option", { name: /点击保存.txt/ })).toBeVisible();
+    await expect(right.getByRole("option", { name: /补充文档/, selected: true })).toBeVisible();
+    expect(await writes()).toEqual([{ command: "rename_entry", args: { path: `${home}/左栏文件.txt`, name: "点击保存.txt" } }]);
+
+    await left.getByRole("option", { name: /点击保存/ }).click();
+    await page.keyboard.press("F2");
+    await field.fill("失焦保存.txt");
+    await field.press("Tab");
+    await expect(left.getByRole("option", { name: /失焦保存/ })).toBeVisible();
+    expect(await writes()).toHaveLength(2);
+    await left.getByRole("option", { name: /失焦保存/ }).click();
+    await page.keyboard.press("F2");
+    await field.fill("不要保存.txt");
+    await field.press("Escape");
+    await right.getByRole("option", { name: /补充文档/ }).click();
+    expect(await writes()).toHaveLength(2);
+    await expect(left.getByRole("option", { name: /失焦保存/ })).toBeVisible();
+
+    await left.getByRole("option", { name: /失焦保存/ }).click();
+    await page.keyboard.press("F2");
+    await field.fill("回车保存.txt");
+    await field.press("Enter");
+    await expect(left.getByRole("option", { name: /回车保存/ })).toBeVisible();
+    await page.keyboard.press("F2");
+    await right.getByRole("option", { name: /补充文档/ }).click();
+    expect(await writes()).toHaveLength(3);
+  });
+}
+
+test("keeps failed rename editable and does not submit an IME confirmation", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("option", { name: /左栏文件/ }).click();
+  await page.keyboard.press("F2");
+  const field = page.getByRole("textbox", { name: "新文件名" });
+  await field.fill("补充文档.DOCX");
+  await field.press("Tab");
+  await expect(page.getByText("同名文件已存在", { exact: true })).toBeVisible();
+  await field.fill("输入法确认.txt");
+  await field.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+  expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toHaveLength(1);
+  await field.press("Enter");
+  await expect(page.getByRole("option", { name: /输入法确认/ })).toBeVisible();
+  expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toHaveLength(2);
+});
+
+test("submits rename only once when Enter is followed by an outside click before completion", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.evaluate(() => {
+    const app = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      finishRename: () => void;
+      renameCalls: number;
+    };
+    const invoke = app.__TAURI_INTERNALS__.invoke;
+    app.renameCalls = 0;
+    app.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "rename_entry") {
+        app.renameCalls++;
+        await new Promise<void>((resolve) => { app.finishRename = resolve; });
+      }
+      return invoke(command, args);
+    };
+  });
+  await page.getByRole("option", { name: /左栏文件/ }).click();
+  await page.keyboard.press("F2");
+  const field = page.getByRole("textbox", { name: "新文件名" });
+  await field.fill("只提交一次.txt");
+  await field.press("Enter");
+  await page.getByRole("option", { name: /补充文档/ }).click();
+  expect(await page.evaluate(() => (window as unknown as { renameCalls: number }).renameCalls)).toBe(1);
+  await page.evaluate(() => (window as unknown as { finishRename: () => void }).finishRename());
+  await expect(page.getByRole("option", { name: /只提交一次/ })).toBeVisible();
 });
 
 test("explains filter counts, hidden-only folders and empty-folder actions", async ({ page }) => {
@@ -1150,6 +1251,96 @@ test("scrolls to hidden columns while dragging and drops on the visible destinat
     { command: "start_task", args: { kind: "move", sources: [`${deepPath}/深层文件.txt`], destination: home } },
     { command: "start_task", args: { kind: "copy", sources: [`${home}/左栏文件.txt`], destination: deepPath } },
   ]);
+});
+
+for (const platform of ["MacIntel", "Win32"]) {
+  for (const view of ["list", "columns"] as const) {
+    test(`moves into a folder in the same pane unless the copy modifier is held (${platform}, ${view})`, async ({ page }) => {
+      await page.addInitScript((platform) => {
+        Object.defineProperty(navigator, "platform", { get: () => platform });
+      }, platform);
+      await mockDesktop(page, view);
+      await page.goto("/");
+      const files = page.getByLabel("文件列表", { exact: true });
+      const from = (await files.getByRole("option", { name: /左栏文件/ }).boundingBox())!;
+      const to = (await files.getByRole("option", { name: /项目/ }).boundingBox())!;
+      const copyKey = platform === "MacIntel" ? "Alt" : "Control";
+      const otherKey = platform === "MacIntel" ? "Control" : "Alt";
+      const writes: unknown[] = [];
+
+      for (const kind of ["move", "copy"] as const) {
+        await page.mouse.move(from.x + 25, from.y + 16);
+        await page.mouse.down();
+        await page.mouse.move(to.x + 25, to.y + 16, { steps: 8 });
+        const status = page.getByRole("status").filter({ hasText: "到 项目" });
+        await expect(status).toContainText("移动到 项目");
+        await page.keyboard.down(otherKey);
+        await expect(status).toContainText("移动到 项目");
+        await page.keyboard.up(otherKey);
+        await page.keyboard.down(copyKey);
+        await expect(status).toContainText("复制到 项目");
+        if (kind === "move") {
+          await page.keyboard.up(copyKey);
+          await expect(status).toContainText("移动到 项目");
+        }
+        await page.mouse.up();
+        await page.keyboard.up(copyKey);
+        writes.push({ command: "start_task", args: { kind, sources: [`${home}/左栏文件.txt`], destination: `${home}/项目` } });
+        expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toEqual(writes);
+      }
+
+      // Returning from an OS drag to the source window must preserve its mode too.
+      for (const kind of ["move", "copy"] as const) {
+        const payload = {
+          position: { x: to.x + 25, y: to.y + 16 }, kind,
+          source: { pane: "left", directory: home },
+          paths: [`${home}/左栏文件.txt`], betweenWindows: false,
+        };
+        await page.evaluate((payload) => {
+          (window as Window & { filepaceEmit: (name: string, payload: unknown) => void })
+            .filepaceEmit("filepace-file-drag", { ...payload, type: "hover" });
+        }, payload);
+        await expect(page.getByRole("status").filter({ hasText: "到 项目" }))
+          .toContainText(`${kind === "move" ? "移动" : "复制"}到 项目`);
+        await page.evaluate((payload) => {
+          (window as Window & { filepaceEmit: (name: string, payload: unknown) => void })
+            .filepaceEmit("filepace-file-drag", { ...payload, type: "drop" });
+        }, payload);
+        writes.push({ command: "start_task", args: { kind, sources: payload.paths, destination: `${home}/项目` } });
+        expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toEqual(writes);
+      }
+    });
+  }
+}
+
+test("routes external file drops to the hovered folder with the native move or copy mode", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("button", { name: "左右分栏" }).click();
+  const left = page.getByRole("region", { name: "左栏" });
+  const right = page.getByRole("region", { name: "右栏" });
+  await right.getByRole("option", { name: /项目/ }).dblclick();
+  await left.getByRole("option", { name: /左栏文件/ }).click();
+  const folder = (await right.getByRole("option", { name: /归档/ }).boundingBox())!;
+  const writes: unknown[] = [];
+  for (const kind of ["move", "copy"] as const) {
+    const payload = {
+      position: { x: folder.x + 25, y: folder.y + 16 }, kind,
+      paths: ["/external/file.txt"], betweenWindows: false,
+    };
+    await page.evaluate((payload) => {
+      (window as Window & { filepaceEmit: (name: string, payload: unknown) => void })
+        .filepaceEmit("filepace-file-drag", { ...payload, type: "hover" });
+    }, payload);
+    await expect(right.getByRole("status"))
+      .toContainText(`${kind === "move" ? "移动" : "复制"}到 归档`);
+    await page.evaluate((payload) => {
+      (window as Window & { filepaceEmit: (name: string, payload: unknown) => void })
+        .filepaceEmit("filepace-file-drag", { ...payload, type: "drop" });
+    }, payload);
+    writes.push({ command: "start_task", args: { kind, sources: payload.paths, destination: `${home}/项目/归档` } });
+    expect(await page.evaluate(() => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites)).toEqual(writes);
+  }
 });
 
 test("moves and copies files between panes and keeps both tabs when merging", async ({ page }) => {

@@ -20,6 +20,7 @@ import UpdateNotice from "./UpdateNotice";
 import SearchPanel from "./SearchPanel";
 import ColumnBrowser from "./ColumnBrowser";
 import BatchRename from "./BatchRename";
+import InlineRename from "./InlineRename";
 import ComparePanel from "./ComparePanel";
 import ArchivePanel from "./ArchivePanel";
 import CommandPalette, { type FileCommand } from "./CommandPalette";
@@ -1097,7 +1098,6 @@ export default function App() {
   ) {
     if (!entry) return;
     setRename({ pane: focused, path: entry.path });
-    setEditName(entry.name);
     setMenu(null);
   }
 
@@ -1110,15 +1110,17 @@ export default function App() {
     setBatchDuplicateGuard(undefined);
     setBatchEntries(items);
   }
-  async function submitRename() {
-    if (!rename) return;
+  async function submitRename(name: string) {
+    if (!rename) return false;
     try {
-      await call("rename_entry", { path: rename.path, name: editName });
-      setRename(null);
+      await call("rename_entry", { path: rename.path, name });
+      setRename((current) => current === rename ? null : current);
       void refreshActivity();
       refresh();
+      return true;
     } catch (e) {
       setNotice(String(e));
+      return false;
     }
   }
   function promptCreate(kind: CreateKind, parent: string) {
@@ -1806,28 +1808,10 @@ export default function App() {
             )}
             <FileIcon entry={entry} type={type} />
             {rename?.pane === side && rename.path === entry.path ? (
-              <input
-                autoFocus
-                aria-label="新文件名"
-                value={editName}
-                onFocus={(e) =>
-                  e.target.setSelectionRange(
-                    0,
-                    entry.isDir
-                      ? entry.name.length
-                      : Math.max(0, entry.name.lastIndexOf(".")) ||
-                          entry.name.length,
-                  )
-                }
-                onChange={(e) => setEditName(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitRename();
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setRename(null);
-                  }
-                }}
+              <InlineRename
+                entry={entry}
+                onCommit={submitRename}
+                onCancel={() => setRename(null)}
               />
             ) : (
               <span className="file-label" title={entry.name}>

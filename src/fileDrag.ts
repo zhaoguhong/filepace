@@ -61,16 +61,6 @@ function targetAt({ x, y }: Position): Target | null {
   return { pane, directory, path: folder ?? directory, folder };
 }
 
-function dropKind(
-  target: Target,
-  source: DragOrigin | undefined,
-  kind: FileTransfer,
-) {
-  return target.pane === source?.pane && target.directory === source.directory
-    ? "copy"
-    : kind;
-}
-
 function pointerTarget(
   gesture: Gesture,
   event: { altKey: boolean; ctrlKey: boolean },
@@ -83,7 +73,7 @@ function pointerTarget(
   )
     return null;
   const copy = isMac ? event.altKey : event.ctrlKey;
-  return { ...target, kind: dropKind(target, gesture, copy ? "copy" : "move") };
+  return { ...target, kind: copy ? "copy" : "move" };
 }
 
 function scrollColumnEdge(position: Position, elapsed: number) {
@@ -274,7 +264,7 @@ export function useFileDrag(options: {
         track(event.position, () => {
           const target = targetAt(event.position);
           return target && target.path !== event.source?.directory
-            ? { ...target, kind: dropKind(target, event.source, event.kind) }
+            ? { ...target, kind: event.kind }
             : null;
         });
         return;
@@ -304,7 +294,7 @@ export function useFileDrag(options: {
         !event.paths.includes(path)
       )
         latest.current.transfer(
-          target ? dropKind(target, event.source, event.kind) : event.kind,
+          event.kind,
           event.paths,
           path,
         );
