@@ -1,10 +1,10 @@
 //! System trash enumeration and explicitly confirmed, snapshot-bound tasks.
+#[cfg(not(windows))]
+use crate::transfer::{Source, Transfer};
 use crate::{
     enqueue_task,
     fs_safety::{Directory, Identity},
-    strpath,
-    transfer::{Source, Transfer},
-    update, Shared, Task,
+    strpath, update, Shared, Task,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -371,7 +371,7 @@ mod tests {
         let target = restore_target(&item, Some(root.path())).unwrap();
         assert_eq!(
             target,
-            root.path().canonicalize().unwrap().join("sample.txt")
+            dunce::canonicalize(root.path()).unwrap().join("sample.txt")
         );
         assert_eq!(fs::read(source).unwrap(), b"retained bytes");
     }

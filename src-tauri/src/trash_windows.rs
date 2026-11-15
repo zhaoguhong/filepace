@@ -148,7 +148,6 @@ mod tests {
         assert!(find(&later_item).is_err());
     }
 }
-pub(super) fn after_transfer(_: &NativeItem) {}
 pub(super) fn restore_via_system(
     shared: &Shared,
     id: &str,

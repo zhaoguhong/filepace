@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(report.skipped, 2);
         assert_eq!(
             report.places[0].path,
-            crate::strpath(&folder.canonicalize().unwrap())
+            crate::strpath(&dunce::canonicalize(&folder).unwrap())
         );
         assert_eq!(report.places[0].name, "project");
         assert_eq!(std::fs::read(&nested).unwrap(), b"folder bytes stay here");
