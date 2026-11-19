@@ -20,7 +20,7 @@ A source preview can be published as a GitHub pre-release after the source check
 
 1. Dispatch **Desktop checks and installers** on the release candidate with **Upload installer artifacts** enabled. Confirm that both jobs passed, including the Windows installer smoke test, and point the release tag at that commit.
 2. Check the downloaded installers for the expected version and architecture. For an unsigned macOS preview, ad-hoc sign the app bundle before making the disk image. Mount the final image, launch the copied app, and run the [macOS drag-and-drop checks](#macos-drag-and-drop-checks). Record installer coverage in [the platform notes](scope.md).
-3. Include SHA-256 checksums, the Filepace license, dependency notices, and source download information for any bundled MPL-covered components alongside the installers. Review the exact versions in both lockfiles. [Mozilla MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
+3. Include SHA-256 checksums, the Filepace license, dependency notices, and source download information for any bundled MPL-covered components alongside the installers. Review the exact versions in both lockfiles and use the standard-library notices from the Rust toolchain that built the installers. [Mozilla MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
 4. Publish the assets on the tagged GitHub pre-release. List the supported platforms and tell users about Gatekeeper and SmartScreen prompts when distributing installers without publisher signatures. Record verification coverage in [the platform notes](scope.md).
 
 ## Before publishing a signed release

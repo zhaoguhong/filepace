@@ -1,5 +1,12 @@
 # First-version scope and verification
 
+## Release review for 0.11.0
+
+- Release candidate `52b82a9b7e003e40c5d321aa94206bb7b02b01e3` passed both build jobs and the clean WebView2 install job. Both systems passed 105 frontend tests and 122 Chromium cases. Locked Rust tests passed 99 on macOS and 80 on Windows, with four and three opt-in skips respectively. Windows native checks covered installed file actions, cross-pane and cross-window transfers, current-user installation and removal, and installation without a preinstalled WebView2 runtime. [Release CI](https://github.com/zhaoguhong/filepace/actions/runs/44541011127)
+- The final macOS DMG contained an arm64 ad-hoc-signed app with the expected version. It matched the corresponding signed updater archive. The Windows installer contained the expected PE32+ AMD64 application and version resource. Both updater signatures were verified against the embedded key and bind version 0.11.0. The dependencies in both lockfiles match the included notice inventories, with the standard-library notices from the Rust 1.100.0 release toolchain.
+- The copied DMG app launched on macOS 15.6.1 with isolated test settings and displayed 0.11.0. Native checks verified the command alias and work layout entry, copying from Directory Comparison and moving to the other pane using the shortcut. Source and destination bytes were checked against temporary file references. The desktop automation could not perform native drag gestures, so the macOS drag matrix remains unverified for this release.
+- The regular release tag points to the checked candidate. The eight anonymous public downloads and the auto-update endpoint matched the verified release assets. [Release files](https://github.com/zhaoguhong/filepace/releases/tag/v0.11.0)
+
 ## Behavior checks for 0.11.0
 
 - The command palette recognizes Chinese aliases, English keywords and multiple search terms. Browser fixtures verify disabled-action descriptions, Tab and Shift+Tab focus behavior, Escape dismissal, and suppression of command execution while composing text.
