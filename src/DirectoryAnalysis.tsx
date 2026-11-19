@@ -4,6 +4,7 @@ import {
   Folder,
   FolderSearch,
   ChartPie,
+  CopyCheck,
   Sparkles,
   ArrowRight,
   Square,
@@ -69,6 +70,7 @@ function ItemList({
   folders = false,
   onBrowse,
   onChoose,
+  onCheckDuplicates,
   onFileAction,
   fileChanges,
   fileChangeBatches,
@@ -81,6 +83,7 @@ function ItemList({
   folders?: boolean;
   onBrowse: (path: string, selected?: string) => void;
   onChoose: (path: string) => void;
+  onCheckDuplicates?: (path: string) => void;
   visible: boolean;
   scope: string;
   changeBaseline?: number;
@@ -116,14 +119,26 @@ function ItemList({
           extra={
             folders
               ? (item) => (
-                  <button
-                    className="storage-scan-folder"
-                    title="选为扫描范围"
-                    aria-label={`选择 ${item.entry.name} 作为扫描范围`}
-                    onClick={() => onChoose(item.entry.path)}
-                  >
-                    <FolderSearch size={16} />
-                  </button>
+                  <>
+                    <button
+                      className="storage-folder-action"
+                      title="选为扫描范围"
+                      aria-label={`选择 ${item.entry.name} 作为扫描范围`}
+                      onClick={() => onChoose(item.entry.path)}
+                    >
+                      <FolderSearch size={16} />
+                    </button>
+                    {onCheckDuplicates && (
+                      <button
+                        className="storage-folder-action"
+                        title="检查此目录的重复文件"
+                        aria-label={`检查此目录的重复文件：${item.entry.name}`}
+                        onClick={() => onCheckDuplicates(item.entry.path)}
+                      >
+                        <CopyCheck size={16} />
+                      </button>
+                    )}
+                  </>
                 )
               : undefined
           }
@@ -139,6 +154,7 @@ export default function DirectoryAnalysis({
   scope,
   places,
   onChoose,
+  onCheckDuplicates,
   onBrowse,
   onClose,
   onFileAction,
@@ -154,6 +170,7 @@ export default function DirectoryAnalysis({
     scope: string;
     places: Place[];
     onChoose: (path: string) => void;
+    onCheckDuplicates?: (path: string) => void;
     onBrowse: (path: string, selected?: string) => void;
     onClose: () => void;
     diagnosisOpen?: { scope: string; request: number };
@@ -756,6 +773,7 @@ export default function DirectoryAnalysis({
                       folders
                       onBrowse={browseResult}
                       onChoose={choose}
+                      onCheckDuplicates={onCheckDuplicates}
                       scope={path}
                       visible={visible && view === "usage"}
                       changeBaseline={scanResult?.changeBaseline}

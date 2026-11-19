@@ -1,5 +1,14 @@
 # First-version scope and verification
 
+## Behavior checks for 0.11.0
+
+- The command palette recognizes Chinese aliases, English keywords and multiple search terms. Browser fixtures verify disabled-action descriptions, Tab and Shift+Tab focus behavior, Escape dismissal, and suppression of command execution while composing text.
+- Work layout fixtures cover renaming without replacing the saved tabs and panes, explicit replacement, cancellation, reload and restoration, and editing at the 12-layout limit while preserving other changes.
+- Cross-pane transfer shortcuts and menu actions use the visible file list. The regression keeps the original selection when Directory Analysis is open and checks that the transfer works again on return.
+- Directory Comparison submits each destination independently, retries only failed groups, and avoids submitting a selected directory and its selected descendants twice. Browser fixtures also verify focus restoration across the layout, comparison and file conflict dialogs.
+- A 10,000-item Trash fixture verifies bounded rendering, selection across the visible range, keyboard select-all, filtering, and the IDs sent after confirmation.
+- A Directory Analysis fixture opens duplicate checking for a selected subfolder and leaves the choice of which copy to keep to the user.
+
 ## Release review for 0.10.1
 
 - This patch makes same-pane child-folder drops and external drops default to move, with Option on macOS or Ctrl on Windows selecting copy at drop time. Platform drag sources allow both operations and leave outbound filesystem changes to the receiving application. Inline rename commits on outside clicks, pane changes, keyboard focus loss and Enter; Escape cancels and IME confirmation does not submit.
@@ -202,7 +211,7 @@
 ## Remaining release work
 
 - Complete the Windows standard-user installation matrix in [windows-installation.md](windows-installation.md).
-- Verify separate-window drags on macOS, including the Option copy modifier. A macOS UI automation attempt at a separate-window drop did not transfer the test file. Test Explorer/Finder drag interoperability and cut clipboard feedback with external applications.
+- Run the installed-app checks for separate Filepace windows, Finder in both directions, and pressing or releasing Option during a drag. Test Explorer drag interoperability and cut clipboard feedback with external applications. [macOS drag-and-drop checks](releases.md#macos-drag-and-drop-checks)
 - Exercise geometry and history restoration on multiple monitors and with the Windows desktop build.
 - Harden races and failure recovery, filesystem metadata fidelity, special files, symlinks, restricted folders and unavailable network/removable volumes.
 - Add stable platform-native menus, right-click recycle-bin entry, installer signing and macOS notarization.

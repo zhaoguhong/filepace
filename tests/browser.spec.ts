@@ -598,6 +598,7 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
           if (persistSession && command === "save_session") sessionStorage.setItem("filepace-fixture-session", JSON.stringify(args.value));
           if (command === "places") return [{ name: "个人目录", path: home, kind: "favorite" }];
           if (command === "tasks") return { tasks, revision, undo: null };
+          if (command === "storage_volumes") return [];
           if (command === "error_log") return (window as Window & { filepaceErrors?: unknown[] }).filepaceErrors ?? [];
           if (command === "update_status") return { current: version, phase: "current" };
           if (command === "list_directory") {
@@ -761,6 +762,56 @@ test("offers copy and move to the other pane in the file context menu", async ({
       command: "start_task", args: { kind, sources: [`${home}/左栏文件.txt`], destination: `${home}/项目` },
     });
   }
+});
+
+test("file shortcuts and commands ignore a pane hidden behind directory analysis", async ({ page }) => {
+  await mockDesktop(page, "list");
+  await page.goto("/");
+  await page.getByRole("button", { name: "左右分栏", exact: true }).click();
+  const left = page.getByRole("region", { name: "左栏", exact: true });
+  const right = page.getByRole("region", { name: "右栏", exact: true });
+  await right.getByRole("option", { name: /项目/ }).dblclick();
+  const file = left.getByRole("option", { name: /左栏文件\.txt/ });
+  await file.click();
+
+  const analysis = page.getByRole("button", { name: "目录分析", exact: true });
+  await analysis.click();
+  const scan = page.getByRole("button", { name: "开始扫描", exact: true });
+  await scan.focus();
+  await expect(scan).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+Shift+m");
+  await page.keyboard.press("ControlOrMeta+Shift+c");
+  await page.keyboard.press("Shift+F10");
+  await expect(page.locator(".context-menu")).toHaveCount(0);
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const command = page.getByRole("combobox", { name: "搜索操作" });
+  await command.fill("移动到另一栏");
+  await expect(
+    page.getByRole("option", { name: /移动到另一栏/ }),
+  ).toHaveAttribute("aria-disabled", "true");
+  await command.press("Enter");
+  const writes = () =>
+    page.evaluate(
+      () => (window as Window & { filepaceWrites: unknown[] }).filepaceWrites,
+    );
+  expect(await writes()).toEqual([]);
+  await command.press("Escape");
+
+  await analysis.click();
+  await expect(file).toHaveAttribute("aria-selected", "true");
+  await left.getByLabel("文件列表", { exact: true }).focus();
+  await page.keyboard.press("ControlOrMeta+Shift+m");
+  await expect.poll(writes).toEqual([
+    {
+      command: "start_task",
+      args: {
+        kind: "move",
+        sources: [`${home}/左栏文件.txt`],
+        destination: `${home}/项目`,
+      },
+    },
+  ]);
 });
 
 test("dismisses one interaction at a time while preserving the file selection", async ({ page }) => {

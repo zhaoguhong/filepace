@@ -42,7 +42,7 @@
   background: var(--accent-tint);
 }
 .command-option[aria-disabled="true"] {
-  opacity: 0.45;
+  color: var(--muted);
   cursor: default;
 }
 .command-option span {
@@ -136,4 +136,30 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+}
+
+.work-layout-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.work-layout-form > label:not(.checkbox) {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.work-layout-form input:not([type="checkbox"]) {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--inset);
+  color: var(--text);
+  font: inherit;
+}
+.work-layout-form > .checkbox,
+.work-layout-form > p {
+  width: 100%;
+  margin: 0;
 }

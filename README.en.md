@@ -2,154 +2,73 @@
 
 [简体中文](README.md)
 
-Filepace is a local file manager for macOS and Windows. Organize files with tabs and split panes, inspect directory sizes, and get organizing suggestions from an AI tool you have already configured.
+Filepace is a local file manager for macOS and Windows. Open two folders side by side to drag files between them, or compare the folders before choosing what to copy. When you need to make room, Directory Analysis shows you the largest files and subfolders.
 
-- **Browse and organize:** independent tabs, split panes, cross-window drag and drop, and List, Column, and Icon views.
-- **Find and preview:** recursive search, directory comparison, PDF preview, and ZIP browsing.
-- **Understand storage:** volume capacity, file categories, large files, and subfolder rankings.
-- **Get optional AI advice:** Codex, Claude Code, OpenCode, and DeepSeek Harness, with your chosen direction and preservation requirements.
+[Download and install](#download-and-install) · [Features](#features) · [Run from source](#run-from-source)
 
-![Filepace file browser](docs/screenshots/filepace-browser.png)
+![Filepace file browser with folder shortcuts on the left and a file list on the right](docs/screenshots/filepace-browser.png)
 
-*Browser preview of the current source using sample directories. Real file operations require the desktop app; published releases may differ.*
-
-[Download](#download-and-install) · [Directory analysis and AI](#storage-overview-and-directory-analysis) · [Run from source](#run-from-source)
+*The screenshot shows the read-only browser preview with sample files. Use the desktop app to work with your files.*
 
 ## Download and install
 
-Download the v0.10.1 installer for your system from the [GitHub Release](https://github.com/zhaoguhong/filepace/releases/tag/v0.10.1).
-
-| System | Installer | How to install |
+| Platform | v0.11.0 installer | How to install |
 | --- | --- | --- |
-| macOS (Apple Silicon) | [Download .dmg][mac-download] | Open the disk image and drag Filepace to Applications. |
-| Windows (x64) | [Download .exe][windows-download] | Run the installer for the current user. If WebView2 is missing, the installer needs an internet connection to download it. |
+| macOS (Apple Silicon) | [Download DMG][mac-download] | Open the disk image and drag Filepace to Applications. |
+| Windows (x64) | [Download EXE][windows-download] | Run the installer to install for the current user. If WebView2 is missing, the installer downloads it. |
 
-The macOS app is ad-hoc signed and has no notarization, so Gatekeeper may show a prompt. Windows may show a SmartScreen warning because the installer has no publisher signature. [Apple support](https://support.apple.com/en-us/102445) · [Microsoft SmartScreen documentation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+The macOS app is ad hoc signed and has no Apple notarization, so Gatekeeper may show a prompt on first launch. The Windows installer has no publisher signature and may show a SmartScreen prompt. [Release notes and SHA-256 checksums][release] · [Apple support][gatekeeper] · [Microsoft SmartScreen documentation][smartscreen]
 
-## Work with two folders
+If you already have v0.4.0 or later, check for updates under Settings → Update. For earlier versions, download the installer to upgrade.
 
-- Press **Command+N** on macOS or **Ctrl+N** on Windows to open a separate window at the current location. Use the tab context menu to move a tab to a new window.
-- **Split View (左右分栏)** opens a right pane in the current window. Each pane has its own tabs, selection, and navigation history. Sidebar navigation and keyboard shortcuts apply to the active pane.
-- Drag a file or folder to another directory column, pane, or Filepace window to move it. Hold **Option** on macOS or **Ctrl** on Windows when you release the pointer to copy. Drop on a folder to put items inside it, or on blank space to use the directory displayed there.
-- Hold a dragged file near the left or right edge of Column View to scroll to other columns.
-- **Merge Panes (合并分栏)** returns to a single pane and keeps the tabs from both sides.
-- A subtle highlight on the active pane's tab strip identifies where keyboard actions apply. Drag near the thin divider to resize, or double-click to restore equal widths. With the divider focused, use Left/Right to resize and Home to reset. Use the file context menu to copy or move the selection to the other pane. The shortcuts are **Command+Shift+C** or **Ctrl+Shift+C** to copy and **Command+Shift+M** or **Ctrl+Shift+M** to move.
-- **Compare Folders (对比目录)** shows items that exist on one side or differ. Compare sizes and modification times or check file contents, then select items to copy to the other pane.
+## Features
 
-Right-click a file, folder, or blank space in the file list to copy its full path, show it in Finder or File Explorer, or open a command line. Filepace opens Terminal on macOS and PowerShell on Windows. When you right-click a file, the command line starts in its containing folder.
+### Browse and compare folders side by side
 
-## Storage overview and directory analysis
+Open Split View (左右分栏) to give each folder its own tabs, selection, and navigation history. Switch any tab between List, Column, and Icon views. Drag frequently used folders to the sidebar to create shortcuts, or save your tabs and panes as a work layout.
 
-![Filepace directory usage analysis](docs/screenshots/filepace-analysis.png)
+In Work Layouts (工作布局), you can rename a saved layout or replace its tabs and panes with the current layout.
 
-Choose a directory, then switch between Usage Analysis and Smart Diagnosis. Scan actions belong to Usage Analysis. After scanning, Rescan becomes a secondary action beside the scan time, with Smart Diagnosis as the next primary action. You can also start diagnosis directly without a manual scan.
+Dragging between directory columns, panes, or Filepace windows moves items by default. Hold **Option** on macOS or **Ctrl** on Windows when you drop to copy. Use Compare Folders (对比目录) to see what exists on only one side and what differs. Compare by size and modification time or by file contents, then select items to copy to the other pane.
 
-- Open **Storage Overview (存储概览)** in the window toolbar to see mounted volumes, their capacity, available space, and usage. Use a volume card to browse it or open its dedicated directory analysis page.
-- Open **Directory Analysis (目录分析)** from the toolbar or a folder’s **Analyze This Directory (分析此目录)** context action. **Usage Analysis / Smart Diagnosis** share the selected directory and scan. Choose the current directory, a favorite, or a volume and start a scan. The report shows logical file sizes and counts by category, the largest files, and the largest subfolders. A donut chart shows category proportions. You can stop a scan or select a category to filter the largest files.
-- Each window retains the eight most recent directory scan snapshots with their scan times. Switching scopes reuses the available snapshot. Diagnosis automatically rescans snapshots older than five minutes or marked changed. Snapshots describe a past scan and are not guaranteed to stay current.
-- The directory treemap below the rankings represents logical file sizes by area. Drill into folders or select a file to preview and organize it in the linked list. Scans retain up to 8192 tree entries; gray areas aggregate omitted sizes. Rescan a subfolder for more detail.
-- Save a scan baseline to compare logical size, file count and immediate subfolder changes after rescanning the same directory. Up to eight directory baselines persist across restarts and can be replaced or cleared. Skipped entries and incomplete detail are labeled, and missing records are not assumed deleted. Logical size changes do not measure reclaimed disk space.
-- Click a result to locate it in Filepace or set a subfolder as the next scan scope. Scanning reads file metadata locally and skips links and inaccessible entries.
-- Choose an installed **Codex, Claude Code, OpenCode, or DeepSeek Harness** CLI under **Smart Diagnosis (智能诊断)** and start diagnosis directly. Filepace collects directory metadata automatically before analysis when needed, reuses an existing scan of the selected scope, or rescans when requested. Filepace discovers commands automatically; expand the command-path setting to specify an executable and detect again. Install and sign in to the chosen tool from your terminal first.
-- Choose Comprehensive, Free Up Space, Organize and Archive, Understand Folder, or Custom. Add optional requirements to any preset; Custom requires your own direction, up to 2,000 characters. Reports show the direction and requirements used. Understand Folder focuses on composition and space distribution without proactively suggesting file changes.
-- Diagnosis supplies only names, relative paths, scan statistics, and your selected direction and requirements. It does not read file contents or change files automatically. The chosen tool may contact its model service, use your account allowance, and retain records according to its settings. Locate referenced files from the report, or stop either metadata preparation or AI analysis. Stopped, failed, and empty scans do not proceed to an agent. A diagnosis stays bound to its original directory and scan while you browse other directories or pages. Each window runs one diagnosis at a time and retains up to eight recent reports until the window closes. The sidebar keeps a progress/report entry, and completion or failure shows a notice with a return action. When Filepace is in the background, system notifications are available if allowed by your operating system. Closing its window stops the diagnosis. Browser previews cannot invoke local AI tools.
+### Find, preview, and organize files
 
-### Reuse your AI configuration
-
-Filepace shows the detected executable, configured model, provider, and configuration source. Finding an executable does not verify authentication or connectivity; those are checked when diagnosis starts. The tool list places detected commands without configuration errors first, followed by commands needing configuration fixes and missing commands. Initial detection retains your saved tool when its executable and configuration are valid; otherwise, Filepace selects a detected tool without configuration errors and explains the change. Subsequent detections preserve your manual selection so you can fix its configuration or command path.
-
-Usage Analysis works without any AI tools, including scan statistics, category charts, and locating large files. When no tools are detected, Smart Diagnosis explains this and provides a **View Usage Analysis (查看占用分析)** button.
-
-| Tool | Configuration reuse |
+| To do this | Start here |
 | --- | --- |
-| Codex | Loads model and connection settings from user configuration and named profiles; authentication stays with the original Codex home and sign-in. |
-| Claude Code | Uses native safe mode while preserving user-level model and authentication settings. |
-| OpenCode | Reads JSON / JSONC model and provider settings while retaining saved authentication. Built-in compatible adapters are supported; additional authentication plugins and provider packages may not work. |
-| DeepSeek Harness | Invokes `dsh` using built-in model connections from the selected profile and home patch, saved credentials, and `.env`. The default source is `headless`; choose `web` or `desktop` if that is where your settings are saved. |
+| Find files in the current folder and its subfolders | Press **Command+F / Ctrl+F**. Filter by name, type, modification date, or minimum size and save searches you use often. |
+| Preview a file | Select it and press **Space**. Filepace previews PDFs, Markdown, JSON, CSV/TSV, and code, among other formats. |
+| Compress or extract files | Use the context menu to create a ZIP archive or browse a ZIP and choose where to extract it. |
+| Rename several items at once | Select items in the same folder and press **F2**. Preview replacements, prefixes, suffixes, or numbering before applying the changes. |
+| Check for duplicates | Press **Command+K / Ctrl+K** and choose Check Duplicate Files (检查重复文件). Filepace verifies matching candidates byte for byte on your machine. You choose which copy to keep and how to handle the others. |
 
-Project instructions, user plugins, and file-operation tools remain isolated. Filepace does not change your model configuration or store API keys in UI preferences; the original tools own authentication. Terminal-only arguments, aliases, and environment variables unavailable to the desktop process are not inherited. Configuration errors are shown without switching to another service. Dynamic expressions in Harness connection settings are currently unsupported.
+The command palette recognizes common Chinese aliases and English keywords and explains why a command is unavailable.
 
-A real Harness CLI on macOS passed a loopback model-service fixture covering configuration reuse and report parsing, without external model calls. Live Harness account authentication, installed OpenCode execution, and Windows desktop diagnosis remain unverified. [Verified scenarios and limits](docs/scope.md#smart-storage-diagnosis)
+Filepace uses Spotlight or Windows Search when available, with an option to scan all subfolders. Preview, rename, or move files directly from the search results.
 
-## Views and system actions
+Open File Tasks (文件任务) in the status bar to track copies and moves. If names conflict, choose whether to skip, replace, or keep both. A move across volumes writes the destination before removing the source. Deleted items and successfully replaced files go to the system Trash or Recycle Bin. Press **Command+Z / Ctrl+Z** to undo the last move or rename in the current session. [File operation verification and known limits](docs/scope.md#file-organization)
 
-List, Column, and Icon views use colors and shapes to distinguish documents, media, archives, installers, design files, fonts, databases, and other types. Code and scripts have language badges for Python, Java, JavaScript, TypeScript, and other languages. Dockerfile, Makefile, `.gitignore`, and `.env` files are also recognized. macOS app bundles, Windows applications, and shortcuts such as `.lnk` and `.url` use their system icons when available. Shortcuts carry an arrow badge. **Display Options (显示选项)** beside the view switch contains sorting, grouping, hidden-file visibility, and four icon sizes. The drag preview shows the item icon, name, and selection count.
+### See what takes up space
 
-New tabs use List View by default. The toolbar orders the choices as List, Column, and Icon, and existing tabs keep their chosen views. In Column View, click a folder to open its contents in the next column, or select a file to see its preview or details. Drag a list header separator to resize columns; each tab remembers its widths. Double-click a separator to reset them. Hover over a long file name to see it in full; Icon View shows up to two lines.
+Storage Overview (存储概览) shows the capacity and free space of each volume. Open Directory Analysis (目录分析), or right-click a folder and choose Analyze This Directory (分析此目录), to see a breakdown by file type, a list of the largest files, and a treemap. Save a scan as a baseline before cleaning up, then scan the same folder again to see changes in file count and logical size.
 
-Use the top address bar to view or enter a path, and its ellipsis to choose an ancestor folder. Filtering the current folder shows match counts, and folders containing only hidden items explain how to reveal them. The status bar shows item counts, selection sizes, file tasks, and the active pane in Split View. Folder creation, copy, cut, paste, and trash actions are available through context menus and keyboard shortcuts; empty folders also offer a creation action. Escape dismisses a menu, preview, or rename field while preserving the selection; press it again to clear the selection. Open folders refresh when local files change.
+![Filepace directory analysis showing file categories and space usage rankings](docs/screenshots/filepace-analysis.png)
 
-Large directories appear in batches, and leaving cancels further reads. Refresh keeps the previous list and selection until the complete result arrives. Individual filesystem calls on network or removable drives may still take time.
-
-Drag from blank space in any view to draw a selection rectangle around files and folders. Hold **Shift** to select a range, or use **Command** on macOS and **Ctrl** on Windows to toggle individual items.
-
-**Common Locations (常用位置)** merges the old favorites without duplicate paths. First launch provides Home, Desktop, Downloads, Documents and Pictures; removed entries stay removed. Drag folders from the file area into a group to add shortcuts at the insertion line without moving or copying the original folders. Ordinary files show a folder-only hint. The group heading’s ellipsis menu offers **Add Folder (添加文件夹…)** for the current directory, another path or the system folder picker.
-
-Use the ellipsis menu to create or manage groups; collapse groups from their heading and reorder them by dragging. Drag shortcuts up or down to reorder them or move them between groups, or use their context menu. Removing a group or shortcut changes only the sidebar. **Restore Default Locations (恢复默认位置)** adds missing system entries while retaining custom folders. An empty sidebar accepts dragged folders and offers a Create Group entry. Groups and shortcuts synchronize between windows.
-
-Drag the sidebar’s right border to resize it, or continue to the far left to hide it completely. Drag right from the window’s inner left edge to reopen it, or use the top-right sidebar button to restore its previous width. Width and visibility persist across launches. Double-click the divider to reset its width.
-
-**Trash (回收站)** above Settings opens the system trash inside the active pane while the other pane remains available. Filter and select items, restore to their original or a chosen folder, permanently delete selected items, or empty the displayed snapshot. Restoration uses file tasks and conflict handling; choose a new destination if the original parent is unavailable. Permanent deletion requires explicit confirmation and excludes items added after confirmation. On macOS, protected trash access may require enabling Full Disk Access for Filepace in System Settings and reopening the app; unavailable original locations and deletion dates are shown as unknown. The browser preview remains read-only.
-
-Open **Settings (设置)** at the bottom of the sidebar to set the default view. Under **Appearance (外观)**, choose the display mode and theme separately. Display mode follows the system by default. The default theme uses a pure white background in light mode. Mist Blue, Warm Sand, Sage, Sea Salt Teal, Lilac, Rose, and Slate each support light and dark modes.
-
-**Settings → About (关于)** shows the version, MIT license and GitHub project link, which opens in the default browser.
-
-Use **Open With (打开方式)** to choose from the apps provided by the system. Use **Properties (属性)**, **Command+I** on macOS, or **Alt+Enter** on Windows to open the system info window for the selection. Filepace shows basic metadata if the system window is unavailable. Use **Copy Name (复制名称)** to copy selected names and the storage overview to open Disk Utility or Windows Storage Settings.
-
-## App updates
-
-Starting with v0.4.0, Filepace checks, downloads, and verifies stable updates from GitHub in the background. Use **Settings → Updates** to check manually or turn off automatic updates. Finish active file tasks before restarting to install an update. Upgrade from v0.3.0 or earlier by downloading the new installer once.
-
-When a new version is found, a card above Settings at the bottom left shows its version and background download status. Once ready, the card offers access to the restart/update controls. With the sidebar hidden, the status bar retains the update entry. Check or download failures provide a retry entry in the same place.
-
-## Search subfolders
-
-Use **Search Subfolders (搜索子文件夹)**, **Command+F** on macOS, or **Ctrl+F** on Windows to look for file and folder names in the current directory and its subfolders. Choose a file type to narrow the search. Filepace queries Spotlight or Windows Search first and can scan the directory when the index is unavailable or incomplete. Click to select a result, double-click to open it, or use its trailing location button to reveal it.
-
-Search results, usage rankings and AI report references share selection, previews, context menus and file tasks. Copy, cut, move, rename or trash files directly, or reveal them in the other pane. Pasting from a result page asks for an explicit destination; a folder's context menu can paste into that folder. Completed mutations update result locations and status while keeping the report. Usage totals remain a scan snapshot.
-
-The current window retains six recent search scopes, including conditions, results, selection and scroll position. Use **Return to Search Results (返回搜索结果)** after revealing a file. Saved conditions can be named, updated, deleted and pinned to the sidebar.
-
-Search by type, modification date, or minimum file size with or without a name. The path bar suggests recent folders, favorites, and matching subfolders.
-
-## Commands, layouts and duplicate checks
-
-Press **Command+K / Ctrl+K** to find actions and shortcuts in the command palette. Save or restore up to 12 named work layouts, including pane directories, tabs and views. **Settings → Browse** also offers compact list density.
-
-**Check Duplicate Files (检查重复文件)** groups size candidates, hashes their contents with SHA-256 and confirms them byte for byte. Choose a retained file in each group before manually selecting other copies to organize. Detection is local, uses no AI and does not transmit file contents. It stays within one filesystem, skips links, excludes hard-link aliases and labels partial results at its scan/read/display limits. Changed groups require another check before destructive actions.
-
-## File operations
-
-Open **File Tasks (文件任务)** in the status bar to see progress and results. When names conflict, compare the source and destination paths, file sizes, and modification times before choosing to skip, replace, or keep both. Moves on the same volume rename the original when the destination is vacant. Moves across volumes commit the staged destination before removing the source. Deletions and successfully replaced items go to the system trash. If a task is running when you close the last window, Filepace asks whether to continue it or cancel it and close the window. View recent local errors under **Settings → Error Log (错误日志)**.
-
-Tasks show their sources and destination, scanned totals where available, transferred bytes and measured rate/ETA when meaningful. Unknown or invalid totals stay explicit; same-volume moves retain their fast rename behavior. Space previews also render Markdown, format JSON, display CSV/TSV tables and highlight code, with a source-text option.
-
-Copy, move and trash tasks support pause, resume and cancel. Pausing takes effect at a safe checkpoint and lets other waiting tasks run; native calls and commit steps can delay acknowledgement. Paused tasks resume independently, showing a waiting state while another task executes. Move waiting tasks up or down in the displayed execution order. Archive and batch-rename tasks can pause before starting. Pauses last for the current session; restart recovery continues to show review notices.
-
-- After an interrupted staged transfer or replacement, the next launch shows review notices in File Tasks with the last recorded phase and source, target, stage, and old-target backup paths. It does not resume or delete files automatically. Clearing task history acknowledges the notice and removes only its recovery journal. Undo remains limited to the current session.
-- Windows copies use the native API to preserve alternate data streams and file attributes. Destination permissions follow Windows inheritance. A target that fails to preserve sparse attributes is rejected before removing the source.
-- Use **Undo (撤销)** in the status bar or press **Command+Z** / **Ctrl+Z** to undo the most recent move or rename in the current session. Filepace stops if the original location is occupied or the item has been replaced. Replaced items can be recovered through the system trash.
-- Select multiple items and press **F2** to preview a batch rename. Find and replace text, add a prefix or suffix, or number the items. Undo can reverse the batch.
-- Press **Space** on a PDF to preview it and switch pages. Use **Browse Archive (浏览压缩包)** in a ZIP file's context menu to inspect entries and choose where to extract. Extraction validates entry paths and prepares the contents in a temporary folder before committing the result.
-- Use **Compress to ZIP (压缩为 ZIP)** in the context menu to archive selected items with the system tool where available.
-
-Filepace saves tabs and pane locations for each window and uses the signed-in user's filesystem permissions. You can browse symbolic links. File transfers involving symbolic links are currently unsupported. [Platform verification and known gaps](docs/scope.md)
+Usage Analysis runs locally. The optional Smart Diagnosis (智能诊断) feature can use an installed and configured copy of **Codex, Claude Code, OpenCode, or DeepSeek Harness** to suggest ways to organize a folder or free up space. For diagnosis, Filepace supplies only file names, relative paths, scan statistics, your chosen goal, and any additional requirements. You decide which file changes to make and carry them out yourself. The selected tool may connect to its service, use your account allowance, and retain records according to its settings. [Tool configuration and platform verification](docs/scope.md#smart-storage-diagnosis)
 
 ## Run from source
 
-Built with Tauri, Rust, React, and TypeScript.
+Filepace uses Tauri, Rust, React, and TypeScript. Install Node.js 24 or later, stable Rust, and the build tools for your platform. [Tauri prerequisites][tauri]
 
-Install Node.js 24 or later, stable Rust, and the build tools for your operating system. [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/)
+From the repository root, run the following commands.
 
 ```sh
 npm ci
 npm run tauri dev
 ```
 
-`npm run dev` opens a read-only browser preview with sample files. Use the desktop app to test real file operations on disposable folders.
+To browse the interface with sample files, run `npm run dev` for a read-only browser preview. Use the desktop app and a temporary folder to test real file operations.
 
-## Test and build
+### Test and package
 
 ```sh
 npm test
@@ -158,7 +77,7 @@ npm run test:e2e
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The browser tests use a local Google Chrome installation. In CI, the workflow installs Playwright's Chromium.
+Local browser tests use Google Chrome. CI uses Playwright's Chromium.
 
 ```sh
 # macOS
@@ -168,11 +87,15 @@ npm run tauri -- build --bundles app,dmg
 npm run tauri -- build --bundles nsis
 ```
 
-Bundles appear under `src-tauri/target/release/bundle/`. GitHub Actions checks both platforms. Use the manual workflow to upload installer artifacts. [Windows installation](docs/windows-installation.md) · [Release checks](docs/releases.md)
+Installers are written to `src-tauri/target/release/bundle/`. [Windows installation](docs/windows-installation.md) · [Release process](docs/releases.md)
 
 ## Contributing and license
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository guidelines. Filepace is available under the [MIT License](LICENSE). Dependencies retain their own licenses.
+Read the [contribution guide](CONTRIBUTING.md) and [repository instructions](AGENTS.md) before reporting an issue or submitting a change. Filepace is available under the [MIT License](LICENSE).
 
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.10.1/Filepace_0.10.1_x64-setup.exe
+[release]: https://github.com/zhaoguhong/filepace/releases/tag/v0.11.0
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_x64-setup.exe
+[gatekeeper]: https://support.apple.com/en-us/102445
+[smartscreen]: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
+[tauri]: https://v2.tauri.app/start/prerequisites/

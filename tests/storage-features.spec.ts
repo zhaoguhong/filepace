@@ -103,6 +103,27 @@ async function setup(page: Page) {
               treeComplete: true,
             };
           }
+          if (command === "find_duplicates") {
+            const path = String(args.path);
+            const files = ["original.txt", "copy.txt"].map((name) => ({
+              name,
+              path: `${path}/${name}`,
+              size: 100,
+              modified: 0,
+              isDir: false,
+              isLink: false,
+              hidden: false,
+            }));
+            return {
+              path,
+              groups: [{ id: "identical", size: 100, files }],
+              scannedFiles: 2,
+              scannedBytes: 200,
+              skipped: 0,
+              limited: false,
+              hardLinks: 0,
+            };
+          }
           if (command === "diagnose_storage") {
             if (!snapshots.has(String(args.scanId)))
               throw new Error("Snapshot expired");
@@ -160,6 +181,41 @@ test("treemap drills down with keyboard and links files to existing result actio
   await expect(
     map.getByRole("button", { name: /查看文件 root.bin/ }),
   ).toBeVisible();
+});
+
+test("a ranked folder opens duplicate checking for that exact directory", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByRole("button", { name: "开始扫描", exact: true }).click();
+  const ranked = page.getByRole("listbox", { name: "占用最多的子目录" });
+  const check = ranked.getByRole("button", {
+    name: "检查此目录的重复文件：work",
+    exact: true,
+  });
+  await check.focus();
+  await check.press("Enter");
+  const duplicates = page.getByRole("region", { name: "检查重复文件" });
+  await expect(
+    duplicates.getByText("/Users/fixture/work", { exact: true }),
+  ).toBeVisible();
+  const scans = () =>
+    page.evaluate(() => {
+      const { calls } = (window as unknown as {
+        analysisFixture: { calls: { command: string; args: { path?: string } }[] };
+      }).analysisFixture;
+      return calls
+        .filter(({ command }) => command === "find_duplicates")
+        .map(({ args }) => args.path);
+    });
+  expect(await scans()).toEqual([]);
+  await duplicates
+    .getByRole("button", { name: "开始检查", exact: true })
+    .click();
+  await expect.poll(scans).toEqual(["/Users/fixture/work"]);
+  await expect(
+    duplicates.getByRole("combobox", { name: "重复组 1 保留位置" }),
+  ).toHaveValue("");
 });
 
 test("baseline survives reload, compares rescans and clears", async ({

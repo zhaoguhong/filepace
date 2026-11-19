@@ -7,8 +7,10 @@ export type FileCommand = {
   label: string;
   detail?: string;
   shortcut?: string;
+  aliases?: string[];
+  disabledReason?: string;
   disabled?: boolean;
-  run: () => void;
+  run: (opener: HTMLElement | null) => void;
 };
 
 export default function CommandPalette({
@@ -21,11 +23,32 @@ export default function CommandPalette({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const list = useRef<HTMLDivElement>(null);
-  const filtered = commands.filter((command) =>
-    `${command.label} ${command.detail ?? ""}`
-      .toLocaleLowerCase()
-      .includes(query.toLocaleLowerCase()),
-  );
+  const input = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLElement>(null);
+  const [returnFocus] = useState(() => document.activeElement);
+  useEffect(() => {
+    input.current?.focus();
+    const element = dialog.current;
+    return () => {
+      // Do not steal focus from a dialog opened by the selected command.
+      if (
+        returnFocus instanceof HTMLElement &&
+        returnFocus.isConnected &&
+        (document.activeElement === document.body ||
+          element?.contains(document.activeElement))
+      )
+        returnFocus.focus({ preventScroll: true });
+    };
+  }, [returnFocus]);
+  const normalize = (value: string) =>
+    value.normalize("NFKC").toLocaleLowerCase();
+  const terms = normalize(query).trim().split(/\s+/).filter(Boolean);
+  const filtered = commands.filter((command) => {
+    const text = normalize(
+      [command.label, command.detail, ...(command.aliases ?? [])].join(" "),
+    );
+    return terms.every((term) => text.includes(term));
+  });
   useEffect(() => {
     list.current
       ?.querySelector(`[data-command-index="${active}"]`)
@@ -34,7 +57,7 @@ export default function CommandPalette({
   const execute = (command: FileCommand) => {
     if (!command.disabled) {
       onClose();
-      command.run();
+      command.run(returnFocus instanceof HTMLElement ? returnFocus : null);
     }
   };
   return (
@@ -43,6 +66,11 @@ export default function CommandPalette({
       onClick={onClose}
       onKeyDown={(event) => {
         event.stopPropagation();
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === "Tab") {
+          event.preventDefault();
+          input.current?.focus();
+        }
         if (event.key === "Escape") {
           event.preventDefault();
           onClose();
@@ -66,6 +94,7 @@ export default function CommandPalette({
       }}
     >
       <section
+        ref={dialog}
         className="modal command-palette"
         role="dialog"
         aria-modal="true"
@@ -75,7 +104,7 @@ export default function CommandPalette({
         <div className="command-input">
           <Search size={19} />
           <input
-            autoFocus
+            ref={input}
             role="combobox"
             aria-label="搜索操作"
             aria-autocomplete="list"
@@ -115,6 +144,11 @@ export default function CommandPalette({
               <span>
                 <b>{command.label}</b>
                 {command.detail && <small>{command.detail}</small>}
+                {command.disabled && command.disabledReason && (
+                  <small className="command-disabled-reason">
+                    {command.disabledReason}
+                  </small>
+                )}
               </span>
               {command.shortcut && <kbd>{command.shortcut}</kbd>}
             </div>

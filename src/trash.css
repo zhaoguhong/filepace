@@ -53,16 +53,19 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
 }
 .trash-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
   font-size: 12px;
 }
 .trash-table th {
   position: sticky;
   top: 0;
+  z-index: 1;
   background: var(--subtle);
   color: var(--muted);
   text-align: left;
@@ -75,6 +78,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.trash-table td {
+  padding-block: 0;
+}
+.trash-table .trash-spacer td {
+  padding: 0;
+  border: 0;
 }
 .trash-table th:first-child {
   width: 30px;

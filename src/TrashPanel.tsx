@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Folder, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import FileIcon from "./FileIcon";
 import { isMac } from "./fileDrag";
 import { call, desktop } from "./bridge";
+import { useFileViewport, visibleRange } from "./fileViewport";
 import { formatSize, type Task } from "./model";
 import type { Shortcut } from "./preferences";
 import "./trash.css";
@@ -35,7 +36,9 @@ export default function TrashPanel({
 }) {
   const [report, setReport] = useState<Report>({ items: [], warnings: [] });
   const destinationId = useId();
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -45,14 +48,25 @@ export default function TrashPanel({
     destination: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scroll, setScroll] = useState(0);
+  const { listRef, attachList, height, layout } = useFileViewport();
   const generation = useRef(0);
   const anchor = useRef<string | null>(null);
-  const visible = report.items.filter((item) =>
-    `${item.name}\n${item.originalPath ?? ""}`
-      .toLocaleLowerCase()
-      .includes(query.toLocaleLowerCase()),
+  const visible = useMemo(() => {
+    const needle = query.toLocaleLowerCase();
+    return needle
+      ? report.items.filter((item) =>
+          `${item.name}\n${item.originalPath ?? ""}`
+            .toLocaleLowerCase()
+            .includes(needle),
+        )
+      : report.items;
+  }, [query, report.items]);
+  const chosen = useMemo(
+    () => visible.filter((item) => selected.has(item.id)),
+    [visible, selected],
   );
-  const chosen = visible.filter((item) => selected.includes(item.id));
+  const range = visibleRange(visible.length, scroll, height, layout);
   const taskState = JSON.stringify(
     tasks
       .filter((task) => ["restore", "purge", "trash"].includes(task.kind))
@@ -66,9 +80,14 @@ export default function TrashPanel({
       if (generation.current === request) {
         setReport(report);
         setError("");
-        setSelected((selected) =>
-          selected.filter((id) => report.items.some((item) => item.id === id)),
-        );
+        setSelected((previous) => {
+          if (!previous.size) return previous;
+          const available = new Set(report.items.map((item) => item.id));
+          const retained = new Set(
+            [...previous].filter((id) => available.has(id)),
+          );
+          return retained.size === previous.size ? previous : retained;
+        });
       }
     } catch (error) {
       if (generation.current === request) setError(String(error));
@@ -87,6 +106,14 @@ export default function TrashPanel({
     window.addEventListener("focus", update);
     return () => window.removeEventListener("focus", update);
   }, []);
+  function selectItem(id: string, checked: boolean) {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
   function confirm(action: "restore" | "purge" | "empty", items = chosen) {
     setError("");
     setDialog({ action, items: [...items], destination: "" });
@@ -117,9 +144,9 @@ export default function TrashPanel({
           event.key.toLowerCase() === "a"
         ) {
           event.preventDefault();
-          setSelected(visible.map((item) => item.id));
+          setSelected(new Set(visible.map((item) => item.id)));
         }
-        if (event.key === "Escape") setSelected([]);
+        if (event.key === "Escape") setSelected(new Set());
       }}
     >
       <div className="trash-toolbar">
@@ -144,7 +171,11 @@ export default function TrashPanel({
           aria-label="筛选回收站"
           placeholder="筛选名称或原位置"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (listRef.current) listRef.current.scrollTop = 0;
+            setScroll(0);
+          }}
         />
         <button
           disabled={!desktop || !chosen.length || loading}
@@ -197,10 +228,35 @@ export default function TrashPanel({
           <button onClick={() => void refresh()}>重新读取</button>
         </p>
       )}
-      <div className="trash-scroll">
-        <table className="trash-table">
+      <div
+        className="trash-scroll"
+        ref={attachList}
+        role="region"
+        aria-label="回收站列表"
+        tabIndex={0}
+        onScroll={(event) => {
+          const list = event.currentTarget;
+          setScroll(list.scrollTop);
+          const focusedRow = document.activeElement?.closest(
+            "tbody tr[aria-rowindex]",
+          );
+          if (focusedRow && list.contains(focusedRow)) {
+            const rowIndex =
+              Number(focusedRow.getAttribute("aria-rowindex")) - 2;
+            const nextRange = visibleRange(
+              visible.length,
+              list.scrollTop,
+              height,
+              layout,
+            );
+            if (rowIndex < nextRange.start || rowIndex >= nextRange.end)
+              list.focus({ preventScroll: true });
+          }
+        }}
+      >
+        <table className="trash-table" aria-rowcount={visible.length + 1}>
           <thead>
-            <tr>
+            <tr aria-rowindex={1}>
               <th>
                 <input
                   type="checkbox"
@@ -210,9 +266,11 @@ export default function TrashPanel({
                   }
                   onChange={(event) =>
                     setSelected(
-                      event.target.checked
-                        ? visible.map((item) => item.id)
-                        : [],
+                      new Set(
+                        event.target.checked
+                          ? visible.map((item) => item.id)
+                          : [],
+                      ),
                     )
                   }
                 />
@@ -224,83 +282,97 @@ export default function TrashPanel({
             </tr>
           </thead>
           <tbody>
-            {visible.map((item) => (
-              <tr
-                key={item.id}
-                tabIndex={selected.includes(item.id) ? 0 : -1}
-                aria-selected={selected.includes(item.id)}
-                className={selected.includes(item.id) ? "selected" : ""}
-                onClick={(event) => {
-                  if ((event.target as HTMLElement).closest("input")) return;
-                  event.currentTarget.focus({ preventScroll: true });
-                  if (event.shiftKey && anchor.current) {
-                    const a = visible.findIndex(
-                      (row) => row.id === anchor.current,
-                    );
-                    const b = visible.indexOf(item);
-                    setSelected(
-                      visible
-                        .slice(Math.max(0, Math.min(a, b)), Math.max(a, b) + 1)
-                        .map((row) => row.id),
-                    );
-                  } else if (event.metaKey || event.ctrlKey)
-                    setSelected((selected) =>
-                      selected.includes(item.id)
-                        ? selected.filter((id) => id !== item.id)
-                        : [...selected, item.id],
-                    );
-                  else setSelected([item.id]);
-                  anchor.current = item.id;
-                }}
-              >
-                <td>
-                  <input
-                    type="checkbox"
-                    aria-label={`选择 ${item.name}`}
-                    checked={selected.includes(item.id)}
-                    onChange={(event) => {
-                      anchor.current = item.id;
-                      setSelected((selected) =>
-                        event.target.checked
-                          ? [...selected, item.id]
-                          : selected.filter((id) => id !== item.id),
-                      );
-                    }}
-                  />
-                </td>
-                <td title={item.name}>
-                  <div className="trash-file-name">
-                    <FileIcon
-                      entry={{
-                        name: item.name,
-                        path:
-                          item.originalPath ??
-                          (isMac
-                            ? `/filepace-trash/${item.id}`
-                            : `filepace-trash:${item.id}`),
-                        isDir: item.isDir,
-                        isLink: false,
-                        size: item.size ?? 0,
-                        modified: item.deletedAt ?? 0,
-                        hidden: item.name.startsWith("."),
-                      }}
-                      showThumbnail={false}
-                      showNativeIcon={false}
-                    />
-                    <span className="trash-file-label">{item.name}</span>
-                  </div>
-                </td>
-                <td title={item.originalPath ?? ""}>
-                  {item.originalPath ?? "原位置不可用"}
-                </td>
-                <td>
-                  {item.deletedAt
-                    ? new Date(item.deletedAt * 1000).toLocaleString("zh-CN")
-                    : "未知"}
-                </td>
-                <td>{item.size === null ? "—" : formatSize(item.size)}</td>
+            {range.above > 0 && (
+              <tr className="trash-spacer" aria-hidden="true">
+                <td colSpan={5} style={{ height: range.above }} />
               </tr>
-            ))}
+            )}
+            {visible.slice(range.start, range.end).map((item, index) => {
+              const rowIndex = range.start + index;
+              const isSelected = selected.has(item.id);
+              return (
+                <tr
+                  key={item.id}
+                  tabIndex={isSelected ? 0 : -1}
+                  aria-rowindex={rowIndex + 2}
+                  aria-selected={isSelected}
+                  className={isSelected ? "selected" : ""}
+                  style={{ height: layout.height }}
+                  onClick={(event) => {
+                    if ((event.target as HTMLElement).closest("input")) return;
+                    event.currentTarget.focus({ preventScroll: true });
+                    if (event.shiftKey && anchor.current) {
+                      const anchorIndex = visible.findIndex(
+                        (row) => row.id === anchor.current,
+                      );
+                      setSelected(
+                        new Set(
+                          visible
+                            .slice(
+                              Math.max(0, Math.min(anchorIndex, rowIndex)),
+                              Math.max(anchorIndex, rowIndex) + 1,
+                            )
+                            .map((row) => row.id),
+                        ),
+                      );
+                    } else if (event.metaKey || event.ctrlKey) {
+                      selectItem(item.id, !isSelected);
+                    } else {
+                      setSelected(new Set([item.id]));
+                    }
+                    anchor.current = item.id;
+                  }}
+                >
+                  <td>
+                    <input
+                      type="checkbox"
+                      aria-label={`选择 ${item.name}`}
+                      checked={isSelected}
+                      onChange={(event) => {
+                        anchor.current = item.id;
+                        selectItem(item.id, event.target.checked);
+                      }}
+                    />
+                  </td>
+                  <td title={item.name}>
+                    <div className="trash-file-name">
+                      <FileIcon
+                        entry={{
+                          name: item.name,
+                          path:
+                            item.originalPath ??
+                            (isMac
+                              ? `/filepace-trash/${item.id}`
+                              : `filepace-trash:${item.id}`),
+                          isDir: item.isDir,
+                          isLink: false,
+                          size: item.size ?? 0,
+                          modified: item.deletedAt ?? 0,
+                          hidden: item.name.startsWith("."),
+                        }}
+                        showThumbnail={false}
+                        showNativeIcon={false}
+                      />
+                      <span className="trash-file-label">{item.name}</span>
+                    </div>
+                  </td>
+                  <td title={item.originalPath ?? ""}>
+                    {item.originalPath ?? "原位置不可用"}
+                  </td>
+                  <td>
+                    {item.deletedAt
+                      ? new Date(item.deletedAt * 1000).toLocaleString("zh-CN")
+                      : "未知"}
+                  </td>
+                  <td>{item.size === null ? "—" : formatSize(item.size)}</td>
+                </tr>
+              );
+            })}
+            {range.below > 0 && (
+              <tr className="trash-spacer" aria-hidden="true">
+                <td colSpan={5} style={{ height: range.below }} />
+              </tr>
+            )}
           </tbody>
         </table>
         {!visible.length && !error && (

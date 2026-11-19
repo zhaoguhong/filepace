@@ -328,6 +328,100 @@ test("empty trash is bound to the confirmed snapshot and cancellation never star
   ).toBeVisible();
 });
 
+test("virtualizes 10,000 trash rows while selecting and confirming all matching items", async ({
+  page,
+}) => {
+  await nativeFixture(page);
+  await page.evaluate(() => {
+    const fixture = (
+      window as unknown as {
+        trashFixture: { root: string; items: Record<string, unknown>[] };
+      }
+    ).trashFixture;
+    fixture.items.splice(
+      0,
+      fixture.items.length,
+      ...Array.from({ length: 10_000 }, (_, index) => {
+        const id = String(index).padStart(5, "0");
+        const name = `item-${id}.txt`;
+        return {
+          id,
+          name,
+          originalPath: `${fixture.root}/${index >= 9900 ? "Archive" : "Other"}/${name}`,
+          deletedAt: 1794650000,
+          size: 25,
+          isDir: false,
+        };
+      }),
+    );
+  });
+  await page.getByRole("button", { name: "回收站", exact: true }).click();
+  const panel = page.getByRole("region", { name: "回收站内容", exact: true });
+  const list = panel.getByRole("region", { name: "回收站列表" });
+  const table = list.getByRole("table");
+  const first = list.getByRole("cell", { name: "item-00000.txt", exact: true });
+  const last = list.getByRole("cell", { name: "item-09999.txt", exact: true });
+  const allSelected = panel.getByText("10000 项 · 已选择 10000 项");
+  await expect(table).toHaveAttribute("aria-rowcount", "10001");
+  await expect(first).toBeInViewport();
+  expect(await table.getByRole("row").count()).toBeLessThan(60);
+  await first.click();
+  await list.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(last).toBeInViewport();
+  await expect(first).toHaveCount(0);
+  await expect(list).toBeFocused();
+  expect(await table.getByRole("row").count()).toBeLessThan(60);
+
+  await last.click({ modifiers: ["Shift"] });
+  await expect(allSelected).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(panel.getByText("10000 项 · 已选择 0 项")).toBeVisible();
+  await page.keyboard.press("Meta+a");
+  const selectAll = list.getByRole("checkbox", {
+    name: "选择回收站全部可见项目",
+  });
+  await expect(selectAll).toBeChecked();
+  await expect(allSelected).toBeVisible();
+  const purge = panel.getByRole("button", { name: "永久删除", exact: true });
+  await purge.click();
+  const dialog = panel.getByRole("dialog", { name: "确认永久删除" });
+  await expect(dialog.getByText(/将永久删除这 10000 项/)).toBeVisible();
+  await dialog.getByRole("button", { name: "取消" }).click();
+
+  await panel.getByRole("textbox", { name: "筛选回收站" }).fill("/archive/");
+  await expect(table).toHaveAttribute("aria-rowcount", "101");
+  await expect(
+    list.getByRole("cell", { name: "item-09900.txt", exact: true }),
+  ).toBeInViewport();
+  await selectAll.uncheck();
+  await expect(purge).toBeDisabled();
+  await selectAll.check();
+  await expect(panel.getByText("10000 项 · 已选择 100 项")).toBeVisible();
+  await purge.click();
+  await expect(dialog.getByText(/将永久删除这 100 项/)).toBeVisible();
+  await dialog.getByRole("button", { name: "永久删除", exact: true }).click();
+  const args = await page.evaluate(() => {
+    const fixture = (
+      window as unknown as {
+        trashFixture: {
+          calls: { command: string; args: Record<string, unknown> }[];
+        };
+      }
+    ).trashFixture;
+    return fixture.calls.find(({ command }) => command === "start_trash_task")
+      ?.args;
+  });
+  expect(args).toMatchObject({
+    action: "purge",
+    ids: Array.from({ length: 100 }, (_, index) =>
+      String(index + 9900).padStart(5, "0"),
+    ),
+    confirmed: true,
+  });
+});
+
 test("trash preserves tab shortcuts even while its filter has focus", async ({
   page,
 }) => {

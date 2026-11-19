@@ -175,7 +175,7 @@
   margin-top: 11px;
 }
 .storage-volume-actions button,
-.storage-scan-folder {
+.storage-folder-action {
   color: var(--accent-text);
   padding: 3px 0;
   font-size: 11px;
@@ -313,7 +313,7 @@
   text-align: left;
 }
 .storage-item:hover,
-.storage-scan-folder:hover {
+.storage-folder-action:hover {
   background: var(--accent-tint);
 }
 .storage-item > span:not(.entry-icon) {
@@ -331,9 +331,14 @@
 .storage-item > svg {
   color: var(--accent-text);
 }
-.storage-scan-folder {
+.storage-folder-action {
+  flex-shrink: 0;
   padding: 5px;
   border-radius: 5px;
+}
+.storage-folder-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 @media (max-width: 850px) {
   .storage-dashboard {

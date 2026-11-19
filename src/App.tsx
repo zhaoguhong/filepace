@@ -25,6 +25,7 @@ import ComparePanel from "./ComparePanel";
 import ArchivePanel from "./ArchivePanel";
 import CommandPalette, { type FileCommand } from "./CommandPalette";
 import FileOperationDialog, { type FileOperation } from "./FileOperationDialog";
+import ModalDialog from "./ModalDialog";
 import type { ResultActionRequest } from "./resultActions";
 import type { FileChange } from "./resultMutations";
 import TextPreview from "./TextPreview";
@@ -223,7 +224,11 @@ export default function App() {
   const [batchEntries, setBatchEntries] = useState<Entry[] | null>(null);
   const [batchDuplicateGuard, setBatchDuplicateGuard] =
     useState<DuplicateGuard>();
-  const [compareOpen, setCompareOpen] = useState(false);
+  const [comparison, setComparison] = useState<{
+    left: string;
+    right: string;
+  } | null>(null);
+  const compareTrigger = useRef<HTMLElement | null>(null);
   const [archive, setArchive] = useState<{
     entry: Entry;
     parent: string;
@@ -252,6 +257,7 @@ export default function App() {
     null,
   );
   const [layoutsOpen, setLayoutsOpen] = useState(false);
+  const layoutsTrigger = useRef<HTMLElement | null>(null);
   const [duplicateScope, setDuplicateScope] = useState("");
   const [duplicateReturn, setDuplicateReturn] = useState(false);
   const [savedSearchList, setSavedSearchList] = useState(readSavedSearches);
@@ -297,6 +303,17 @@ export default function App() {
   const stateRef = useRef(session);
   stateRef.current = session;
   const selected = tab?.selected || [];
+  const filesystemLocation = Boolean(tab && tab.path !== TRASH_PATH);
+  const showingPanes = !storageVisible && !searchScope && !settingsSection;
+  const browsingFiles = filesystemLocation && showingPanes;
+  const hasFiles = browsingFiles && selected.length > 0;
+  const otherPaneUnavailable = !desktop
+    ? "请在桌面应用中使用"
+    : !hasFiles
+      ? "请在文件列表中选择项目"
+      : !otherFolder || !split
+        ? "请打开双栏并选择目标文件夹"
+        : undefined;
   const fileDrag = useFileDrag({
     focusedPath: tab?.path === TRASH_PATH ? undefined : tab?.path,
     transfer: start,
@@ -358,6 +375,11 @@ export default function App() {
   const running = tasks.filter(activeTask);
   const conflict = tasks.find((t) => t.status === "conflict" && t.conflict);
   const applyAll = conflict?.id === applyAllTask;
+  const taskPromptOpener = comparison
+    ? compareTrigger.current
+    : layoutsOpen
+      ? layoutsTrigger.current
+      : undefined;
   function recordFileChanges(changes: FileChange[]) {
     if (!changes.length) return;
     const sequence = ++mutationSequence.current;
@@ -1008,22 +1030,35 @@ export default function App() {
   ) {
     if (!paths.length || !destination || destination === TRASH_PATH)
       return false;
-    setMenu(null);
     try {
-      const id = await call<string>("start_task", {
-        kind,
-        sources: paths,
-        destination,
-        ...(within ? { within } : {}),
-        ...(duplicateGuard ? { duplicateGuard } : {}),
-      });
-      submittedTasks.current.add(id);
-      void refreshActivity();
+      await submitFileTask(kind, paths, destination, within, duplicateGuard);
       return true;
     } catch (e) {
       setNotice(String(e));
       return false;
     }
+  }
+  async function submitFileTask(
+    kind: string,
+    paths: string[],
+    destination: string,
+    within?: string,
+    duplicateGuard?: DuplicateGuard,
+  ) {
+    setMenu(null);
+    const id = await call<string>("start_task", {
+      kind,
+      sources: paths,
+      destination,
+      ...(within ? { within } : {}),
+      ...(duplicateGuard ? { duplicateGuard } : {}),
+    });
+    submittedTasks.current.add(id);
+    void refreshActivity();
+  }
+  function transferToOtherPane(kind: "copy" | "move") {
+    if (otherPaneUnavailable || !otherFolder) return;
+    void start(kind, selected, otherFolder);
   }
   async function undoLast() {
     if (!undo || running.length || conflict || !desktop) return;
@@ -1164,14 +1199,7 @@ export default function App() {
         return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
-      if (layoutsOpen) {
-        if (key === "escape") {
-          e.preventDefault();
-          setLayoutsOpen(false);
-        }
-        return;
-      }
-      if (fileOperation || commandPalette) return;
+      if (fileOperation || commandPalette || layoutsOpen || comparison) return;
       if (menu && key === "escape") {
         e.preventDefault();
         setMenu(null);
@@ -1180,10 +1208,6 @@ export default function App() {
       }
       if (batchEntries) {
         if (key === "escape" && !e.isComposing) setBatchEntries(null);
-        return;
-      }
-      if (compareOpen) {
-        if (key === "escape") setCompareOpen(false);
         return;
       }
       if (archive) {
@@ -1260,6 +1284,13 @@ export default function App() {
         }
         return;
       }
+      const typing = (e.target as HTMLElement).closest(
+        'input,textarea,select,[contenteditable="true"]',
+      );
+      if (storageVisible) {
+        if (key === "escape" && !typing) setStoragePage("");
+        return;
+      }
       if (tab.path === TRASH_PATH) {
         if (mod && ["t", "n", "w", "f"].includes(key)) {
           e.preventDefault();
@@ -1291,11 +1322,7 @@ export default function App() {
         }
         return;
       }
-      const typing = (e.target as HTMLElement).closest(
-        'input,textarea,select,[contenteditable="true"]',
-      );
-      if (typing) return;
-      if (conflict || closePrompt) return;
+      if (typing || !browsingFiles) return;
       if (key === "contextmenu" || (key === "f10" && e.shiftKey)) {
         const list = listRef.current;
         if (!list) return;
@@ -1308,25 +1335,11 @@ export default function App() {
         setMenu({ x: bounds.left + 16, y: bounds.top + 18, entry });
         return;
       }
-      if (
-        desktop &&
-        split &&
-        mod &&
-        e.shiftKey &&
-        (key === "c" || key === "m")
-      ) {
-        e.preventDefault();
-        const other = focused === "left" ? right : left;
-        if (other.listing)
-          void start(
-            key === "c" ? "copy" : "move",
-            selected,
-            other.listing.path,
-          );
-        return;
-      }
-      if (storageVisible) {
-        if (key === "escape") setStoragePage("");
+      if (mod && e.shiftKey && (key === "c" || key === "m")) {
+        if (!otherPaneUnavailable) {
+          e.preventDefault();
+          transferToOtherPane(key === "c" ? "copy" : "move");
+        }
         return;
       }
       if (
@@ -1495,40 +1508,56 @@ export default function App() {
         <p>{bootError || "正在打开你的工作空间…"}</p>
       </div>
     );
-  const filesystemLocation = tab.path !== TRASH_PATH;
-  const browsingFiles =
-    filesystemLocation && !storageVisible && !searchScope && !settingsSection;
-  const hasFiles = browsingFiles && selected.length > 0;
   const fileCommands: FileCommand[] = [
     {
       id: "search",
+      aliases: ["查找", "search", "find"],
       label: "搜索子文件夹",
       detail: listing?.path ?? tab.path,
       shortcut: `${commandKey}F`,
       disabled: !filesystemLocation,
+      disabledReason: "请先打开普通文件夹",
       run: () => openSearch(),
     },
     {
       id: "analysis",
+      aliases: ["空间", "占用", "disk", "storage"],
       label: "分析当前目录",
       detail: "查看占用分析和智能诊断",
       disabled: !filesystemLocation,
+      disabledReason: "请先打开普通文件夹",
       run: () => openStoragePage("analysis", listing?.path ?? tab.path),
     },
     {
       id: "duplicates",
+      aliases: ["去重", "重复", "duplicates"],
       label: "检查重复文件",
       detail: "逐字节核对相同内容，手动选择保留项",
       disabled: !desktop || !filesystemLocation,
+      disabledReason: !desktop ? "请在桌面应用中使用" : "请先打开普通文件夹",
       run: () => openStoragePage("duplicates", listing?.path ?? tab.path),
     },
-    { id: "tasks", label: "查看文件任务", run: () => setTaskPanel(true) },
-    { id: "split", label: split ? "合并分栏" : "左右分栏", run: toggleSplit },
+    {
+      id: "tasks",
+      aliases: ["进度", "队列", "tasks"],
+      label: "查看文件任务",
+      run: () => setTaskPanel(true),
+    },
+    {
+      id: "split",
+      aliases: ["双栏", "分屏", "split"],
+      label: split ? "合并分栏" : "左右分栏",
+      run: toggleSplit,
+    },
     {
       id: "layouts",
+      aliases: ["工作区", "workspace", "layout"],
       label: "保存或恢复工作布局",
       detail: "保存左右目录、标签页和视图",
-      run: () => setLayoutsOpen(true),
+      run: (opener) => {
+        layoutsTrigger.current = opener;
+        setLayoutsOpen(true);
+      },
     },
     {
       id: "density",
@@ -1545,6 +1574,9 @@ export default function App() {
       label: "复制所选文件",
       shortcut: `${commandKey}C`,
       disabled: !desktop || !hasFiles,
+      disabledReason: !desktop
+        ? "请在桌面应用中使用"
+        : "请在文件列表中选择项目",
       run: () => void copy(),
     },
     {
@@ -1552,6 +1584,9 @@ export default function App() {
       label: "剪切所选文件",
       shortcut: `${commandKey}X`,
       disabled: !desktop || !hasFiles,
+      disabledReason: !desktop
+        ? "请在桌面应用中使用"
+        : "请在文件列表中选择项目",
       run: () => void copy(true),
     },
     {
@@ -1560,33 +1595,45 @@ export default function App() {
       detail: listing?.path ?? tab.path,
       shortcut: `${commandKey}V`,
       disabled: !desktop || !browsingFiles,
+      disabledReason: !desktop ? "请在桌面应用中使用" : "请先返回文件列表",
       run: () => void paste(),
     },
     {
       id: "copy-other",
       label: "复制到另一栏",
       shortcut: isMac ? "⇧⌘C" : "Ctrl+Shift+C",
-      disabled: !desktop || !hasFiles || !otherFolder || !split,
-      run: () => void start("copy", selected, otherFolder),
+      disabled: Boolean(otherPaneUnavailable),
+      disabledReason: otherPaneUnavailable,
+      run: () => transferToOtherPane("copy"),
     },
     {
       id: "move-other",
       label: "移动到另一栏",
       shortcut: isMac ? "⇧⌘M" : "Ctrl+Shift+M",
-      disabled: !desktop || !hasFiles || !otherFolder || !split,
-      run: () => void start("move", selected, otherFolder),
+      disabled: Boolean(otherPaneUnavailable),
+      disabledReason: otherPaneUnavailable,
+      run: () => transferToOtherPane("move"),
     },
     {
       id: "rename",
+      aliases: ["改名", "rename"],
       label: selected.length > 1 ? "批量重命名" : "重命名",
       disabled: !desktop || !hasFiles,
+      disabledReason: !desktop
+        ? "请在桌面应用中使用"
+        : "请在文件列表中选择项目",
       run: () => (selected.length > 1 ? openBatchRename() : renameSelected()),
     },
     {
       id: "preview",
+      aliases: ["查看", "preview"],
       label: "快速预览所选文件",
       shortcut: "Space",
-      disabled: !hasFiles || selected.length !== 1,
+      disabled:
+        !hasFiles ||
+        selected.length !== 1 ||
+        !entries.some((entry) => entry.path === selected[0] && !entry.isDir),
+      disabledReason: "请选择一个可预览的文件",
       run: () => {
         const entry = entries.find(
           (item) => item.path === selected[0] && !item.isDir,
@@ -1602,17 +1649,25 @@ export default function App() {
       label: undo || "撤销上次移动或改名",
       shortcut: `${commandKey}Z`,
       disabled: !desktop || !undo || running.length > 0,
+      disabledReason: !desktop
+        ? "请在桌面应用中使用"
+        : running.length
+          ? "请等待当前文件任务结束"
+          : "没有可撤销的移动或改名",
       run: () => void undoLast(),
     },
     {
       id: "folder",
+      aliases: ["创建目录", "mkdir", "folder"],
       label: "新建文件夹",
       shortcut: isMac ? "⇧⌘N" : "Ctrl+Shift+N",
       disabled: !desktop || !browsingFiles,
+      disabledReason: !desktop ? "请在桌面应用中使用" : "请先返回文件列表",
       run: () => promptCreate("folder", listing?.path ?? tab.path),
     },
     {
       id: "settings",
+      aliases: ["偏好", "settings"],
       label: "打开设置",
       shortcut: `${commandKey},`,
       run: () => openSettings(),
@@ -2439,7 +2494,8 @@ export default function App() {
             )}
           <Tool
             label={`命令面板（${commandKey}K）`}
-            onClick={() => {
+            onClick={(event) => {
+              event.currentTarget.focus({ preventScroll: true });
               setMenu(null);
               setCommandPalette(true);
             }}
@@ -2491,7 +2547,14 @@ export default function App() {
             <button
               className="window-action"
               disabled={!left.listing || !right.listing}
-              onClick={() => setCompareOpen(true)}
+              onClick={(event) => {
+                if (!left.listing || !right.listing) return;
+                compareTrigger.current = event.currentTarget;
+                setComparison({
+                  left: left.listing.path,
+                  right: right.listing.path,
+                });
+              }}
             >
               对比目录
             </button>
@@ -2601,9 +2664,7 @@ export default function App() {
                   }
                 : undefined
             }
-            hidden={
-              storageVisible || Boolean(searchScope) || Boolean(settingsSection)
-            }
+            hidden={!showingPanes}
           >
             {renderPane("left")}
             {split && (
@@ -2634,6 +2695,9 @@ export default function App() {
               ...commonPlaces.map((place) => ({ ...place, kind: "favorite" })),
             ]}
             onChoose={setStorageScope}
+            onCheckDuplicates={
+              desktop ? (path) => openStoragePage("duplicates", path) : undefined
+            }
             onBrowse={(path, selectedPath) => {
               setAnalysisReturn(true);
               setReturnContext("analysis");
@@ -2837,7 +2901,7 @@ export default function App() {
           onDismiss={() => setDiagnosisNotice(null)}
         />
       )}
-      {menu && (
+      {menu && (browsingFiles || (showingPanes && menu.tab)) && (
         <div
           className={`context-menu${viewPane ? " browse-options" : ""}`}
           ref={menuRef}
@@ -2979,16 +3043,16 @@ export default function App() {
                   {desktop && split && (
                     <>
                       <MenuAction
-                        disabled={!otherFolder}
+                        disabled={Boolean(otherPaneUnavailable)}
                         shortcut={isMac ? "⇧⌘C" : "Ctrl+Shift+C"}
-                        onClick={() => start("copy", selected, otherFolder)}
+                        onClick={() => transferToOtherPane("copy")}
                       >
                         复制到另一栏
                       </MenuAction>
                       <MenuAction
-                        disabled={!otherFolder}
+                        disabled={Boolean(otherPaneUnavailable)}
                         shortcut={isMac ? "⇧⌘M" : "Ctrl+Shift+M"}
-                        onClick={() => start("move", selected, otherFolder)}
+                        onClick={() => transferToOtherPane("move")}
                       >
                         移动到另一栏
                       </MenuAction>
@@ -3246,6 +3310,8 @@ export default function App() {
       {layoutsOpen && (
         <WorkLayouts
           session={session}
+          returnFocus={layoutsTrigger.current}
+          active={!conflict && !closePrompt}
           onRestore={(next) => {
             setSession(next);
             setStoragePage("");
@@ -3338,13 +3404,14 @@ export default function App() {
           }}
         />
       )}
-      {compareOpen && left.listing && right.listing && (
+      {comparison && (
         <ComparePanel
-          left={left.listing.path}
-          right={right.listing.path}
-          onClose={() => setCompareOpen(false)}
+          {...comparison}
+          returnFocus={compareTrigger.current}
+          active={!conflict && !closePrompt}
+          onClose={() => setComparison(null)}
           onCopy={(sources, destination, within) =>
-            start("copy", sources, destination, within)
+            submitFileTask("copy", sources, destination, within)
           }
         />
       )}
@@ -3484,130 +3551,135 @@ export default function App() {
         </div>
       )}
       {conflict?.conflict && (
-        <div className="overlay">
-          <section
-            className="modal form-modal conflict-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="目标位置已有同名项目"
-          >
-            <h3>目标位置已有同名项目</h3>
-            <div className="conflict-comparison">
-              {(
-                [
-                  ["源项目", conflict.conflict.source],
-                  ["目标项目", conflict.conflict.destination],
-                ] as const
-              ).map(([label, item]) => (
-                <section
-                  className="conflict-item"
-                  key={label}
-                  aria-label={label}
-                >
-                  <h4>{label}</h4>
-                  {item ? (
-                    <>
-                      <strong>{basename(item.path)}</strong>
-                      <p className="wrap conflict-path" title={item.path}>
-                        {item.path}
-                      </p>
-                      <dl>
-                        <dt>大小</dt>
-                        <dd
-                          title={
-                            item.size === null
-                              ? undefined
-                              : `${item.size.toLocaleString("zh-CN")} 字节`
-                          }
-                        >
-                          {item.size === null
-                            ? item.isDir
-                              ? "—（文件夹）"
-                              : "—"
-                            : formatSize(item.size)}
-                        </dd>
-                        <dt>修改时间</dt>
-                        <dd>
-                          {item.modified === null
-                            ? "—"
-                            : new Date(item.modified * 1000).toLocaleString(
-                                "zh-CN",
-                              )}
-                        </dd>
-                      </dl>
-                    </>
-                  ) : (
-                    <p>已选择 {conflict.sources.length} 个项目</p>
-                  )}
-                </section>
-              ))}
-            </div>
-            <p>替换成功后，旧目标会移到回收站。</p>
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={applyAll}
-                onChange={(e) =>
-                  setApplyAllTask(e.target.checked ? conflict.id : null)
+        <ModalDialog
+          className="form-modal conflict-modal"
+          label="目标位置已有同名项目"
+          active={!closePrompt}
+          returnFocus={taskPromptOpener}
+        >
+          <h3>目标位置已有同名项目</h3>
+          <div className="conflict-comparison">
+            {(
+              [
+                ["源项目", conflict.conflict.source],
+                ["目标项目", conflict.conflict.destination],
+              ] as const
+            ).map(([label, item]) => (
+              <section
+                className="conflict-item"
+                key={label}
+                aria-label={label}
+              >
+                <h4>{label}</h4>
+                {item ? (
+                  <>
+                    <strong>{basename(item.path)}</strong>
+                    <p className="wrap conflict-path" title={item.path}>
+                      {item.path}
+                    </p>
+                    <dl>
+                      <dt>大小</dt>
+                      <dd
+                        title={
+                          item.size === null
+                            ? undefined
+                            : `${item.size.toLocaleString("zh-CN")} 字节`
+                        }
+                      >
+                        {item.size === null
+                          ? item.isDir
+                            ? "—（文件夹）"
+                            : "—"
+                          : formatSize(item.size)}
+                      </dd>
+                      <dt>修改时间</dt>
+                      <dd>
+                        {item.modified === null
+                          ? "—"
+                          : new Date(item.modified * 1000).toLocaleString(
+                              "zh-CN",
+                            )}
+                      </dd>
+                    </dl>
+                  </>
+                ) : (
+                  <p>已选择 {conflict.sources.length} 个项目</p>
+                )}
+              </section>
+            ))}
+          </div>
+          <p>替换成功后，旧目标会移到回收站。</p>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={applyAll}
+              onChange={(e) =>
+                setApplyAllTask(e.target.checked ? conflict.id : null)
+              }
+            />
+            应用到本次任务的后续冲突
+          </label>
+          <div className="modal-buttons">
+            {[
+              ["cancel", "取消任务"],
+              ["skip", "跳过"],
+              ["replace", "替换"],
+              ["keep", "保留两者"],
+            ].map(([decision, label]) => (
+              <button
+                key={decision}
+                className={decision === "keep" ? "primary" : ""}
+                data-initial-focus={decision === "keep" ? true : undefined}
+                onClick={() =>
+                  call("task_action", {
+                    id: conflict.id,
+                    conflictId: conflict.conflict?.id,
+                    decision,
+                    applyAll,
+                  })
                 }
-              />
-              应用到本次任务的后续冲突
-            </label>
-            <div className="modal-buttons">
-              {[
-                ["cancel", "取消任务"],
-                ["skip", "跳过"],
-                ["replace", "替换"],
-                ["keep", "保留两者"],
-              ].map(([decision, label]) => (
-                <button
-                  key={decision}
-                  className={decision === "keep" ? "primary" : ""}
-                  onClick={() =>
-                    call("task_action", {
-                      id: conflict.id,
-                      conflictId: conflict.conflict?.id,
-                      decision,
-                      applyAll,
-                    })
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </ModalDialog>
       )}
       {closePrompt && (
-        <div className="overlay">
-          <section className="modal form-modal">
-            <h3>文件任务尚未完成</h3>
-            <p>保持窗口打开，让文件任务继续。</p>
-            <div className="modal-buttons">
-              <button
-                onClick={async () => {
-                  await Promise.all(
-                    running.map((t) =>
-                      call("task_action", {
-                        id: t.id,
-                        decision: "cancel",
-                        applyAll: false,
-                      }),
-                    ),
-                  );
-                  setClosePrompt(false);
-                  setNotice("正在取消任务，完成后可关闭窗口。");
-                }}
-              >
-                取消任务
-              </button>
-              <button className="primary" onClick={() => setClosePrompt(false)}>
-                继续任务
-              </button>
-            </div>
-          </section>
-        </div>
+        <ModalDialog
+          className="form-modal"
+          label="文件任务尚未完成"
+          returnFocus={taskPromptOpener}
+        >
+          <h3>文件任务尚未完成</h3>
+          <p>保持窗口打开，让文件任务继续。</p>
+          <div className="modal-buttons">
+            <button
+              onClick={async () => {
+                await Promise.all(
+                  running.map((t) =>
+                    call("task_action", {
+                      id: t.id,
+                      decision: "cancel",
+                      applyAll: false,
+                    }),
+                  ),
+                );
+                setClosePrompt(false);
+                setNotice("正在取消任务，完成后可关闭窗口。");
+              }}
+            >
+              取消任务
+            </button>
+            <button
+              className="primary"
+              data-initial-focus
+              onClick={() => setClosePrompt(false)}
+            >
+              继续任务
+            </button>
+          </div>
+        </ModalDialog>
       )}
     </div>
   );
