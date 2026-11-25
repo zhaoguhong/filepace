@@ -1,5 +1,11 @@
 # First-version scope and verification
 
+## Release verification for 0.12.0
+
+- Candidate `d3fa4b3` passed 116 frontend and 132 Chromium tests on each platform. The locked Rust suite passed 106 tests on macOS and 88 on Windows, including the Windows Recycle Bin worker listing a recycled folder by its original name and preserving its contents through restoration. Installed Windows checks covered current-user setup and first installation without a preinstalled WebView2 runtime. [Release checks](https://github.com/zhaoguhong/filepace/actions/runs/45567753373)
+- The Apple Silicon app copied from the verified DMG passed strict signature verification, matched the signed updater archive and launched with an isolated session. The local desktop was locked. Hands-on Finder and cross-window Option drag gestures remain unverified for this release. The Windows installer contained an x64 application with file version 0.12.0.0.
+- Both updater signatures verified against the application's public key and bound version 0.12.0. Anonymous downloads of all eight release assets matched their verified local copies. The public latest-update endpoint returned the same manifest. [Release downloads](https://github.com/zhaoguhong/filepace/releases/tag/v0.12.0)
+
 ## Local performance verification after 0.11.0
 
 - On an Apple M2 Pro running macOS 15.6.1, the release-mode Rust fixture serialized 39.03 MB for 100,000 files using the previous batch-plus-snapshot protocol. An initial streamed read serialized 19.56 MB and a refresh serialized 19.50 MB. The 10,000-file initial read went from 3.90 MB to 1.96 MB. These are serialized payload bytes with warm local metadata. Run `cargo test --release --locked --manifest-path src-tauri/Cargo.toml benchmark_directory_delivery -- --ignored --nocapture` to repeat the native comparison.
