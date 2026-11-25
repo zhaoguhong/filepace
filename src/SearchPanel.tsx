@@ -1,3 +1,4 @@
+import type { ChangeBookmark } from "./resultMutations";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -39,7 +40,7 @@ export default function SearchPanel({
   onClose,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
 }: ResultActionProps & {
   path: string;
   hidden: boolean;
@@ -62,7 +63,7 @@ export default function SearchPanel({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [resultKey, setResultKey] = useState("");
-  const [resultBaseline, setResultBaseline] = useState(0);
+  const [resultBaseline, setResultBaseline] = useState<ChangeBookmark>();
   const request = useRef("");
   const lastSearch = useRef<SearchFields>({
     query: "",
@@ -124,11 +125,13 @@ export default function SearchPanel({
     setNotice("");
     setReport(null);
     setResultKey(id);
-    setResultBaseline(fileChangeBatches?.at(-1)?.sequence ?? 0);
+    setResultBaseline(changeCursor?.retain());
+    let hasRows = false;
     const onBatch = desktop ? new Channel<SearchReport["hits"]>() : undefined;
     if (onBatch)
       onBatch.onmessage = (hits) => {
         if (request.current !== id) return;
+        hasRows ||= hits.length > 0;
         setReport((prior) => ({
           hits: [...(prior?.hits ?? []), ...hits],
           indexed: false,
@@ -151,7 +154,10 @@ export default function SearchPanel({
         onBatch,
       });
       if (request.current === id) {
-        if (result) setReport(result);
+        if (result) {
+          hasRows = result.hits.length > 0;
+          setReport(result);
+        }
         if (!result) setNotice("搜索已停止。");
       }
     } catch (error) {
@@ -159,6 +165,7 @@ export default function SearchPanel({
     } finally {
       if (request.current === id) {
         request.current = "";
+        if (!hasRows) setResultBaseline(undefined);
         setBusy(false);
       }
     }
@@ -478,7 +485,7 @@ export default function SearchPanel({
               onBrowse={onBrowse}
               onFileAction={onFileAction}
               fileChanges={fileChanges}
-              fileChangeBatches={fileChangeBatches}
+              changeCursor={changeCursor}
             />
           ) : (
             <p className="storage-muted">这个范围没有匹配的项目。</p>

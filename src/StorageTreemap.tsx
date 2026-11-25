@@ -1,3 +1,4 @@
+import type { ChangeBookmark } from "./resultMutations";
 import { useState } from "react";
 import { basename, formatSize } from "./model";
 import { describeFile } from "./fileTypes";
@@ -25,13 +26,13 @@ export default function StorageTreemap({
   onBrowse,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
   changeBaseline,
 }: ResultActionProps & {
   report: StorageReport;
   visible: boolean;
   onBrowse: (path: string, selected?: string) => void;
-  changeBaseline?: number;
+  changeBaseline?: ChangeBookmark;
 }) {
   const [directory, setDirectory] = useState(report.path);
   const [selected, setSelected] = useState("");
@@ -182,19 +183,17 @@ export default function StorageTreemap({
           {list.length ? (
             <ResultFiles
               key={`${current}-${selected}`}
-              items={list
-                .slice(0, 200)
-                .map((node) => ({
-                  entry: { ...node, isLink: false, hidden: false },
-                  parent: node.parent,
-                }))}
+              items={list.slice(0, 200).map((node) => ({
+                entry: { ...node, isLink: false, hidden: false },
+                parent: node.parent,
+              }))}
               scope={report.path}
               label="图中项目"
               visible={visible}
               onBrowse={onBrowse}
               onFileAction={onFileAction}
               fileChanges={fileChanges}
-              fileChangeBatches={fileChangeBatches}
+              changeCursor={changeCursor}
               changeBaseline={changeBaseline}
               extra={(item) =>
                 item.entry.isDir ? (

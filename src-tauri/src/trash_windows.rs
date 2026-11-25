@@ -1,6 +1,23 @@
 use super::*;
-use std::{ffi::OsString, process::Command};
+use std::{ffi::OsString, process::Command, time::Duration};
 use trash::os_limited;
+use windows::{
+    core::{Interface, PWSTR},
+    Win32::{
+        Foundation::{E_UNEXPECTED, PROPERTYKEY},
+        Storage::EnhancedStorage::{PKEY_FileName, PKEY_Size},
+        System::{
+            Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED},
+            SystemServices::{SFGAO_FOLDER, SFGAO_STREAM},
+        },
+        UI::Shell::{
+            BHID_EnumItems, FOLDERID_RecycleBinFolder, IEnumShellItems, IShellItem, IShellItem2,
+            SHGetKnownFolderItem, KF_FLAG_DEFAULT, PID_DISPLACED_DATE, PID_DISPLACED_FROM,
+            PSGUID_DISPLACED, SIGDN_DESKTOPABSOLUTEPARSING,
+        },
+    },
+};
+
 fn item_token(item: &trash::TrashItem) -> String {
     token(
         &item.id.to_string_lossy(),
@@ -14,39 +31,136 @@ fn find(item: &NativeItem) -> Result<trash::TrashItem, String> {
         .find(|current| item_token(current) == item.item.id)
         .ok_or_else(|| "回收站项目已变化，请刷新后重新选择".into())
 }
-pub(super) fn list() -> Result<(Vec<NativeItem>, Vec<String>), String> {
-    let mut warnings = Vec::new();
-    let items = os_limited::list()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter_map(|item| {
-            let metadata = match os_limited::metadata(&item) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    warnings.push(format!(
-                        "无法读取回收站项目「{}」：{error}；请刷新后重试。",
-                        item.name.to_string_lossy()
-                    ));
-                    return None;
-                }
-            };
-            let original = item.original_path();
-            let id = item_token(&item);
-            Some(NativeItem {
-                item: TrashItem {
-                    id,
-                    name: item.name.to_string_lossy().into_owned(),
-                    original_path: Some(strpath(&original)),
-                    deleted_at: (item.time_deleted >= 0).then_some(item.time_deleted),
-                    size: metadata.size.size(),
-                    is_dir: metadata.size.entries().is_some(),
+type Listing = (Vec<NativeItem>, Vec<String>);
+
+// Shell returns these strings in COM task memory.
+unsafe fn take_string(value: PWSTR) -> windows::core::Result<String> {
+    if value.is_null() {
+        return Err(E_UNEXPECTED.into());
+    }
+    let string = value.to_string();
+    CoTaskMemFree(Some(value.0.cast()));
+    Ok(string?)
+}
+
+fn read_item(shell: &IShellItem) -> windows::core::Result<NativeItem> {
+    const ORIGINAL_FOLDER: PROPERTYKEY = PROPERTYKEY {
+        fmtid: PSGUID_DISPLACED,
+        pid: PID_DISPLACED_FROM,
+    };
+    const DELETION_DATE: PROPERTYKEY = PROPERTYKEY {
+        fmtid: PSGUID_DISPLACED,
+        pid: PID_DISPLACED_DATE,
+    };
+    let item: IShellItem2 = shell.cast()?;
+    // Use the same identity fields as trash::os_limited::list so actions can
+    // revalidate the snapshot. Read properties directly on this top-level item.
+    unsafe {
+        let id = take_string(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?)?.into();
+        let name = take_string(item.GetString(&PKEY_FileName)?)?.into();
+        let original_parent = take_string(item.GetString(&ORIGINAL_FOLDER)?)?.into();
+        let time = item.GetFileTime(&DELETION_DATE)?;
+        let ticks = (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+        let time_deleted = (ticks / 10_000_000) as i64 - 11_644_473_600;
+        let native = trash::TrashItem {
+            id,
+            name,
+            original_parent,
+            time_deleted,
+        };
+        // ZIP archives can be both streams and Shell folders.
+        let is_dir = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM)? == SFGAO_FOLDER;
+        Ok(NativeItem {
+            item: TrashItem {
+                id: item_token(&native),
+                name: native.name.to_string_lossy().into_owned(),
+                original_path: Some(strpath(&native.original_path())),
+                deleted_at: (time_deleted >= 0).then_some(time_deleted),
+                size: if is_dir {
+                    None
+                } else {
+                    item.GetUInt64(&PKEY_Size).ok()
                 },
-                path: PathBuf::from(item.id),
-                identity: None,
-            })
+                is_dir,
+            },
+            path: native.id.into(),
+            identity: None,
         })
-        .collect();
+    }
+}
+
+fn enumerate() -> windows::core::Result<Listing> {
+    let bin: IShellItem =
+        unsafe { SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)? };
+    let entries: IEnumShellItems = unsafe { bin.BindToHandler(None, &BHID_EnumItems)? };
+    let mut items = Vec::new();
+    let mut skipped = 0;
+    loop {
+        let mut next = [None];
+        let mut fetched = 0;
+        unsafe { entries.Next(&mut next, Some(&mut fetched))? };
+        if fetched == 0 {
+            break;
+        }
+        let [Some(item)] = next else { break };
+        match read_item(&item) {
+            Ok(row) => items.push(row),
+            Err(_) => skipped += 1,
+        }
+    }
+    let mut warnings = Vec::new();
+    if skipped > 0 {
+        warnings.push(format!("有 {skipped} 个回收站项目无法读取，请刷新后重试。"));
+    }
     Ok((items, warnings))
+}
+
+fn read_shell() -> Result<Listing, String> {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok() }.map_err(|e| e.to_string())?;
+    let result = enumerate();
+    unsafe { CoUninitialize() };
+    let (items, warnings) = result.map_err(|error| format!("无法读取 Windows 回收站：{error}"))?;
+    if items.is_empty() && !warnings.is_empty() {
+        return Err(warnings.join(" "));
+    }
+    Ok((items, warnings))
+}
+
+pub(crate) const LIST_ARGUMENT: &str = "--list-windows-trash";
+
+pub(crate) fn write_listing() -> std::io::Result<()> {
+    use std::io::{BufWriter, Write};
+    let mut output = BufWriter::new(std::io::stdout().lock());
+    serde_json::to_writer(&mut output, &read_shell())?;
+    output.flush()
+}
+
+pub(super) fn list() -> Result<Listing, String> {
+    // A shell extension or an unavailable disk can block a COM call indefinitely.
+    // Isolate the read so a timeout actually stops it before the user retries.
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    command.arg(LIST_ARGUMENT);
+    let output = crate::system_process::run_with_stdout_limit(
+        command,
+        || false,
+        Some(Duration::from_secs(60)),
+        u64::MAX,
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            "读取 Windows 回收站超时，请重新读取。".to_string()
+        } else {
+            error.to_string()
+        }
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "Windows 回收站读取进程异常退出（{}），请重新读取。",
+            output.status
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("无法读取回收站结果：{error}"))?
 }
 pub(super) fn inside_trash(path: &Path) -> bool {
     path.components().any(|part| {
@@ -76,7 +190,7 @@ mod tests {
 
     fn listed(path: &Path) -> NativeItem {
         let original = strpath(path);
-        list()
+        read_shell()
             .unwrap()
             .0
             .into_iter()
@@ -167,11 +281,15 @@ pub(super) fn restore_via_system(
         .map_err(|error| error.to_string())?
         .keep();
     let source = stage.join(&item.item.name);
-    let mut recovery = shared
-        .recovery
-        .begin(id, Some(&item.path), &target, Some(&source), true)?;
+    let mut recovery = shared.recovery.begin(
+        id,
+        Some(&item.path),
+        &target,
+        Some(&source),
+        true,
+        "系统回收站恢复到保留位置",
+    )?;
     recovery.retain();
-    recovery.phase("系统回收站恢复到保留位置")?;
     native.original_parent = stage.clone();
     native.name = OsString::from(&item.item.name);
     os_limited::restore_all([native])

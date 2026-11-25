@@ -1,9 +1,15 @@
 import type { Task } from "./model";
 
 export const activeTask = (task: { status: string }) =>
-  ["queued", "running", "conflict", "pausing", "paused", "resuming"].includes(
-    task.status,
-  );
+  [
+    "preparing",
+    "queued",
+    "running",
+    "conflict",
+    "pausing",
+    "paused",
+    "resuming",
+  ].includes(task.status);
 
 export function orderedTasks(tasks: Task[]): Task[] {
   const group = (task: Task) =>

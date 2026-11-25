@@ -12,7 +12,7 @@ Filepace 是一款适用于 macOS 和 Windows 的本地文件管理器。你可�
 
 ## 下载安装
 
-| 平台 | v0.11.0 安装包 | 安装方式 |
+| 平台 | v0.12.0 安装包 | 安装方式 |
 | --- | --- | --- |
 | macOS（Apple 芯片） | [下载 DMG][mac-download] | 打开磁盘映像，将 Filepace 拖到「应用程序」。 |
 | Windows（x64） | [下载 EXE][windows-download] | 双击安装包，为当前用户安装。缺少 WebView2 时，安装程序会联网下载。 |
@@ -26,6 +26,8 @@ macOS 版采用临时签名，尚未通过 Apple 公证，首次打开时可能�
 ### 并排浏览和对比目录
 
 点击「左右分栏」，两边各自保留标签页、选区和浏览历史。每个标签页可切换列表、列视图或图标视图。常用文件夹可以拖到侧栏创建快捷入口，也可以把整套标签页和分栏保存为工作布局。
+
+打开大目录时，文件会分批显示，你可以先浏览已经列出的项目。重复打开或刷新同一目录时，分栏会复用已有的列表和排序结果。[大目录性能实测](docs/scope.md#local-performance-verification-after-0110)
 
 在「工作布局」里可单独给已保存的布局改名。要用当前布局覆盖它的标签页和分栏，勾选「同时更新为当前标签页与分栏」后保存。
 
@@ -46,6 +48,8 @@ macOS 版采用临时签名，尚未通过 Apple 公证，首次打开时可能�
 搜索优先使用 Spotlight 或 Windows Search，也可扫描全部子目录。搜索结果可以直接预览、改名或移动。
 
 状态栏的「文件任务」显示复制、移动等操作的进度。遇到同名项目时，可以选择跳过、替换或保留两者。跨卷移动会先完成目标写入，再移除源项目。删除的项目和被替换的旧项目会进入系统废纸篓或回收站。用 **⌘Z / Ctrl+Z** 可以撤销本次会话中最近一次移动或改名。[文件操作的验证与已知限制](docs/scope.md#file-organization)
+
+从侧栏打开「回收站」，可以按名称或原位置筛选，再恢复选中的项目。Windows 只读取回收站顶层项目。如果系统超过 60 秒还未响应，点击「重新读取」即可重试。
 
 ### 找出最占空间的文件
 
@@ -93,9 +97,9 @@ npm run tauri -- build --bundles nsis
 
 提交问题或代码前，请阅读[贡献指南](CONTRIBUTING.md)和[仓库约定](AGENTS.md)。Filepace 采用 [MIT 许可证](LICENSE)。
 
-[release]: https://github.com/zhaoguhong/filepace/releases/tag/v0.11.0
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_x64-setup.exe
+[release]: https://github.com/zhaoguhong/filepace/releases/tag/v0.12.0
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.12.0/Filepace_0.12.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.12.0/Filepace_0.12.0_x64-setup.exe
 [gatekeeper]: https://support.apple.com/zh-cn/102445
 [smartscreen]: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
 [tauri]: https://v2.tauri.app/start/prerequisites/

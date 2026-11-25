@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function setup(page: Page, platform?: string) {
+async function setup(page: Page, platform?: string, seedSearch = true) {
   await page.addInitScript((platform: string | null) => {
     if (platform)
       Object.defineProperty(navigator, "platform", {
@@ -225,6 +225,7 @@ async function setup(page: Page, platform?: string) {
     });
   }, platform ?? null);
   await page.goto("/");
+  if (!seedSearch) return;
   await page.getByRole("button", { name: "搜索子文件夹", exact: true }).click();
   await page.getByLabel("文件名关键词", { exact: true }).fill("file");
   await page.getByRole("button", { name: "开始搜索", exact: true }).click();
@@ -236,6 +237,76 @@ type Fixture = {
   entries: { name: string; path: string; size: number }[];
   emit: (event: string, payload: unknown) => void;
 };
+
+test("collects retired mutation batches while active search rows follow consecutive renames", async ({
+  page,
+}) => {
+  await setup(page, undefined, false);
+  const search = page.getByRole("button", {
+    name: "搜索子文件夹",
+    exact: true,
+  });
+  await expect(search).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("HeapProfiler.enable");
+  async function expectCollectibleBatches() {
+    const batches = await page.evaluateHandle(async () => {
+      const fixture = (window as unknown as { resultsFixture: Fixture })
+        .resultsFixture;
+      const refs: WeakRef<object>[] = [];
+      for (let index = 0; index < 40; index++) {
+        const changes = [{ from: `/unrelated/${index}`, kind: "trash" }];
+        refs.push(new WeakRef(changes));
+        fixture.emit("files-mutated", changes);
+        await new Promise(requestAnimationFrame);
+      }
+      return refs;
+    });
+    await cdp.send("HeapProfiler.collectGarbage");
+    expect(
+      await batches.evaluate((refs) => refs.filter((r) => r.deref()).length),
+    ).toBe(0);
+    await batches.dispose();
+  }
+  await expectCollectibleBatches();
+  await search.click();
+  const input = page.getByLabel("文件名关键词", { exact: true });
+  const submit = page.getByRole("button", { name: "开始搜索", exact: true });
+  await input.fill("absent");
+  await submit.click();
+  await expect(page.getByText("这个范围没有匹配的项目。")).toBeVisible();
+  await expectCollectibleBatches();
+
+  await input.fill("file-01");
+  await submit.click();
+  const row = page.locator(".search-results .result-row");
+  await expect(row).toHaveCount(1);
+  for (const [from, to] of [
+    ["file-01.txt", "first-rename.txt"],
+    ["first-rename.txt", "second-rename.txt"],
+  ]) {
+    await cdp.send("HeapProfiler.collectGarbage");
+    await page.evaluate(
+      ([from, to]) => {
+        const fixture = (window as unknown as { resultsFixture: Fixture })
+          .resultsFixture;
+        fixture.emit("files-mutated", [
+          {
+            from: "/Users/results/" + from,
+            to: "/Users/results/" + to,
+            kind: "rename",
+          },
+        ]);
+      },
+      [from, to],
+    );
+    await expect(row).toContainText(to);
+  }
+  await input.fill("absent");
+  await submit.click();
+  await expect(page.getByText("这个范围没有匹配的项目。")).toBeVisible();
+  await expectCollectibleBatches();
+});
 
 test("keeps search conditions, selection and scroll after locating a result", async ({
   page,

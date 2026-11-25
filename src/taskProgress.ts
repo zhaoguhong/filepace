@@ -13,7 +13,7 @@ export function taskProgress(task: Task) {
     task.phase === "写入暂存文件" &&
     seconds >= 1.5 &&
     task.bytes >= 64 * 1024 &&
-    task.errors.length === 0;
+    !(task.errorCount ?? task.errors?.length);
   const rate = measured ? task.bytes / seconds : null;
   // Skipped files remain part of the scan total. Do not estimate an ETA from
   // that denominator, or from files whose size changed after the scan.

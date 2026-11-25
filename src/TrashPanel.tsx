@@ -27,7 +27,7 @@ export default function TrashPanel({
   onBack,
   onForward,
 }: {
-  tasks: Task[];
+  tasks: Pick<Task, "id" | "kind" | "status">[];
   locations: Shortcut[];
   onSubmitted: (id: string) => void;
   onError: (error: string) => void;
@@ -50,7 +50,11 @@ export default function TrashPanel({
   const [busy, setBusy] = useState(false);
   const [scroll, setScroll] = useState(0);
   const { listRef, attachList, height, layout } = useFileViewport();
-  const generation = useRef(0);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const pendingRead = useRef<{
+    taskState: string;
+    request: Promise<Report>;
+  } | null>(null);
   const anchor = useRef<string | null>(null);
   const visible = useMemo(() => {
     const needle = query.toLocaleLowerCase();
@@ -72,14 +76,23 @@ export default function TrashPanel({
       .filter((task) => ["restore", "purge", "trash"].includes(task.kind))
       .map((task) => [task.id, task.status]),
   );
-  async function refresh() {
-    const request = ++generation.current;
-    setLoading(true);
-    try {
-      const report = await call<Report>("list_trash");
-      if (generation.current === request) {
+  function refresh() {
+    setRefreshCount((count) => count + 1);
+  }
+  useEffect(() => {
+    let active = true;
+    async function read() {
+      const request =
+        pendingRead.current?.taskState === taskState
+          ? pendingRead.current.request
+          : call<Report>("list_trash");
+      pendingRead.current = { taskState, request };
+      setLoading(true);
+      setError("");
+      try {
+        const report = await request;
+        if (!active) return;
         setReport(report);
-        setError("");
         setSelected((previous) => {
           if (!previous.size) return previous;
           const available = new Set(report.items.map((item) => item.id));
@@ -88,24 +101,25 @@ export default function TrashPanel({
           );
           return retained.size === previous.size ? previous : retained;
         });
+      } catch (error) {
+        if (active) setError(String(error));
+      } finally {
+        if (active) {
+          pendingRead.current = null;
+          setLoading(false);
+        }
       }
-    } catch (error) {
-      if (generation.current === request) setError(String(error));
-    } finally {
-      if (generation.current === request) setLoading(false);
     }
-  }
-  useEffect(() => {
-    void refresh();
-    return () => {
-      generation.current++;
+    void read();
+    const onFocus = () => {
+      if (!pendingRead.current) void read();
     };
-  }, [taskState]);
-  useEffect(() => {
-    const update = () => void refresh();
-    window.addEventListener("focus", update);
-    return () => window.removeEventListener("focus", update);
-  }, []);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [taskState, refreshCount]);
   function selectItem(id: string, checked: boolean) {
     setSelected((previous) => {
       const next = new Set(previous);
@@ -160,11 +174,7 @@ export default function TrashPanel({
           <Trash2 size={19} />
           回收站
         </h2>
-        <button
-          aria-label="刷新回收站"
-          disabled={loading}
-          onClick={() => void refresh()}
-        >
+        <button aria-label="刷新回收站" disabled={loading} onClick={refresh}>
           <RefreshCw size={15} />
         </button>
         <input
@@ -225,7 +235,7 @@ export default function TrashPanel({
       {error && (
         <p role="alert" className="trash-message error">
           {error}
-          <button onClick={() => void refresh()}>重新读取</button>
+          <button onClick={refresh}>重新读取</button>
         </p>
       )}
       <div

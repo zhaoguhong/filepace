@@ -25,6 +25,7 @@ const task = (
 describe("task queue presentation", () => {
   it("keeps paused and pausing work active for close/update/undo guards", () => {
     for (const status of [
+      "preparing",
       "queued",
       "running",
       "conflict",

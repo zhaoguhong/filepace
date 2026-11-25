@@ -15,9 +15,18 @@ pub(crate) fn system_directory() -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn run(
+    command: Command,
+    stop: impl Fn() -> bool,
+    timeout: Option<Duration>,
+) -> io::Result<Output> {
+    run_with_stdout_limit(command, stop, timeout, 8 * 1024 * 1024)
+}
+
+pub(crate) fn run_with_stdout_limit(
     mut command: Command,
     stop: impl Fn() -> bool,
     timeout: Option<Duration>,
+    stdout_limit: u64,
 ) -> io::Result<Output> {
     #[cfg(windows)]
     {
@@ -30,7 +39,7 @@ pub(crate) fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let stdout = capture(child.stdout.take().unwrap(), 8 * 1024 * 1024);
+    let stdout = capture(child.stdout.take().unwrap(), stdout_limit);
     let stderr = capture(child.stderr.take().unwrap(), 32 * 1024);
     let start = Instant::now();
     let status = loop {
@@ -66,7 +75,9 @@ fn capture(
 ) -> thread::JoinHandle<io::Result<Vec<u8>>> {
     thread::spawn(move || {
         let mut output = Vec::new();
-        reader.take(max + 1).read_to_end(&mut output)?;
+        reader
+            .take(max.saturating_add(1))
+            .read_to_end(&mut output)?;
         if output.len() as u64 > max {
             return Err(io::Error::other("系统输出超过限制"));
         }

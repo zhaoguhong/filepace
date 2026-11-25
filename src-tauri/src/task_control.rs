@@ -11,7 +11,6 @@ pub(crate) struct TaskExecution<'a> {
     shared: &'a Arc<Shared>,
     pub(crate) app: Option<&'a AppHandle>,
     mutation: Option<MutexGuard<'a, ()>>,
-    emitted: usize,
 }
 
 impl<'a> TaskExecution<'a> {
@@ -20,28 +19,21 @@ impl<'a> TaskExecution<'a> {
             shared,
             app,
             mutation: Some(shared.mutation.lock().unwrap()),
-            emitted: 0,
         }
     }
 
     fn publish(&mut self, id: &str) {
+        let Some(app) = self.app else { return };
         let changes = self
             .shared
             .tasks
             .lock()
             .unwrap()
-            .get(id)
-            .map(|task| {
-                let changes =
-                    task.file_changes[self.emitted.min(task.file_changes.len())..].to_vec();
-                self.emitted = task.file_changes.len();
-                changes
-            })
+            .get_mut(id)
+            .map(|task| std::mem::take(&mut task.file_changes))
             .unwrap_or_default();
         if !changes.is_empty() {
-            if let Some(app) = self.app {
-                let _ = app.emit("files-mutated", changes);
-            }
+            let _ = app.emit("files-mutated", changes);
         }
     }
 
@@ -413,6 +405,31 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_removes_waiting_work_while_another_task_owns_the_mutation_lock() {
+        let shared = Shared::default();
+        for id in ["first", "second"] {
+            shared.tasks.lock().unwrap().insert(
+                id.into(),
+                Task {
+                    status: "queued".into(),
+                    ..Default::default()
+                },
+            );
+            shared.task_queue.lock().unwrap().pending.push_back((
+                id.into(),
+                Box::new(|_, _, _| panic!("queued work must not run")),
+            ));
+        }
+        let _running = shared.mutation.lock().unwrap();
+        act_on_task(&shared, "first", "cancel".into(), false, None);
+        let tasks = shared.tasks.lock().unwrap();
+        assert_eq!(tasks["first"].status, "cancelled");
+        assert_eq!(tasks["first"].queue_position, None);
+        assert_eq!(tasks["second"].queue_position, Some(0));
+        assert_eq!(shared.task_queue.lock().unwrap().pending.len(), 1);
+    }
+
+    #[test]
     #[cfg(not(windows))]
     fn rejects_changed_source_after_paused_move_and_preserves_both_locations() {
         let fixture = tempfile::tempdir().unwrap();
@@ -442,9 +459,15 @@ mod tests {
         fs::write(&first, b"first original").unwrap();
         fs::write(&second, b"second original").unwrap();
         let sources = vec![crate::strpath(&first), crate::strpath(&second)];
-        let plan =
-            crate::plan_transfer("move", &sources, &crate::strpath(&destination), None, None)
-                .unwrap();
+        let plan = crate::plan_transfer(
+            "move",
+            &sources,
+            &crate::strpath(&destination),
+            None,
+            None,
+            &|| Ok(()),
+        )
+        .unwrap();
         let shared = Arc::new(Shared::default());
         shared.tasks.lock().unwrap().insert(
             "batch".into(),
@@ -470,7 +493,6 @@ mod tests {
                 "move",
                 plan.items,
                 plan.folder,
-                None,
                 None,
                 &mut checkpoint,
             )
@@ -517,9 +539,15 @@ mod tests {
         fs::create_dir(&destination).unwrap();
         fs::write(&source, b"original").unwrap();
         let sources = vec![crate::strpath(&source)];
-        let plan =
-            crate::plan_transfer("move", &sources, &crate::strpath(&destination), None, None)
-                .unwrap();
+        let plan = crate::plan_transfer(
+            "move",
+            &sources,
+            &crate::strpath(&destination),
+            None,
+            None,
+            &|| Ok(()),
+        )
+        .unwrap();
         let shared = Arc::new(Shared::default());
         shared.tasks.lock().unwrap().insert(
             "move".into(),
@@ -545,7 +573,6 @@ mod tests {
                 "move",
                 plan.items,
                 plan.folder,
-                None,
                 None,
                 &mut checkpoint,
             )

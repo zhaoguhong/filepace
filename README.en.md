@@ -12,7 +12,7 @@ Filepace is a local file manager for macOS and Windows. Open two folders side by
 
 ## Download and install
 
-| Platform | v0.11.0 installer | How to install |
+| Platform | v0.12.0 installer | How to install |
 | --- | --- | --- |
 | macOS (Apple Silicon) | [Download DMG][mac-download] | Open the disk image and drag Filepace to Applications. |
 | Windows (x64) | [Download EXE][windows-download] | Run the installer to install for the current user. If WebView2 is missing, the installer downloads it. |
@@ -26,6 +26,8 @@ If you already have v0.4.0 or later, check for updates under Settings → Update
 ### Browse and compare folders side by side
 
 Open Split View (左右分栏) to give each folder its own tabs, selection, and navigation history. Switch any tab between List, Column, and Icon views. Drag frequently used folders to the sidebar to create shortcuts, or save your tabs and panes as a work layout.
+
+Large folders appear in batches, so you can browse the first files while the rest load. Panes reuse directory listings and sort results when opening or refreshing the same folder. [Large-folder measurements](docs/scope.md#local-performance-verification-after-0110)
 
 In Work Layouts (工作布局), you can rename a saved layout or replace its tabs and panes with the current layout.
 
@@ -46,6 +48,8 @@ The command palette recognizes common Chinese aliases and English keywords and e
 Filepace uses Spotlight or Windows Search when available, with an option to scan all subfolders. Preview, rename, or move files directly from the search results.
 
 Open File Tasks (文件任务) in the status bar to track copies and moves. If names conflict, choose whether to skip, replace, or keep both. A move across volumes writes the destination before removing the source. Deleted items and successfully replaced files go to the system Trash or Recycle Bin. Press **Command+Z / Ctrl+Z** to undo the last move or rename in the current session. [File operation verification and known limits](docs/scope.md#file-organization)
+
+Open Trash (回收站) in the sidebar to filter by name or original location and restore selected items. On Windows, Filepace reads only the top-level Recycle Bin items. If Windows takes longer than 60 seconds to respond, choose Retry (重新读取).
 
 ### See what takes up space
 
@@ -93,9 +97,9 @@ Installers are written to `src-tauri/target/release/bundle/`. [Windows installat
 
 Read the [contribution guide](CONTRIBUTING.md) and [repository instructions](AGENTS.md) before reporting an issue or submitting a change. Filepace is available under the [MIT License](LICENSE).
 
-[release]: https://github.com/zhaoguhong/filepace/releases/tag/v0.11.0
-[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_aarch64.dmg
-[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.11.0/Filepace_0.11.0_x64-setup.exe
+[release]: https://github.com/zhaoguhong/filepace/releases/tag/v0.12.0
+[mac-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.12.0/Filepace_0.12.0_aarch64.dmg
+[windows-download]: https://github.com/zhaoguhong/filepace/releases/download/v0.12.0/Filepace_0.12.0_x64-setup.exe
 [gatekeeper]: https://support.apple.com/en-us/102445
 [smartscreen]: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
 [tauri]: https://v2.tauri.app/start/prerequisites/

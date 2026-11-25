@@ -1,8 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { call, desktop } from "./bridge";
-import { filterEntries, sortEntries, type Listing, type Tab } from "./model";
+import {
+  appendListing,
+  filterEntries,
+  reuseUnchangedListing,
+  sortedListing,
+  type Listing,
+  type Tab,
+} from "./model";
 import { revealItem, useFileViewport } from "./fileViewport";
+import { DirectoryFilter } from "./directoryFilter";
+import type { ScrollPositions } from "./scrollPositions";
+import { invalidateThumbnails } from "./thumbnailCache";
 
 export type PaneSide = "left" | "right";
 export type PaneSession = { tabs: Tab[]; active: string };
@@ -19,6 +29,7 @@ type CachedDirectory = {
 const loadingDirectory: DirectoryState = { loading: true };
 const emptyDirectory: DirectoryState = { loading: false };
 const cache = new Map<string, CachedDirectory>();
+const completeListings = new WeakSet<Listing>();
 
 function pruneCache() {
   const idle = [...cache].filter(
@@ -47,25 +58,53 @@ function requestDirectory(path: string, item: CachedDirectory) {
   item.stale = false;
   publish(item, { ...item.state, error: undefined, loading: true });
   const existing = item.state.listing;
-  const onBatch = desktop ? new Channel<Listing>() : undefined;
+  const onBatch = desktop
+    ? new Channel<Listing & { total?: number }>()
+    : undefined;
   let partial: Listing | undefined;
-  let succeeded = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  function finish(listing: Listing | null, error?: string) {
+    if (item.requested !== id) return;
+    clearTimeout(timer);
+    item.requested = null;
+    item.cancel = undefined;
+    if (listing) {
+      item.loadedAt = Date.now();
+      completeListings.add(listing);
+    } else item.stale = true;
+    publish(item, { listing: listing ?? existing, error, loading: false });
+    if (listing && item.stale && item.listeners.size)
+      requestDirectory(path, item);
+    pruneCache();
+  }
   const flush = () => {
     timer = undefined;
     if (item.requested === id && partial)
-      publish(item, {
-        listing: { ...partial, entries: [...partial.entries] },
-        loading: true,
-      });
+      publish(item, { listing: partial, loading: true });
   };
   if (onBatch)
     onBatch.onmessage = (batch) => {
       // Keep an existing complete snapshot visible during refresh. First loads
       // can show useful rows before the filesystem has enumerated everything.
       if (item.requested !== id || existing) return;
-      if (!partial) partial = { ...batch, entries: [...batch.entries] };
-      else partial.entries.push(...batch.entries);
+      if (!partial) {
+        partial = {
+          path: batch.path,
+          parent: batch.parent,
+          entries: batch.entries,
+        };
+      } else if (batch.entries.length) {
+        // Published arrays may still be rendered by either pane. Copy on the
+        // first append after a publish, then accumulate subsequent batches.
+        if (item.state.listing === partial)
+          partial = appendListing(partial, batch.entries);
+        else partial.entries.push(...batch.entries);
+      }
+      if (batch.total !== undefined) {
+        if (partial.entries.length === batch.total) finish(partial);
+        else finish(null, "目录读取不完整，请刷新重试");
+        return;
+      }
       if (!item.state.listing) flush();
       else timer ??= setTimeout(flush, 80);
     };
@@ -79,45 +118,27 @@ function requestDirectory(path: string, item: CachedDirectory) {
     item.state = { listing: existing, loading: false };
     if (desktop) void call("cancel_directory_listing", { id }).catch(() => {});
   };
-  void call<Listing | null>("list_directory", { path, id, onBatch })
-    .then(
-      (listing) => {
-        if (item.requested !== id) return;
-        if (listing) {
-          succeeded = true;
-          publish(item, { listing, loading: false });
-          item.loadedAt = Date.now();
-        } else {
-          item.stale = true;
-          publish(item, { listing: existing, loading: false });
-        }
-      },
-      (error) => {
-        if (item.requested !== id) return;
-        publish(item, {
-          listing: existing,
-          error: String(error),
-          loading: false,
-        });
-        item.stale = true;
-      },
-    )
-    .finally(() => {
-      clearTimeout(timer);
-      if (item.requested !== id) return;
-      item.requested = null;
-      item.cancel = undefined;
-      // A filesystem event during enumeration requests one fresh snapshot.
-      // Errors stay visible until an explicit refresh or a new subscription.
-      if (succeeded && item.stale && item.listeners.size)
-        requestDirectory(path, item);
-      pruneCache();
-    });
+  void call<Listing | { streamed: true } | null>("list_directory", {
+    path,
+    id,
+    onBatch,
+    delivery: existing ? "snapshot" : "stream",
+  }).then(
+    (result) => {
+      // Stream completion arrives on the ordered batch channel. Small reads,
+      // refreshes and older backends return a complete snapshot here.
+      if (!result || !("streamed" in result)) {
+        finish(existing && result ? reuseUnchangedListing(existing, result) : result);
+      }
+    },
+    (error) => finish(null, String(error)),
+  );
 }
 
 const normalizePath = (path: string) =>
   path.replaceAll("\\", "/").replace(/\/+$/, "");
 export function invalidateDirectories(paths: string[] | null) {
+  invalidateThumbnails(paths);
   const changes = paths?.map(normalizePath);
   for (const [path, item] of cache) {
     const locations = [path, item.state.listing?.path ?? path].map(
@@ -179,7 +200,9 @@ export function useDirectoryListing(path: string | undefined) {
 export function useBrowsePane(
   session: PaneSession | undefined,
   hidden: boolean,
+  positions: ScrollPositions,
   compact = false,
+  visible = true,
 ) {
   const tab =
     session?.tabs.find((t) => t.id === session.active) ?? session?.tabs[0];
@@ -200,8 +223,8 @@ export function useBrowsePane(
   const sorted = useMemo(
     () =>
       listing
-        ? sortEntries(
-            listing.entries,
+        ? sortedListing(
+            listing,
             tab?.sort ?? "name",
             Boolean(tab?.descending),
             hidden,
@@ -210,40 +233,47 @@ export function useBrowsePane(
         : [],
     [listing, tab?.sort, tab?.descending, hidden, group],
   );
+  const [filter] = useState(() => new DirectoryFilter());
+  const indexable =
+    visible && listing && completeListings.has(listing) ? listing : undefined;
   const entries = useMemo(
-    () => filterEntries(sorted, tab?.query ?? ""),
-    [sorted, tab?.query],
+    () => filter.match(sorted, tab?.query ?? "", indexable),
+    [filter, sorted, tab?.query, indexable],
   );
-  const hiddenEntries = useMemo(
-    () => listing?.entries.filter((entry) => entry.hidden) ?? [],
-    [listing],
-  );
-  const hiddenMatches = useMemo(
-    () => filterEntries(hiddenEntries, tab?.query ?? "").length,
-    [hiddenEntries, tab?.query],
-  );
-  const selectedBytes = useMemo(
-    () =>
-      selected.size
-        ? entries.reduce(
-            (sum, entry) =>
-              sum + (!entry.isDir && selected.has(entry.path) ? entry.size : 0),
-            0,
-          )
-        : 0,
-    [selected, entries],
-  );
+  const hiddenCount = (listing?.entries.length ?? 0) - sorted.length;
+  const hiddenMatches = useMemo(() => {
+    // Only an empty filter result displays the offer to show matching hidden files.
+    if (!listing || !tab?.query || entries.length || !hiddenCount) return 0;
+    return filterEntries(
+      listing.entries.filter((entry) => entry.hidden),
+      tab.query,
+    ).length;
+  }, [listing, tab?.query, entries.length, hiddenCount]);
+  const selectedBytes = useMemo(() => {
+    if (!selected.size) return 0;
+    let bytes = 0;
+    let found = 0;
+    for (const entry of entries) {
+      if (!selected.has(entry.path)) continue;
+      if (!entry.isDir) bytes += entry.size;
+      if (++found === selected.size) break;
+    }
+    return bytes;
+  }, [selected, entries]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
-    if (!list || !tab) return;
+    if (!visible || !list || !tab) return;
     // A partial list may clamp the viewport. Keep the intended offset in the
     // session while showing available rows; ignore that temporary scroll event.
+    const scroll = positions.read(tab);
     restoringScroll.current =
-      directory.loading && list.scrollHeight - list.clientHeight < tab.scroll;
-    list.scrollTop = tab.scroll;
+      directory.loading && list.scrollHeight - list.clientHeight < scroll;
+    list.scrollTop = scroll;
   }, [
+    visible,
     tab?.id,
+    tab?.index,
     tab?.view,
     tab?.gridSize,
     path,
@@ -272,7 +302,7 @@ export function useBrowsePane(
     tab,
     entries,
     total: sorted.length,
-    hiddenCount: hiddenEntries.length,
+    hiddenCount,
     hiddenMatches,
     selected,
     selectedBytes,

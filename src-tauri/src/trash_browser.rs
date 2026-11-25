@@ -27,9 +27,11 @@ pub(crate) struct TrashItem {
     is_dir: bool,
 }
 #[derive(Clone)]
+#[cfg_attr(windows, derive(Serialize, Deserialize))]
 struct NativeItem {
     item: TrashItem,
     path: PathBuf,
+    #[cfg_attr(windows, serde(skip))]
     identity: Option<Identity>,
 }
 #[derive(Default)]
@@ -271,10 +273,14 @@ fn purge_path(path: &Path, identity: &Identity, shared: &Shared, id: &str) -> Re
         .map_err(|error| error.to_string())?
         .keep();
     let staged = stage.join(path.file_name().ok_or("回收站项目名称无效")?);
-    let mut recovery = shared
-        .recovery
-        .begin(id, Some(path), &staged, Some(&staged), true)?;
-    recovery.phase("准备永久删除已确认的回收站项目")?;
+    let mut recovery = shared.recovery.begin(
+        id,
+        Some(path),
+        &staged,
+        Some(&staged),
+        true,
+        "准备永久删除已确认的回收站项目",
+    )?;
     parent.check()?;
     crate::fs_safety::rename_exclusive(path, &staged).map_err(|error| error.to_string())?;
     recovery.retain();
@@ -314,6 +320,8 @@ mod platform;
 #[cfg(windows)]
 #[path = "trash_windows.rs"]
 mod platform;
+#[cfg(windows)]
+pub(crate) use platform::{write_listing, LIST_ARGUMENT};
 #[cfg(not(any(target_os = "macos", windows)))]
 mod platform {
     use super::*;

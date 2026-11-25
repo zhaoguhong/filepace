@@ -20,6 +20,8 @@ mod system_process;
 mod task_control;
 mod task_feed;
 mod transfer;
+#[cfg(test)]
+mod transfer_benchmark;
 mod trash_browser;
 #[cfg(target_os = "macos")]
 mod trash_metadata;
@@ -40,7 +42,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Condvar, Mutex,
     },
     time::{Instant, UNIX_EPOCH},
@@ -151,7 +153,7 @@ struct Task {
     id: String,
     sequence: u64,
     kind: String,
-    sources: Vec<String>,
+    sources: Arc<[String]>,
     destination: String,
     status: String,
     current: String,
@@ -239,12 +241,14 @@ struct Shared {
     task_feed: task_feed::TaskFeed,
     mutation: Mutex<()>,
     installing_update: AtomicBool,
+    closing: AtomicU8,
     undo: Mutex<Vec<undo::UndoRecord>>,
     sessions: Mutex<HashMap<String, serde_json::Value>>,
     closing_windows: Mutex<HashSet<String>>,
     clipboard: Mutex<(Vec<String>, bool)>,
     duplicate_clipboard: Mutex<Option<duplicates::Guard>>,
     directory_watch: Mutex<directory_watch::DirectoryWatch>,
+    directory_events: directory_watch::DirectoryEvents,
 }
 fn strpath(p: &Path) -> String {
     p.to_string_lossy().into_owned()
@@ -414,7 +418,13 @@ async fn suggest_directories(input: String) -> Result<Vec<String>, String> {
     .map_err(|error| error.to_string())?
 }
 #[tauri::command]
-fn places() -> Vec<Place> {
+async fn places() -> Result<Vec<Place>, String> {
+    tauri::async_runtime::spawn_blocking(system_places)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn system_places() -> Vec<Place> {
     let mut out = Vec::new();
     for (name, path) in [
         ("个人目录", dirs::home_dir()),
@@ -841,28 +851,32 @@ async fn start_task(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut guard = duplicate_guard
-            .map(|request| {
-                window.state::<duplicates::DuplicateState>().guard(
-                    window.label(),
-                    &request,
-                    &sources,
-                )
-            })
-            .transpose()?;
-        if kind == "move" && guard.is_none() {
-            let shared = app.state::<Arc<Shared>>();
-            let clipboard_guard = shared.duplicate_clipboard.lock().unwrap().clone();
-            if let Some(clipboard_guard) = clipboard_guard {
-                if clipboard_guard.covers(&sources)
-                    && clipboard_get()
-                        .is_ok_and(|(paths, cut)| cut && clipboard_guard.covers(&paths))
-                {
-                    guard = Some(clipboard_guard);
+        let moving = kind == "move";
+        let resolve = |sources: &[String]| {
+            let mut guard = duplicate_guard
+                .map(|request| {
+                    window.state::<duplicates::DuplicateState>().guard(
+                        window.label(),
+                        &request,
+                        sources,
+                    )
+                })
+                .transpose()?;
+            if moving && guard.is_none() {
+                let shared = window.state::<Arc<Shared>>();
+                let clipboard_guard = shared.duplicate_clipboard.lock().unwrap().clone();
+                if let Some(clipboard_guard) = clipboard_guard {
+                    if clipboard_guard.covers(sources)
+                        && clipboard_get()
+                            .is_ok_and(|(paths, cut)| cut && clipboard_guard.covers(&paths))
+                    {
+                        guard = Some(clipboard_guard);
+                    }
                 }
             }
-        }
-        prepare_task(kind, sources, destination, within, None, guard, app)
+            Ok(guard)
+        };
+        prepare_task(kind, sources, destination, within, None, resolve, app)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -874,37 +888,83 @@ fn prepare_task(
     destination: String,
     within: Option<String>,
     retry: Option<&Task>,
-    duplicate_guard: Option<duplicates::Guard>,
+    resolve_guard: impl FnOnce(&[String]) -> Result<Option<duplicates::Guard>, String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let duplicate_guard = duplicate_guard
-        .map(|guard| guard.restrict(&sources))
-        .transpose()?;
     if matches!(kind.as_str(), "zip" | "unzip") {
+        if let Some(guard) = resolve_guard(&sources)? {
+            guard.restrict(&sources)?;
+        }
         return archives::start(kind, sources, destination, app);
     }
-    let TransferPlan { folder, items } =
-        plan_transfer(&kind, &sources, &destination, within.as_deref(), retry)?;
-    if let Some(guard) = &duplicate_guard {
-        for (_, target) in &items {
-            if let Some(target) = target {
+    let sources: Arc<[String]> = sources.into();
+    let shared = app.state::<Arc<Shared>>().inner().clone();
+    let id = register_task(
+        &shared,
+        Task {
+            kind: kind.clone(),
+            sources: sources.clone(),
+            destination: destination.clone(),
+            within: within.clone(),
+            status: "preparing".into(),
+            ..Default::default()
+        },
+    )?;
+    let check = || {
+        if cancelled(&shared, &id) {
+            Err("任务已取消".into())
+        } else {
+            Ok(())
+        }
+    };
+    let plan: Result<_, String> = (|| {
+        check()?;
+        let duplicate_guard = resolve_guard(&sources)?
+            .map(|guard| guard.restrict(&sources))
+            .transpose()?;
+        let plan = plan_transfer(
+            &kind,
+            &sources,
+            &destination,
+            within.as_deref(),
+            retry,
+            &check,
+        )?;
+        if let Some(guard) = &duplicate_guard {
+            for target in plan.items.iter().filter_map(|(_, target)| target.as_ref()) {
+                check()?;
                 guard.check_destination(target)?;
             }
         }
-    }
-    enqueue_task(
+        Ok((plan, duplicate_guard))
+    })();
+    let mut queue = shared.task_queue.lock().unwrap();
+    let (TransferPlan { folder, items }, duplicate_guard) = match plan {
+        _ if cancelled(&shared, &id) => {
+            update(&shared, &id, |task| task.status = "cancelled".into());
+            return Ok(id);
+        }
+        Err(error) => {
+            update(&shared, &id, |task| {
+                task.status = "error".into();
+                task.errors.push(error.clone());
+            });
+            return Err(error);
+        }
+        Ok(plan) => plan,
+    };
+    update(&shared, &id, |task| {
+        task.status = "queued".into();
+        task.can_pause = true;
+        task.destination_folder = folder.clone();
+        task.duplicate_guard = duplicate_guard.clone();
+    });
+    append_work(
+        &shared,
+        &mut queue,
         app,
-        Task {
-            kind: kind.clone(),
-            sources,
-            destination,
-            destination_folder: folder.clone(),
-            within,
-            duplicate_guard: duplicate_guard.clone(),
-            ..Default::default()
-        },
-        move |state, id, execution| {
-            let app = execution.app.cloned();
+        &id,
+        Box::new(move |state, id, execution| {
             execution.checkpoint(id)?;
             let mut checkpoint = || execution.checkpoint(id);
             execute_transfer_plan(
@@ -914,11 +974,11 @@ fn prepare_task(
                 items,
                 folder,
                 duplicate_guard,
-                app.as_ref(),
                 &mut checkpoint,
             )
-        },
-    )
+        }),
+    );
+    Ok(id)
 }
 
 fn execute_transfer_plan(
@@ -928,7 +988,6 @@ fn execute_transfer_plan(
     items: Vec<(Source, Option<PathBuf>)>,
     folder: Option<Arc<Directory>>,
     duplicate_guard: Option<duplicates::Guard>,
-    app: Option<&tauri::AppHandle>,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     if let Some(guard) = &duplicate_guard {
@@ -1001,9 +1060,7 @@ fn execute_transfer_plan(
             .chain(folder.as_ref().map(|folder| strpath(&folder.path)))
             .chain(target.as_ref().map(|target| strpath(target)))
             .collect();
-        if let Some(app) = &app {
-            let _ = app.emit("directory-changed", changed);
-        }
+        state.directory_events.add(Some(changed));
     }
     operation.flush_changes();
     undo::record(state, "撤销移动", operation.journal);
@@ -1021,7 +1078,9 @@ fn plan_transfer(
     destination: &str,
     within: Option<&str>,
     retry: Option<&Task>,
+    check: &dyn Fn() -> Result<(), String>,
 ) -> Result<TransferPlan, String> {
+    check()?;
     if !["copy", "move", "trash"].contains(&kind) {
         return Err("未知操作".into());
     }
@@ -1058,6 +1117,7 @@ fn plan_transfer(
             .collect::<HashMap<_, _>>()
     });
     for source in sources {
+        check()?;
         let path = entry_path(Path::new(source))?;
         fs_safety::ensure_mutation_path(&path)?;
         if !seen.insert(path.clone()) {
@@ -1089,11 +1149,11 @@ fn plan_transfer(
         }
         items.push((item, target));
     }
-    if seen
-        .iter()
-        .any(|path| path.ancestors().skip(1).any(|parent| seen.contains(parent)))
-    {
-        return Err("请勿同时选择文件夹和其中的项目".into());
+    for path in &seen {
+        check()?;
+        if path.ancestors().skip(1).any(|parent| seen.contains(parent)) {
+            return Err("请勿同时选择文件夹和其中的项目".into());
+        }
     }
     Ok(TransferPlan { folder, items })
 }
@@ -1101,11 +1161,14 @@ fn plan_transfer(
 fn active(task: &Task) -> bool {
     matches!(
         task.status.as_str(),
-        "queued" | "running" | "conflict" | "pausing" | "paused" | "resuming"
+        "preparing" | "queued" | "running" | "conflict" | "pausing" | "paused" | "resuming"
     )
 }
 
 fn ensure_mutation_allowed(shared: &Shared, tasks: &HashMap<String, Task>) -> Result<(), String> {
+    if shared.closing.load(Ordering::Relaxed) != 0 {
+        return Err("窗口正在关闭，无法开始文件操作".into());
+    }
     if shared.installing_update.load(Ordering::Relaxed) {
         return Err("正在安装更新，请在重启后继续文件操作".into());
     }
@@ -1124,11 +1187,19 @@ fn enqueue_task(
     work: impl FnOnce(&Shared, &str, &mut TaskExecution<'_>) -> Result<(), String> + Send + 'static,
 ) -> Result<String, String> {
     let state = app.state::<Arc<Shared>>().inner().clone();
-    let id = uuid::Uuid::new_v4().to_string();
     let mut queue = state.task_queue.lock().unwrap();
+    task.status = "queued".into();
+    task.can_pause = task.kind != "undo";
+    let id = register_task(&state, task)?;
+    append_work(&state, &mut queue, app, &id, Box::new(work));
+    Ok(id)
+}
+
+fn register_task(state: &Shared, mut task: Task) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
     {
         let mut tasks = state.tasks.lock().unwrap();
-        ensure_mutation_allowed(&state, &tasks)?;
+        ensure_mutation_allowed(state, &tasks)?;
         if task.kind == "undo" {
             if tasks.values().any(active) {
                 return Err("请等文件任务结束后再撤销".into());
@@ -1139,8 +1210,6 @@ fn enqueue_task(
         }
         task.id = id.clone();
         task.sequence = state.task_sequence.fetch_add(1, Ordering::Relaxed);
-        task.status = "queued".into();
-        task.can_pause = task.kind != "undo";
         if tasks.len() >= 100 {
             if let Some(oldest) = tasks
                 .values()
@@ -1157,11 +1226,20 @@ fn enqueue_task(
         tasks.insert(id.clone(), task);
         state.task_feed.change(Some(&id));
     }
-    queue.pending.push_back((id.clone(), Box::new(work)));
-    task_control::refresh_positions(&state, &queue);
-    state.task_wake.notify_all();
-    task_control::start_worker(&state, Some(app), &mut queue);
     Ok(id)
+}
+
+fn append_work(
+    state: &Arc<Shared>,
+    queue: &mut TaskQueue,
+    app: tauri::AppHandle,
+    id: &str,
+    work: TaskWork,
+) {
+    queue.pending.push_back((id.to_owned(), work));
+    task_control::refresh_positions(state, queue);
+    state.task_wake.notify_all();
+    task_control::start_worker(state, Some(app), queue);
 }
 
 #[tauri::command]
@@ -1184,14 +1262,14 @@ fn undo_last(app: tauri::AppHandle) -> Result<String, String> {
 #[derive(Serialize)]
 struct Activity {
     revision: u64,
-    tasks: Vec<Task>,
+    tasks: Vec<task_feed::TaskSummary>,
     undo: Option<&'static str>,
 }
 
 #[tauri::command]
 fn tasks(state: tauri::State<Arc<Shared>>) -> Activity {
     let tasks = state.tasks.lock().unwrap();
-    let mut t: Vec<_> = tasks.values().cloned().collect();
+    let mut t: Vec<_> = tasks.values().map(task_feed::TaskSummary::from).collect();
     t.sort_by_key(|task| std::cmp::Reverse(task.sequence));
     let undo = state.undo.lock().unwrap().last().map(|entry| entry.label);
     Activity {
@@ -1199,6 +1277,29 @@ fn tasks(state: tauri::State<Arc<Shared>>) -> Activity {
         tasks: t,
         undo,
     }
+}
+
+#[tauri::command]
+fn task_details(
+    state: tauri::State<Arc<Shared>>,
+    id: String,
+    field: String,
+    offset: usize,
+) -> Result<Vec<String>, String> {
+    let tasks = state.tasks.lock().unwrap();
+    let task = tasks.get(&id).ok_or("文件任务已清除")?;
+    let values: &[String] = match field.as_str() {
+        "sources" => &task.sources,
+        "errors" => &task.errors,
+        _ => return Err("未知的任务详情".into()),
+    };
+    Ok(values
+        .get(offset..)
+        .unwrap_or_default()
+        .iter()
+        .take(100)
+        .cloned()
+        .collect())
 }
 
 #[tauri::command]
@@ -1236,7 +1337,7 @@ async fn retry_task(id: String, app: tauri::AppHandle) -> Result<String, String>
             task.destination.clone(),
             task.within.clone(),
             Some(&task),
-            task.duplicate_guard.clone(),
+            |_| Ok(task.duplicate_guard.clone()),
             app,
         )
     })
@@ -1273,6 +1374,32 @@ fn act_on_task(
     apply_all: bool,
     conflict_id: Option<String>,
 ) {
+    if decision == "cancel" {
+        let mut queue = shared.task_queue.lock().unwrap();
+        if let Some(index) = queue.pending.iter().position(|(pending, _)| pending == id) {
+            let job = queue.pending.remove(index);
+            update(shared, id, |task| {
+                task.cancelled = true;
+                task.pause_requested = false;
+                task.can_pause = false;
+                task.queue_position = None;
+                task.status = "cancelled".into();
+            });
+            task_control::refresh_positions(shared, &queue);
+            drop(queue);
+            shared.task_wake.notify_all();
+            drop(job);
+            return;
+        }
+        update(shared, id, |task| {
+            if active(task) {
+                task.cancelled = true;
+            }
+        });
+        drop(queue);
+        shared.task_wake.notify_all();
+        return;
+    }
     update(shared, id, |task| {
         if decision == "pause"
             && task.can_pause
@@ -1296,8 +1423,6 @@ fn act_on_task(
                 "resuming"
             }
             .into();
-        } else if decision == "cancel" && active(task) {
-            task.cancelled = true;
         } else if ["replace", "skip", "keep"].contains(&decision.as_str())
             && task.status == "conflict"
             && task.decision.is_none()
@@ -1317,11 +1442,8 @@ async fn thumbnail(
     path: String,
     native_icon: Option<bool>,
 ) -> Result<tauri::ipc::Response, String> {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    static SLOTS: [tauri::async_runtime::Mutex<()>; 3] =
-        [const { tauri::async_runtime::Mutex::const_new(()) }; 3];
-    let slot = NEXT.fetch_add(1, Ordering::Relaxed) % SLOTS.len();
-    let _worker = SLOTS[slot].lock().await;
+    static WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+    let _worker = WORKERS.acquire().await.map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let path = Path::new(&path);
         if native_icon == Some(true) {
@@ -1531,8 +1653,18 @@ fn load_session(
 ) -> Option<serde_json::Value> {
     state.sessions.lock().unwrap().get(window.label()).cloned()
 }
-fn has_active_tasks(state: &Shared) -> bool {
-    state.tasks.lock().unwrap().values().any(active)
+const CLOSING_LAST_WINDOW: u8 = 1;
+const EXITING: u8 = 2;
+
+fn allow_close(state: &Shared, reason: u8) -> bool {
+    // Task registration and the close decision are ordered by the same lock:
+    // a blocking IPC command may still be waiting for its worker to start.
+    let tasks = state.tasks.lock().unwrap();
+    if tasks.values().any(active) {
+        return false;
+    }
+    state.closing.fetch_max(reason, Ordering::Relaxed);
+    true
 }
 
 fn handle_window_close(window: &tauri::Window, event: &tauri::WindowEvent) {
@@ -1545,7 +1677,7 @@ fn handle_window_close(window: &tauri::Window, event: &tauri::WindowEvent) {
                 .webview_windows()
                 .keys()
                 .all(|label| label == window.label() || closing.contains(label));
-            if last && has_active_tasks(&state) {
+            if last && !allow_close(&state, CLOSING_LAST_WINDOW) {
                 api.prevent_close();
                 let _ = window.emit_to(
                     tauri::EventTarget::labeled(window.label()),
@@ -1601,6 +1733,16 @@ async fn new_window(value: serde_json::Value, app: tauri::AppHandle) -> Result<(
             .remove(&label);
         return Err(error.to_string());
     }
+    // A new window can finish opening while the former last window closes.
+    // An explicit application exit remains authoritative.
+    let shared = app.state::<Arc<Shared>>();
+    let _closing_windows = shared.closing_windows.lock().unwrap();
+    let _ = shared.closing.compare_exchange(
+        CLOSING_LAST_WINDOW,
+        0,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
     Ok(())
 }
 
@@ -1612,6 +1754,15 @@ fn clear_tab_selection(pane: &mut serde_json::Value) {
     }
 }
 fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(trash_browser::LIST_ARGUMENT))
+    {
+        if trash_browser::write_listing().is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     let shared = Arc::new(Shared::default());
     tauri::Builder::default()
         .manage(shared)
@@ -1759,6 +1910,7 @@ fn main() {
             updates::check_update,
             updates::install_update,
             tasks,
+            task_details,
             clear_task_history,
             retry_task,
             task_action,
@@ -1775,7 +1927,7 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 let shared = app.state::<Arc<Shared>>();
-                if has_active_tasks(&shared) {
+                if !allow_close(&shared, EXITING) {
                     api.prevent_exit();
                     let _ = app.emit("exit-blocked", ());
                 } else {
@@ -1790,6 +1942,134 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cancelling_during_planning_never_starts_a_mutation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(fixture.path()).unwrap();
+        let target = root.join("target");
+        fs::create_dir(&target).unwrap();
+        let paths: Vec<_> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| {
+                let path = root.join(name);
+                fs::write(&path, name).unwrap();
+                strpath(&path)
+            })
+            .collect();
+        let state = Shared::default();
+        let id = register_task(
+            &state,
+            Task {
+                kind: "move".into(),
+                status: "preparing".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!allow_close(&state, CLOSING_LAST_WINDOW));
+        assert!(!allow_close(&state, EXITING));
+        let checks = std::cell::Cell::new(0);
+        let result = plan_transfer("move", &paths, &strpath(&target), None, None, &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 {
+                act_on_task(&state, &id, "cancel".into(), false, None);
+            }
+            if cancelled(&state, &id) {
+                Err("cancelled".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result.err().as_deref(), Some("cancelled"));
+        assert_eq!(checks.get(), 3);
+        assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+        for (path, name) in paths.iter().zip(["a", "b", "c"]) {
+            assert_eq!(fs::read_to_string(path).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn an_accepted_last_close_or_quit_rejects_late_task_registration() {
+        for reason in [CLOSING_LAST_WINDOW, EXITING] {
+            let state = Shared::default();
+            assert!(allow_close(&state, reason));
+            let result = register_task(
+                &state,
+                Task {
+                    kind: "move".into(),
+                    status: "preparing".into(),
+                    ..Default::default()
+                },
+            );
+            assert!(result.is_err());
+            assert!(state.tasks.lock().unwrap().is_empty());
+            assert!(state.task_queue.lock().unwrap().pending.is_empty());
+        }
+    }
+
+    #[test]
+    #[ignore = "creates 10,000 temporary files for a warm metadata benchmark"]
+    fn benchmark_transfer_planning() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(fixture.path()).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..10_000 {
+            let path = source.join(format!("{i:05}.txt"));
+            fs::write(&path, i.to_string()).unwrap();
+            paths.push(strpath(&path));
+        }
+        for _ in 0..3 {
+            let start = Instant::now();
+            let plan =
+                plan_transfer("move", &paths, &strpath(&target), None, None, &|| Ok(())).unwrap();
+            eprintln!("10,000-source transfer planning: {:?}", start.elapsed());
+            assert_eq!(plan.items.len(), paths.len());
+        }
+        let state = Shared::default();
+        let id = register_task(
+            &state,
+            Task {
+                kind: "move".into(),
+                status: "preparing".into(),
+                sources: paths.clone().into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            let planner = threads.spawn(|| {
+                let checks = std::cell::Cell::new(0);
+                plan_transfer("move", &paths, &strpath(&target), None, None, &|| {
+                    checks.set(checks.get() + 1);
+                    if checks.get() == 128 {
+                        started.send(()).unwrap();
+                    }
+                    if cancelled(&state, &id) {
+                        Err("cancelled".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+            });
+            ready.recv().unwrap();
+            let requested = Instant::now();
+            act_on_task(&state, &id, "cancel".into(), false, None);
+            assert_eq!(planner.join().unwrap().err().as_deref(), Some("cancelled"));
+            eprintln!(
+                "planning cancellation to worker exit: {:?}",
+                requested.elapsed()
+            );
+        });
+        assert_eq!(fs::read_to_string(&paths[0]).unwrap(), "0");
+        assert_eq!(fs::read_to_string(paths.last().unwrap()).unwrap(), "9999");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    #[test]
     fn retry_keeps_the_original_source_and_destination() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().canonicalize().unwrap();
@@ -1800,7 +2080,15 @@ mod tests {
         let sources = [strpath(&source)];
         let scope = strpath(destination.parent().unwrap());
         let destination_name = strpath(&destination);
-        let plan = plan_transfer("move", &sources, &destination_name, Some(&scope), None).unwrap();
+        let plan = plan_transfer(
+            "move",
+            &sources,
+            &destination_name,
+            Some(&scope),
+            None,
+            &|| Ok(()),
+        )
+        .unwrap();
         let failed = Task {
             kind: "move".into(),
             destination: destination_name,
@@ -1819,6 +2107,7 @@ mod tests {
                 &failed.destination,
                 failed.within.as_deref(),
                 Some(&failed),
+                &|| Ok(()),
             )
         };
         assert!(retry().is_ok());

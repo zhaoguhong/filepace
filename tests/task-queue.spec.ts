@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function setup(page: Page) {
-  await page.addInitScript(() => {
+async function setup(page: Page, sourceCount = 1) {
+  await page.addInitScript((sourceCount) => {
     localStorage.setItem(
       "filepace-preferences",
       JSON.stringify({ autoUpdate: false }),
@@ -13,12 +13,14 @@ async function setup(page: Page) {
     const calls: { command: string; args: Record<string, unknown> }[] = [];
     const base = {
       kind: "copy",
-      sources: ["/fixture/source.bin"],
+      firstSource: "/fixture/source.bin",
+      sourceCount,
       destination: "/fixture/target",
       current: "source.bin",
       completed: 0,
       bytes: 1024,
-      errors: [],
+      errorCount: 0,
+      failedCount: 0,
       conflict: null,
       canPause: true,
       phase: "写入暂存文件",
@@ -70,6 +72,16 @@ async function setup(page: Page) {
       isTauri: true,
       taskFixture: {
         calls,
+        preparing: () => {
+          tasks[0].status = "preparing";
+          tasks[0].canPause = false;
+          emit();
+        },
+        progress: () => {
+          tasks[0].bytes += 1024;
+          tasks[0].currentBytes += 1024;
+          emit();
+        },
         finishPause: () => {
           tasks[0].status = "paused";
           emit();
@@ -94,6 +106,13 @@ async function setup(page: Page) {
           if (command === "places")
             return [{ name: "个人目录", path: "/fixture", kind: "favorite" }];
           if (command === "tasks") return { tasks, revision, undo: null };
+          if (command === "task_details") {
+            const offset = Number(args.offset);
+            return Array.from(
+              { length: Math.min(100, sourceCount - offset) },
+              (_, i) => "/fixture/source-" + (offset + i),
+            );
+          }
           if (command === "list_directory")
             return { path: args.path, parent: "/", entries: [] };
           if (command === "update_status")
@@ -141,10 +160,56 @@ async function setup(page: Page) {
         },
       },
     });
-  });
+  }, sourceCount);
   await page.goto("/");
   await page.getByRole("button", { name: "3 个文件任务", exact: true }).click();
 }
+
+test("large task details are fetched by page only while expanded and progress remains live", async ({
+  page,
+}) => {
+  await setup(page, 10_000);
+  const row = page.locator('[data-task-id="running"]');
+  const details = row.locator("details");
+  const countRequests = () =>
+    page.evaluate(
+      () =>
+        (
+          window as unknown as { taskFixture: { calls: { command: string }[] } }
+        ).taskFixture.calls.filter(({ command }) => command === "task_details")
+          .length,
+    );
+  await expect(details.locator("p")).toHaveCount(0);
+  expect(await countRequests()).toBe(0);
+  await details.locator("summary").click();
+  await expect(details.locator("p")).toHaveCount(100);
+  await expect(
+    details.getByText("/fixture/source-0", { exact: true }),
+  ).toBeVisible();
+  await details.getByRole("button", { name: "下一页" }).click();
+  await expect(
+    details.getByText("/fixture/source-100", { exact: true }),
+  ).toBeVisible();
+  await expect(details.locator("p")).toHaveCount(100);
+  await page.evaluate(() =>
+    (
+      window as unknown as { taskFixture: { progress: () => void } }
+    ).taskFixture.progress(),
+  );
+  await expect(row.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "50",
+  );
+  expect(await countRequests()).toBe(2);
+  await details.locator("summary").click();
+  await expect(details.locator("p")).toHaveCount(0);
+  await page.evaluate(() =>
+    (window as unknown as { taskFixture: { preparing: () => void } }).taskFixture.preparing());
+  await expect(row.getByText("正在校验源和目标")).toBeVisible();
+  await expect(row.getByRole("button", { name: "暂停" })).toHaveCount(0);
+  await row.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(row.getByText("已取消", { exact: true })).toBeVisible();
+});
 
 test("pause acknowledges safe boundary, resumes, cancels paused work and reorders the backend queue", async ({
   page,

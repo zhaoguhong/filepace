@@ -4,7 +4,7 @@ use crate::{
     diagnostics::{self, Failure},
     entry_info, strpath, Entry, Listing,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
@@ -77,18 +77,37 @@ impl Requests {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Delivery {
+    #[default]
+    Legacy,
+    Stream,
+    Snapshot,
+}
+
+#[derive(Serialize)]
 pub(crate) struct Batch {
     path: String,
     parent: Option<String>,
     entries: Vec<Entry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<usize>,
 }
 
-pub(crate) fn read(
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum DirectoryResult {
+    Snapshot(Listing),
+    Streamed { streamed: bool },
+}
+
+fn read_with_delivery(
     path: &Path,
     cancelled: &AtomicBool,
+    delivery: Delivery,
     mut on_batch: impl FnMut(Batch) -> bool,
-) -> Result<Option<Listing>, Failure> {
+) -> Result<Option<DirectoryResult>, Failure> {
     let operation = "打开文件夹";
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
@@ -100,7 +119,8 @@ pub(crate) fn read(
     let path = strpath(&directory);
     let parent = directory.parent().map(strpath);
     let mut entries = Vec::new();
-    let mut batch = Vec::new();
+    let mut sent = 0;
+    let mut buffered = 0;
     let mut last_batch = Instant::now();
     for item in items {
         if cancelled.load(Ordering::Relaxed) {
@@ -115,41 +135,78 @@ pub(crate) fn read(
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
             Err(error) => return Err(Failure::io(operation, "读取项目属性", &item_path, error)),
         };
-        let entry = entry_info(&item_path, &meta);
-        batch.push(entry.clone());
-        entries.push(entry);
-        if batch.len() >= 256 || last_batch.elapsed() >= Duration::from_millis(80) {
+        entries.push(entry_info(&item_path, &meta));
+        if delivery == Delivery::Snapshot {
+            continue;
+        }
+        buffered += 1;
+        if buffered >= 256 || last_batch.elapsed() >= Duration::from_millis(80) {
+            let batch = if delivery == Delivery::Stream {
+                std::mem::take(&mut entries)
+            } else {
+                entries[sent..].to_vec()
+            };
             if !on_batch(Batch {
                 path: path.clone(),
                 parent: parent.clone(),
-                entries: std::mem::take(&mut batch),
+                entries: batch,
+                total: None,
             }) {
                 return Ok(None);
             }
+            sent += buffered;
+            buffered = 0;
             last_batch = Instant::now();
         }
     }
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    // The final return is authoritative, so it also works for callers without
-    // a channel and replaces any earlier partial snapshot on the frontend.
-    Ok(Some(Listing {
+    // Once streaming starts the final count and tail travel on the same
+    // ordered channel. The invoke acknowledgement can arrive before either.
+    if delivery == Delivery::Stream && sent != 0 {
+        let total = sent + entries.len();
+        return Ok(on_batch(Batch {
+            path,
+            parent,
+            entries,
+            total: Some(total),
+        })
+        .then_some(DirectoryResult::Streamed { streamed: true }));
+    }
+    Ok(Some(DirectoryResult::Snapshot(Listing {
         path,
         parent,
         entries,
-    }))
+    })))
+}
+
+#[cfg(test)]
+pub(crate) fn read(
+    path: &Path,
+    cancelled: &AtomicBool,
+    on_batch: impl FnMut(Batch) -> bool,
+) -> Result<Option<Listing>, Failure> {
+    Ok(
+        read_with_delivery(path, cancelled, Delivery::Legacy, on_batch)?.map(
+            |result| match result {
+                DirectoryResult::Snapshot(listing) => listing,
+                DirectoryResult::Streamed { .. } => unreachable!(),
+            },
+        ),
+    )
 }
 
 #[tauri::command]
 pub(crate) async fn list_directory(
     path: String,
     id: Option<String>,
+    delivery: Option<Delivery>,
     on_batch: Channel<Batch>,
     window: Window,
     app: tauri::AppHandle,
     state: State<'_, Requests>,
-) -> Result<Option<Listing>, String> {
+) -> Result<Option<DirectoryResult>, String> {
     let owner = window.label().to_string();
     let requests = state.inner().clone();
     let cancelled = match &id {
@@ -157,9 +214,12 @@ pub(crate) async fn list_directory(
         None => Arc::new(AtomicBool::new(false)),
     };
     let result = tauri::async_runtime::spawn_blocking(move || {
-        read(Path::new(&path), &cancelled, |batch| {
-            on_batch.send(batch).is_ok()
-        })
+        read_with_delivery(
+            Path::new(&path),
+            &cancelled,
+            delivery.unwrap_or_default(),
+            |batch| on_batch.send(batch).is_ok(),
+        )
         .map_err(|failure| {
             let message = format!("{}失败：{}", failure.step, failure.message);
             diagnostics::record(&app, failure);
@@ -182,6 +242,79 @@ pub(crate) fn cancel_directory_listing(id: String, window: Window, state: State<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streams_each_entry_once_and_refreshes_without_partial_batches() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut created = 0;
+        for count in [0, 1, 255, 256, 257, 1025] {
+            for index in created..count {
+                fs::write(directory.path().join(format!("{index}.txt")), b"keep").unwrap();
+            }
+            created = count;
+            for delivery in [Delivery::Stream, Delivery::Snapshot] {
+                let mut received = Vec::new();
+                let mut final_count = None;
+                let result = read_with_delivery(
+                    directory.path(),
+                    &AtomicBool::new(false),
+                    delivery,
+                    |batch| {
+                        assert!(delivery == Delivery::Stream);
+                        assert!(final_count.is_none());
+                        assert!(batch.entries.len() <= 256);
+                        received.extend(batch.entries.into_iter().map(|entry| entry.name));
+                        final_count = batch.total;
+                        true
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                match result {
+                    DirectoryResult::Snapshot(listing) => {
+                        assert!(received.is_empty());
+                        assert!(delivery == Delivery::Snapshot || count < 256);
+                        received.extend(listing.entries.into_iter().map(|entry| entry.name));
+                    }
+                    DirectoryResult::Streamed { streamed } => {
+                        assert!(streamed);
+                        assert_eq!(final_count, Some(count));
+                    }
+                }
+                assert_eq!(received.len(), count);
+                for index in 0..count {
+                    assert_eq!(
+                        fs::read(directory.path().join(format!("{index}.txt"))).unwrap(),
+                        b"keep"
+                    );
+                }
+                let names: std::collections::HashSet<_> = received.into_iter().collect();
+                assert_eq!(names.len(), count);
+                assert!((0..count).all(|index| names.contains(&format!("{index}.txt"))));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_stream_does_not_confirm_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..257 {
+            fs::write(directory.path().join(index.to_string()), []).unwrap();
+        }
+        let mut received = 0;
+        let result = read_with_delivery(
+            directory.path(),
+            &AtomicBool::new(false),
+            Delivery::Stream,
+            |batch| {
+                received += batch.entries.len();
+                batch.total.is_none()
+            },
+        )
+        .unwrap();
+        assert_eq!(received, 257);
+        assert!(result.is_none());
+    }
     #[test]
     fn streams_a_large_directory_and_returns_the_complete_snapshot() {
         let directory = tempfile::tempdir().unwrap();
@@ -212,6 +345,66 @@ mod tests {
             b"unchanged"
         );
     }
+    #[test]
+    #[ignore = "opt-in warm directory enumeration and JSON payload benchmark"]
+    fn benchmark_directory_delivery() {
+        for count in [10_000, 100_000] {
+            let directory = tempfile::tempdir().unwrap();
+            for index in 0..count {
+                fs::write(
+                    directory.path().join(format!("file-{index:06}.txt")),
+                    b"keep",
+                )
+                .unwrap();
+            }
+            let modes = [Delivery::Legacy, Delivery::Stream, Delivery::Snapshot];
+            let mut samples: [Vec<Duration>; 3] = Default::default();
+            let mut bytes = [0; 3];
+            let mut records = [0; 3];
+            for round in 0..6 {
+                for trial in 0..3 {
+                    let index = (trial + round) % 3;
+                    let mut logical_bytes = 0;
+                    let mut logical_entries = 0;
+                    let started = Instant::now();
+                    let result = read_with_delivery(
+                        directory.path(),
+                        &AtomicBool::new(false),
+                        modes[index],
+                        |batch| {
+                            logical_bytes += serde_json::to_vec(&batch).unwrap().len();
+                            logical_entries += batch.entries.len();
+                            true
+                        },
+                    )
+                    .unwrap()
+                    .unwrap();
+                    logical_bytes += serde_json::to_vec(&result).unwrap().len();
+                    if let DirectoryResult::Snapshot(listing) = result {
+                        logical_entries += listing.entries.len();
+                    }
+                    samples[index].push(started.elapsed());
+                    bytes[index] = logical_bytes;
+                    records[index] = logical_entries;
+                }
+            }
+            for (index, label) in ["legacy", "stream", "snapshot"].iter().enumerate() {
+                samples[index].sort();
+                eprintln!(
+                    "{count} {label}: median {:?}, JSON bytes {}, entry records {}",
+                    (samples[index][2] + samples[index][3]) / 2,
+                    bytes[index],
+                    records[index]
+                );
+            }
+            assert_eq!(records[1..], [count, count]);
+            assert_eq!(
+                fs::read(directory.path().join("file-000000.txt")).unwrap(),
+                b"keep"
+            );
+        }
+    }
+
     #[test]
     fn cancellation_stops_enumeration_without_mutating_files() {
         let directory = tempfile::tempdir().unwrap();

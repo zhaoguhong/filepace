@@ -10,6 +10,34 @@ export type Entry = {
   hidden: boolean;
 };
 export type Listing = { path: string; parent: string | null; entries: Entry[] };
+
+export function reuseUnchangedListing(
+  previous: Listing,
+  next: Listing,
+): Listing {
+  if (
+    previous.path !== next.path ||
+    previous.parent !== next.parent ||
+    previous.entries.length !== next.entries.length
+  )
+    return next;
+  for (let index = 0; index < previous.entries.length; index++) {
+    const a = previous.entries[index],
+      b = next.entries[index];
+    if (
+      a.path !== b.path ||
+      a.name !== b.name ||
+      a.isDir !== b.isDir ||
+      a.isLink !== b.isLink ||
+      a.hidden !== b.hidden ||
+      a.size !== b.size ||
+      a.modified !== b.modified
+    )
+      return next;
+  }
+  return previous;
+}
+
 export type GridSize = "small" | "medium" | "large" | "extra-large";
 export type View = "list" | "columns" | "grid";
 export type ListColumnWidths = [number, number, number, number];
@@ -53,7 +81,9 @@ export type Task = {
   pauseRequested?: boolean;
   canPause?: boolean;
   kind: string;
-  sources: string[];
+  sourceCount?: number;
+  firstSource?: string | null;
+  sources?: string[];
   destination: string;
   status: string;
   current: string;
@@ -66,7 +96,9 @@ export type Task = {
   currentTotalBytes?: number | null;
   transferMillis?: number;
   fileChanges?: { from: string; to?: string; kind: "move" | "rename" | "trash" }[];
-  errors: string[];
+  errorCount?: number;
+  failedCount?: number;
+  errors?: string[];
   failedSources?: string[];
   conflict: { id: string; source: ConflictItem | null; destination: ConflictItem } | null;
 };
@@ -139,8 +171,26 @@ export function travelColumns(tab: Tab, path: string) {
 const fileNames = new Intl.Collator("zh-CN", { numeric: true });
 const dayFormat = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 
+export function formatFileDate(modified: number) {
+  const date = new Date(modified * 1000);
+  return Number.isNaN(date.getTime()) ? "—" : dayFormat.format(date);
+}
+
 export function entryGroup(entry: Entry, group: NonNullable<Tab["group"]>) {
-  return group === "kind" ? describeFile(entry).label : dayFormat.format(entry.modified * 1000);
+  return group === "kind" ? describeFile(entry).label : formatFileDate(entry.modified);
+}
+
+function compareOrder(
+  a: Entry,
+  b: Entry,
+  sort: Tab["sort"],
+  descending: boolean,
+) {
+  return (
+    Number(b.isDir) - Number(a.isDir) ||
+    (descending ? -1 : 1) *
+      (sort === "name" ? fileNames.compare(a.name, b.name) : a[sort] - b[sort])
+  );
 }
 
 export function sortEntries(
@@ -151,14 +201,88 @@ export function sortEntries(
   group?: Tab["group"],
 ) {
   const visible = entries.filter((entry) => hidden || !entry.hidden);
-  const groups = group && new Map(visible.map((entry) => [entry, entryGroup(entry, group)]));
+  const groups =
+    group && new Map(visible.map((entry) => [entry, entryGroup(entry, group)]));
   return visible.sort(
-      (a, b) =>
-        (groups ? fileNames.compare(groups.get(a)!, groups.get(b)!) * (group === "date" ? -1 : 1) : 0) ||
-        Number(b.isDir) - Number(a.isDir) ||
-        (descending ? -1 : 1) *
-          (sort === "name" ? fileNames.compare(a.name, b.name) : a[sort] - b[sort]),
-    );
+    (a, b) =>
+      (groups
+        ? fileNames.compare(groups.get(a)!, groups.get(b)!) *
+          (group === "date" ? -1 : 1)
+        : 0) || compareOrder(a, b, sort, descending),
+  );
+}
+
+// One immutable snapshot can serve both panes. Retain at most their two
+// orderings, independent of queries and selections.
+type ListingOrder = { key: string; entries: Entry[]; sourceCount: number };
+const orderings = new WeakMap<Listing, ListingOrder[]>();
+
+export function appendListing(previous: Listing, batch: Entry[]): Listing {
+  const next = { ...previous, entries: previous.entries.concat(batch) };
+  const prefix = orderings.get(previous);
+  if (prefix) orderings.set(next, prefix);
+  return next;
+}
+
+function mergeOrder(
+  prefix: Entry[],
+  tail: Entry[],
+  sort: Tab["sort"],
+  descending: boolean,
+) {
+  if (!tail.length) return prefix;
+  if (
+    !prefix.length ||
+    compareOrder(prefix[prefix.length - 1], tail[0], sort, descending) <= 0
+  ) {
+    return prefix.concat(tail);
+  }
+  const merged = new Array<Entry>(prefix.length + tail.length);
+  let left = 0,
+    right = 0,
+    index = 0;
+  while (left < prefix.length && right < tail.length) {
+    // Equal keys retain the filesystem enumeration order across batches.
+    if (compareOrder(prefix[left], tail[right], sort, descending) <= 0)
+      merged[index++] = prefix[left++];
+    else merged[index++] = tail[right++];
+  }
+  while (left < prefix.length) merged[index++] = prefix[left++];
+  while (right < tail.length) merged[index++] = tail[right++];
+  return merged;
+}
+
+export function sortedListing(
+  listing: Listing,
+  sort: Tab["sort"],
+  descending: boolean,
+  hidden: boolean,
+  group?: Tab["group"],
+) {
+  const key = `${sort}|${descending}|${hidden}|${group ?? ""}`;
+  const cached = orderings.get(listing);
+  const prefix = cached?.find((order) => order.key === key);
+  if (prefix?.sourceCount === listing.entries.length) return prefix.entries;
+  // Group ordering needs labels for every item; keep the complete comparator
+  // for this view. A fresh snapshot also goes directly through the full sort.
+  const entries =
+    prefix && !group
+      ? mergeOrder(
+          prefix.entries,
+          sortEntries(
+            listing.entries.slice(prefix.sourceCount),
+            sort,
+            descending,
+            hidden,
+          ),
+          sort,
+          descending,
+        )
+      : sortEntries(listing.entries, sort, descending, hidden, group);
+  const next = { key, entries, sourceCount: listing.entries.length };
+  const other = cached?.find((order) => order.key !== key);
+  orderings.set(listing, other ? [next, other] : [next]);
+  return entries;
 }
 
 export function filterEntries(entries: Entry[], query: string) {

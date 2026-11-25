@@ -7,12 +7,120 @@ import {
   X,
 } from "lucide-react";
 import { call, desktop } from "./bridge";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import type { ActivityStore } from "./fileActivity";
 import { basename, formatSize, type Task } from "./model";
 import { formatRemaining, taskProgress } from "./taskProgress";
 import { activeTask, orderedTasks } from "./taskQueue";
 import "./tasks.css";
 
 export { activeTask } from "./taskQueue";
+
+const pageSize = 100;
+
+function DetailPage({
+  task,
+  field,
+  count,
+}: {
+  task: Task;
+  field: "sources" | "errors";
+  count: number;
+}) {
+  const [page, setPage] = useState(0);
+  const [loaded, setLoaded] = useState<{
+    offset: number;
+    rows: string[];
+    error?: string;
+  }>();
+  const offset = Math.min(
+    page * pageSize,
+    Math.floor((count - 1) / pageSize) * pageSize,
+  );
+  const length = Math.min(count - offset, pageSize);
+  const inline = task[field];
+  const id = task.id;
+  useEffect(() => {
+    if (inline) return;
+    let active = true;
+    queueMicrotask(async () => {
+      if (!active) return;
+      try {
+        const rows = await call<string[]>("task_details", {
+          id,
+          field,
+          offset,
+        });
+        if (active) setLoaded({ offset, rows });
+      } catch (error) {
+        if (active) setLoaded({ offset, rows: [], error: String(error) });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, field, offset, length, inline]);
+  const result = loaded?.offset === offset ? loaded : undefined;
+  const rows = inline?.slice(offset, offset + length) ?? result?.rows;
+  return (
+    <>
+      {result?.error && <p className="task-error">{result.error}</p>}
+      {!rows && <p>正在读取…</p>}
+      {rows?.map((value, index) => (
+        <p
+          className={field === "errors" ? "task-error" : undefined}
+          key={offset + index}
+        >
+          {value}
+        </p>
+      ))}
+      {count > pageSize && (
+        <div className="task-controls">
+          <button disabled={offset === 0} onClick={() => setPage(page - 1)}>
+            上一页
+          </button>
+          <span>
+            {offset + 1}–{offset + length} / {count}
+          </span>
+          <button
+            disabled={offset + length >= count}
+            onClick={() => setPage(page + 1)}
+          >
+            下一页
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function TaskDetails({
+  task,
+  field,
+  count,
+  children,
+}: {
+  task: Task;
+  field: "sources" | "errors";
+  count: number;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(field === "errors" && task.kind === "undo");
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>{children}</summary>
+      {open && <DetailPage task={task} field={field} count={count} />}
+    </details>
+  );
+}
 
 function Progress({ task }: { task: Task }) {
   const progress = taskProgress(task);
@@ -80,18 +188,19 @@ function Progress({ task }: { task: Task }) {
 }
 
 export default function TaskPanel({
-  tasks,
+  store,
   onClose,
   onBrowse,
   onAction,
   onSubmitted,
 }: {
-  tasks: Task[];
+  store: ActivityStore;
   onClose: () => void;
   onBrowse: (path: string) => void;
   onAction: (action: () => Promise<unknown>) => Promise<void>;
   onSubmitted: (id: string) => void;
 }) {
+  const tasks = useSyncExternalStore(store.subscribe, store.taskSnapshot);
   const ordered = orderedTasks(tasks);
   const pending = ordered.filter((task) => task.queuePosition != null);
   const control = (id: string, decision: string) =>
@@ -124,152 +233,154 @@ export default function TaskPanel({
           <span>复制与移动的进度会显示在这里</span>
         </div>
       ) : (
-        ordered.map((t) => (
-          <div className="task" key={t.id} data-task-id={t.id}>
-            <div className="task-top">
-              <b>
-                {
-                  (
-                    {
-                      copy: "复制",
-                      move: "移动",
-                      trash: "移到回收站",
-                      restore: "从回收站恢复",
-                      purge: "永久删除",
-                      zip: "压缩",
-                      unzip: "解压",
-                      undo: "撤销",
-                      rename: "批量重命名",
-                    } as Record<string, string>
-                  )[t.kind]
-                }
-              </b>
-              <span>
-                {
-                  (
-                    {
-                      queued: "排队中",
-                      running: "进行中",
-                      conflict: "等待处理",
-                      pausing: "正在暂停",
-                      paused: "已暂停",
-                      resuming: "等待继续",
-                      done: "已完成",
-                      error: t.kind === "undo" ? "未能撤销" : "部分失败",
-                      cancelled: "已取消",
-                    } as Record<string, string>
-                  )[t.status]
-                }
-              </span>
-              {activeTask(t) && (
-                <button
-                  onClick={() =>
-                    void onAction(() =>
-                      call("task_action", {
-                        id: t.id,
-                        decision: "cancel",
-                        applyAll: false,
-                      }),
-                    )
+        ordered.map((t) => {
+          const sourceCount = t.sourceCount ?? t.sources?.length ?? 0;
+          const firstSource = t.firstSource ?? t.sources?.[0] ?? "";
+          const errorCount = t.errorCount ?? t.errors?.length ?? 0;
+          const failedCount = t.failedCount ?? t.failedSources?.length ?? 0;
+          return (
+            <div className="task" key={t.id} data-task-id={t.id}>
+              <div className="task-top">
+                <b>
+                  {
+                    (
+                      {
+                        copy: "复制",
+                        move: "移动",
+                        trash: "移到回收站",
+                        restore: "从回收站恢复",
+                        purge: "永久删除",
+                        zip: "压缩",
+                        unzip: "解压",
+                        undo: "撤销",
+                        rename: "批量重命名",
+                      } as Record<string, string>
+                    )[t.kind]
                   }
-                >
-                  取消
-                </button>
-              )}
-            </div>
-            {desktop && activeTask(t) && (
-              <div className="task-controls task-queue-controls">
-                {t.status === "paused" ||
-                t.status === "pausing" ||
-                t.pauseRequested ? (
-                  <button onClick={() => control(t.id, "resume")}>
-                    <Play size={13} /> 继续
+                </b>
+                <span>
+                  {
+                    (
+                      {
+                        preparing: "正在校验源和目标",
+                        queued: "排队中",
+                        running: "进行中",
+                        conflict: "等待处理",
+                        pausing: "正在暂停",
+                        paused: "已暂停",
+                        resuming: "等待继续",
+                        done: "已完成",
+                        error: t.kind === "undo" ? "未能撤销" : "部分失败",
+                        cancelled: "已取消",
+                      } as Record<string, string>
+                    )[t.status]
+                  }
+                </span>
+                {activeTask(t) && (
+                  <button
+                    onClick={() =>
+                      void onAction(() =>
+                        call("task_action", {
+                          id: t.id,
+                          decision: "cancel",
+                          applyAll: false,
+                        }),
+                      )
+                    }
+                  >
+                    取消
                   </button>
-                ) : (
-                  t.canPause !== false &&
-                  ["queued", "running"].includes(t.status) && (
-                    <button onClick={() => control(t.id, "pause")}>
-                      <Pause size={13} /> 暂停
-                    </button>
-                  )
-                )}
-                {t.queuePosition != null && pending.length > 1 && (
-                  <>
-                    <button
-                      aria-label="任务上移"
-                      title="在等待队列中上移"
-                      disabled={pending[0]?.id === t.id}
-                      onClick={() =>
-                        void onAction(() =>
-                          call("reorder_task", { id: t.id, direction: "up" }),
-                        )
-                      }
-                    >
-                      <ArrowUp size={13} /> 上移
-                    </button>
-                    <button
-                      aria-label="任务下移"
-                      title="在等待队列中下移"
-                      disabled={pending.at(-1)?.id === t.id}
-                      onClick={() =>
-                        void onAction(() =>
-                          call("reorder_task", { id: t.id, direction: "down" }),
-                        )
-                      }
-                    >
-                      <ArrowDown size={13} /> 下移
-                    </button>
-                  </>
-                )}
-                {t.queuePosition != null && (
-                  <small>等待顺序 {t.queuePosition + 1}</small>
                 )}
               </div>
-            )}
-            {t.status === "pausing" && (
-              <p className="task-control-note">完成当前安全步骤后暂停。</p>
-            )}
-            <dl className="task-paths">
-              {t.sources.length > 0 && (
-                <>
-                  <dt>来源</dt>
-                  <dd>
-                    {t.sources.length === 1 ? (
-                      t.sources[0]
-                    ) : (
-                      <details>
-                        <summary>
-                          {t.sources.length} 个项目 · {basename(t.sources[0])}
-                        </summary>
-                        {t.sources.map((path) => (
-                          <p key={path}>{path}</p>
-                        ))}
-                      </details>
-                    )}
-                  </dd>
-                </>
+              {desktop && activeTask(t) && (
+                <div className="task-controls task-queue-controls">
+                  {t.status === "paused" ||
+                  t.status === "pausing" ||
+                  t.pauseRequested ? (
+                    <button onClick={() => control(t.id, "resume")}>
+                      <Play size={13} /> 继续
+                    </button>
+                  ) : (
+                    t.canPause !== false &&
+                    ["queued", "running"].includes(t.status) && (
+                      <button onClick={() => control(t.id, "pause")}>
+                        <Pause size={13} /> 暂停
+                      </button>
+                    )
+                  )}
+                  {t.queuePosition != null && pending.length > 1 && (
+                    <>
+                      <button
+                        aria-label="任务上移"
+                        title="在等待队列中上移"
+                        disabled={pending[0]?.id === t.id}
+                        onClick={() =>
+                          void onAction(() =>
+                            call("reorder_task", { id: t.id, direction: "up" }),
+                          )
+                        }
+                      >
+                        <ArrowUp size={13} /> 上移
+                      </button>
+                      <button
+                        aria-label="任务下移"
+                        title="在等待队列中下移"
+                        disabled={pending.at(-1)?.id === t.id}
+                        onClick={() =>
+                          void onAction(() =>
+                            call("reorder_task", {
+                              id: t.id,
+                              direction: "down",
+                            }),
+                          )
+                        }
+                      >
+                        <ArrowDown size={13} /> 下移
+                      </button>
+                    </>
+                  )}
+                  {t.queuePosition != null && (
+                    <small>等待顺序 {t.queuePosition + 1}</small>
+                  )}
+                </div>
               )}
-              {t.destination && (
-                <>
-                  <dt>目标</dt>
-                  <dd>{t.destination}</dd>
-                </>
+              {t.status === "pausing" && (
+                <p className="task-control-note">完成当前安全步骤后暂停。</p>
               )}
-            </dl>
-            {t.current && <p title={t.current}>{basename(t.current)}</p>}
-            <Progress task={t} />
-            {t.errors.length > 0 && (
-              <details open={t.kind === "undo" || undefined}>
-                <summary>{t.errors.length} 个问题</summary>
-                {t.errors.map((e, i) => (
-                  <p className="task-error" key={i}>
-                    {e}
-                  </p>
-                ))}
-              </details>
-            )}
-            {!activeTask(t) &&
-              (t.destination || Boolean(t.failedSources?.length)) && (
+              <dl className="task-paths">
+                {sourceCount > 0 && (
+                  <>
+                    <dt>来源</dt>
+                    <dd>
+                      {sourceCount === 1 ? (
+                        firstSource
+                      ) : (
+                        <TaskDetails
+                          task={t}
+                          field="sources"
+                          count={sourceCount}
+                        >
+                          {sourceCount} 个项目 · {basename(firstSource)}
+                        </TaskDetails>
+                      )}
+                    </dd>
+                  </>
+                )}
+                {t.destination && (
+                  <>
+                    <dt>目标</dt>
+                    <dd>{t.destination}</dd>
+                  </>
+                )}
+              </dl>
+              {t.current && <p title={t.current}>{basename(t.current)}</p>}
+              <Progress task={t} />
+              {errorCount > 0 && (
+                <TaskDetails task={t} field="errors" count={errorCount}>
+                  {errorCount} 个问题
+                </TaskDetails>
+              )}
+              {!activeTask(t) && (t.destination || failedCount > 0) && (
                 <div className="task-controls">
                   {t.destination && (
                     <button
@@ -280,7 +391,7 @@ export default function TaskPanel({
                       打开目标位置
                     </button>
                   )}
-                  {!!t.failedSources?.length && t.status === "error" && (
+                  {failedCount > 0 && t.status === "error" && (
                     <button
                       onClick={() =>
                         void onAction(async () => {
@@ -296,8 +407,9 @@ export default function TaskPanel({
                   )}
                 </div>
               )}
-          </div>
-        ))
+            </div>
+          );
+        })
       )}
     </section>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -14,18 +14,19 @@ import { call, desktop } from "./bridge";
 import ResultFiles from "./ResultFiles";
 import { formatSize, type Entry } from "./model";
 import {
+  indexResultMutations,
   resultFile,
   snapshotResultMutations,
   type ResultActionProps,
   type ResultActionRequest,
   type ResultMutations,
 } from "./resultActions";
-import { mergeFileChanges } from "./resultMutations";
+import { mergeFileChanges, type ChangeBookmark } from "./resultMutations";
 import { usePreservedScroll } from "./preservedScroll";
 import {
   duplicateActionBlocked,
   duplicateParent,
-  duplicatePathsOverlap,
+  changedDuplicateGroups,
   type DuplicateProgress,
   type DuplicateReport,
 } from "./duplicateResults";
@@ -34,7 +35,7 @@ import "./duplicates.css";
 type Snapshot = {
   id: string;
   report: DuplicateReport;
-  baseline: number;
+  baseline?: ChangeBookmark;
   createdAt: number;
 };
 
@@ -46,7 +47,7 @@ export default function DuplicatePanel({
   onClose,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
 }: ResultActionProps & {
   path: string;
   hidden: boolean;
@@ -63,53 +64,49 @@ export default function DuplicatePanel({
   const [shownGroups, setShownGroups] = useState(24);
   const [staleGroups, setStaleGroups] = useState<string[]>([]);
   const [localChanges, setLocalChanges] = useState<ResultMutations>({});
+  const mutationIndex = useMemo(
+    () => indexResultMutations({ ...fileChanges, ...localChanges }),
+    [fileChanges, localChanges],
+  );
   const request = useRef("");
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const changedDuringScan = useRef<(string | null)[]>([]);
-  const lastSequence = useRef(0);
+  const lastChange = useRef<ChangeBookmark | undefined>(undefined);
   const report = snapshot?.report;
   const busy = progress !== null;
 
   function markChanged(paths: (string | null)[]) {
     const current = snapshotRef.current;
     if (!current) return;
-    const ids = current.report.groups
-      .filter((group) =>
-        paths.some(
-          (changed) =>
-            changed === null ||
-            group.files.some((entry) =>
-              duplicatePathsOverlap(changed, entry.path),
-            ),
-        ),
-      )
-      .map((group) => group.id);
-    if (ids.length) setStaleGroups((prior) => [...new Set([...prior, ...ids])]);
+    const ids = changedDuplicateGroups(current.report.groups, paths);
+    if (ids.length)
+      setStaleGroups((prior) => {
+        const next = new Set([...prior, ...ids]);
+        return next.size === prior.length ? prior : [...next];
+      });
   }
 
   useEffect(() => {
     if (!snapshot) return;
-    const pending =
-      fileChangeBatches?.filter(
-        (batch) => batch.sequence > lastSequence.current,
-      ) ?? [];
-    if (!pending.length) return;
-    lastSequence.current = pending.at(-1)!.sequence;
+    const read = lastChange.current?.readThrough(changeCursor);
+    if (!read?.batches.length) return;
+    const pending = read.batches;
+    lastChange.current = read.after;
     setLocalChanges((current) =>
       pending.reduce(
-        (changes, batch) => mergeFileChanges(changes, batch.changes),
+        (changes, batch) => mergeFileChanges(changes, batch, "tracked"),
         current,
       ),
     );
     markChanged(
       pending.flatMap((batch) =>
-        batch.changes.flatMap((change) =>
+        batch.flatMap((change) =>
           change.to ? [change.from, change.to] : [change.from],
         ),
       ),
     );
-  }, [fileChangeBatches, snapshot?.id]);
+  }, [changeCursor, snapshot?.id]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -132,6 +129,7 @@ export default function DuplicatePanel({
 
   useEffect(() => {
     setSnapshot(null);
+    lastChange.current = undefined;
     setProgress(null);
     setKeepers({});
     setShownGroups(24);
@@ -149,9 +147,10 @@ export default function DuplicatePanel({
     if (request.current || !path) return;
     const id = crypto.randomUUID();
     request.current = id;
-    lastSequence.current = fileChangeBatches?.at(-1)?.sequence ?? 0;
-    const baseline = lastSequence.current;
+    lastChange.current = changeCursor?.retain();
+    const baseline = lastChange.current;
     changedDuringScan.current = [];
+    snapshotRef.current = null;
     setSnapshot(null);
     setStaleGroups([]);
     setLocalChanges({});
@@ -181,7 +180,12 @@ export default function DuplicatePanel({
       if (request.current !== id) return;
       if (!result) setNotice("检查已停止，未生成新的结果。");
       else {
-        const next = { id, report: result, baseline, createdAt: Date.now() };
+        const next = {
+          id,
+          report: result,
+          baseline: result.groups.length ? baseline : undefined,
+          createdAt: Date.now(),
+        };
         setLocalChanges(
           snapshotResultMutations(
             result.groups.flatMap((group) =>
@@ -201,6 +205,9 @@ export default function DuplicatePanel({
     } finally {
       if (request.current === id) {
         request.current = "";
+        if (!snapshotRef.current?.report.groups.length)
+          lastChange.current = undefined;
+        changedDuringScan.current = [];
         setProgress(null);
         setStopping(false);
       }
@@ -373,7 +380,8 @@ export default function DuplicatePanel({
               const keeper = chosen
                 ? resultFile(
                     { entry: chosen, parent: duplicateParent(chosen.path) },
-                    { ...fileChanges, ...localChanges },
+                    {},
+                    mutationIndex,
                   )
                 : undefined;
               const stale =
@@ -460,7 +468,7 @@ export default function DuplicatePanel({
                           )
                         }
                         fileChanges={fileChanges}
-                        fileChangeBatches={fileChangeBatches}
+                        changeCursor={changeCursor}
                         changeBaseline={snapshot.baseline}
                         visible={visible}
                       />

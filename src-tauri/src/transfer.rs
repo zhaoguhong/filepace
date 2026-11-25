@@ -122,7 +122,7 @@ pub(crate) fn commit_staged(
 ) -> Result<(), String> {
     let mut recovery = shared
         .recovery
-        .begin(id, None, target, Some(stage), false)?;
+        .begin(id, None, target, Some(stage), false, "准备传输")?;
     commit_with_recovery(stage, target, parent, replace, shared, id, &mut recovery)?;
     recovery.finish()
 }
@@ -350,11 +350,14 @@ impl<'a> Transfer<'a> {
         self.check_cancelled()?;
         self.check_duplicate_guard(source, &target)?;
         if self.moving && replace.is_none() {
-            let mut recovery =
-                self.shared
-                    .recovery
-                    .begin(self.id, Some(&source.path), &target, None, true)?;
-            recovery.phase("准备直接移动源项目")?;
+            let mut recovery = self.shared.recovery.begin(
+                self.id,
+                Some(&source.path),
+                &target,
+                None,
+                true,
+                "准备直接移动源项目",
+            )?;
             update(self.shared, self.id, |task| {
                 task.phase = "直接移动项目".into()
             });
@@ -434,8 +437,8 @@ impl<'a> Transfer<'a> {
             target,
             Some(&payload),
             self.moving,
+            "复制到暂存位置，源项目保留",
         )?;
-        recovery.phase("复制到暂存位置，源项目保留")?;
         if !source.metadata.is_dir() {
             self.copy_file(source, &payload)?;
             source.check()?;
@@ -504,6 +507,7 @@ impl<'a> Transfer<'a> {
             }
         }
         for (child, relative) in children.iter().rev() {
+            self.check_cancelled()?;
             child.check()?;
             if child.metadata.is_dir() {
                 preserve_metadata(child, &payload.join(relative))?;
@@ -515,6 +519,7 @@ impl<'a> Transfer<'a> {
         let mut committed = Vec::new();
         if self.moving {
             for (_, relative) in &children {
+                self.check_cancelled()?;
                 committed.push(snapshot_at(&payload.join(relative))?);
             }
         }
@@ -1000,7 +1005,14 @@ mod tests {
         let trashed = fixture.path().join("test-trash");
         let mut recovery = state
             .recovery
-            .begin("task", Some(&source_path), &target, Some(&stage), false)
+            .begin(
+                "task",
+                Some(&source_path),
+                &target,
+                Some(&stage),
+                false,
+                "准备传输",
+            )
             .unwrap();
         commit_with_recovery_using_trash(
             &stage,
@@ -1037,7 +1049,14 @@ mod tests {
         let old_destination = snapshot_at(&target).unwrap();
         let mut recovery = state
             .recovery
-            .begin("task", Some(&source), &target, Some(&stage), false)
+            .begin(
+                "task",
+                Some(&source),
+                &target,
+                Some(&stage),
+                false,
+                "准备传输",
+            )
             .unwrap();
         let mut retained = None;
         let result = commit_with_recovery_using_trash(

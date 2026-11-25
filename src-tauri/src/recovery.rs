@@ -121,6 +121,7 @@ impl RecoveryLog {
         target: &Path,
         stage: Option<&Path>,
         moving: bool,
+        phase: &str,
     ) -> Result<Guard, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let file = self
@@ -139,7 +140,7 @@ impl RecoveryLog {
                 stage: stage.map(Path::to_owned),
                 backup: None,
                 moving,
-                phase: "准备传输".into(),
+                phase: phase.into(),
             },
             retain: false,
         };
@@ -170,8 +171,8 @@ impl Guard {
         let parent = path.parent().ok_or("恢复记录路径无效")?;
         let mut file =
             tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-        serde_json::to_writer(&mut file, &self.record).map_err(|error| error.to_string())?;
-        file.flush().map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&self.record).map_err(|error| error.to_string())?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
         file.as_file()
             .sync_all()
             .map_err(|error| error.to_string())?;
@@ -233,8 +234,21 @@ mod tests {
             .unwrap();
         let mut guard = shared
             .recovery
-            .begin("task", Some(&source), &target, Some(&stage), true)
+            .begin(
+                "task",
+                Some(&source),
+                &target,
+                Some(&stage),
+                true,
+                "复制到暂存位置，源项目保留",
+            )
             .unwrap();
+        let first = fs::read(guard.file.as_ref().unwrap()).unwrap();
+        let first: Record = serde_json::from_slice(&first).unwrap();
+        assert_eq!(first.phase, "复制到暂存位置，源项目保留");
+        assert_eq!(first.stage.as_deref(), Some(stage.as_path()));
+        assert_eq!(first.source.as_deref(), Some(source.as_path()));
+        assert_eq!(first.target, target);
         guard.backup(&backup).unwrap();
         guard.retain();
         drop(guard);
@@ -267,14 +281,28 @@ mod tests {
             .unwrap();
         let mut guard = shared
             .recovery
-            .begin("task", None, &fixture.path().join("target"), None, false)
+            .begin(
+                "task",
+                None,
+                &fixture.path().join("target"),
+                None,
+                false,
+                "准备传输",
+            )
             .unwrap();
         guard.retain();
         guard.finish().unwrap();
         drop(
             shared
                 .recovery
-                .begin("failed", None, &fixture.path().join("target"), None, false)
+                .begin(
+                    "failed",
+                    None,
+                    &fixture.path().join("target"),
+                    None,
+                    false,
+                    "准备传输",
+                )
                 .unwrap(),
         );
         assert_eq!(fs::read_dir(directory).unwrap().count(), 0);

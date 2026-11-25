@@ -202,6 +202,49 @@ for (const platform of ["MacIntel", "Win32"]) {
   });
 }
 
+test("Windows trash shows a timed-out read and retries without starting extra reads on focus", async ({
+  page,
+}) => {
+  await nativeFixture(page, "Win32");
+  await page.evaluate(() => {
+    const host = window as unknown as {
+      __TAURI_INTERNALS__: {
+        invoke: (command: string, args?: object) => Promise<unknown>;
+      };
+      timeOutTrash: () => void;
+      trashReads: number;
+    };
+    const invoke = host.__TAURI_INTERNALS__.invoke;
+    host.trashReads = 0;
+    host.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "list_trash") {
+        host.trashReads++;
+        if (host.trashReads === 1)
+          return new Promise((_, reject) => {
+            host.timeOutTrash = () =>
+              reject("读取 Windows 回收站超时，请重新读取。");
+          });
+      }
+      return invoke(command, args);
+    };
+  });
+  await page.getByRole("button", { name: "回收站", exact: true }).click();
+  const panel = page.getByRole("region", { name: "回收站内容" });
+  await expect(panel.getByText("正在读取回收站…")).toBeVisible();
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    (window as unknown as { timeOutTrash: () => void }).timeOutTrash();
+  });
+  await expect(panel.getByRole("alert")).toContainText("超时");
+  await expect(panel.getByText("正在读取回收站…")).toHaveCount(0);
+  await expect(panel.getByText("回收站是空的")).toHaveCount(0);
+  await panel.getByRole("button", { name: "重新读取" }).click();
+  await expect(
+    panel.getByLabel("选择 sample.txt", { exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+});
+
 test("trash stays in its pane, restores to a chosen folder and retains the other pane selection", async ({
   page,
 }) => {

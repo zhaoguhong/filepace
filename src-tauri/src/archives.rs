@@ -88,7 +88,7 @@ pub(crate) fn start(
         app,
         Task {
             kind,
-            sources,
+            sources: sources.into(),
             destination: strpath(&destination),
             ..Default::default()
         },

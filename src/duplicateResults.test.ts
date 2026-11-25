@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   duplicateActionBlocked,
   duplicateParent,
-  duplicatePathsOverlap,
+  changedDuplicateGroups,
 } from "./duplicateResults";
 import type { Entry } from "./model";
 import { resultFile, snapshotResultMutations } from "./resultActions";
@@ -20,6 +20,24 @@ const keeper: Entry = {
 const copy: Entry = { ...keeper, path: "/fixtures/b.txt", name: "b.txt" };
 
 describe("duplicate group file safety", () => {
+  const duplicatePathsOverlap = (change: string, path: string) =>
+    changedDuplicateGroups(
+      [{ id: "checked", size: 42, files: [{ ...copy, path }] }],
+      [change],
+    ).length === 1;
+
+  it("handles bulk changes, descendants and unknown watcher locations", () => {
+    const groups = [
+      { id: "a", size: 42, files: [keeper] },
+      { id: "b", size: 42, files: [copy] },
+    ];
+    expect(
+      changedDuplicateGroups(groups, [copy.path + "/child", "/fixtures-other"]),
+    ).toEqual(["b"]);
+    expect(changedDuplicateGroups(groups, [null])).toEqual(["a", "b"]);
+    expect(changedDuplicateGroups(groups, [])).toEqual([]);
+  });
+
   it("tracks a keeper through a parent move followed by a child rename", () => {
     const original = {
       entry: { ...keeper, path: "/fixtures/sub/a.txt" },

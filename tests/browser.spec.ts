@@ -622,7 +622,8 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
             const canvas = document.createElement("canvas");
             canvas.width = canvas.height = 16;
             const context = canvas.getContext("2d")!;
-            context.fillStyle = String(args.path).includes("Second") ? "#328361" : "#3178c6";
+            context.fillStyle = (window as Window & { filepaceIconColor?: string }).filepaceIconColor
+              ?? (String(args.path).includes("Second") ? "#328361" : "#3178c6");
             context.fillRect(0, 0, 16, 16);
             return Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]), (c) => c.charCodeAt(0)).buffer;
           }
@@ -665,6 +666,33 @@ async function mockDesktop(page: Page, defaultView: "list" | "columns", root = h
     });
   }, { home: root, defaultView, count, version: packageInfo.version, files, persistSession });
 }
+
+test("updates an already visible thumbnail after same-size replacement at the same timestamp", async ({ page }) => {
+  await mockDesktop(page, "list", home, 0, [["photo.png", false]]);
+  await page.goto("/");
+  const thumbnail = page.locator(".thumbnail img[src^='blob:']").first();
+  async function redChannel() {
+    return thumbnail.evaluate(async (element) => {
+      const image = element as HTMLImageElement;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(image, 0, 0, 1, 1);
+      return context.getImageData(0, 0, 1, 1).data[0];
+    });
+  }
+  await expect.poll(redChannel).toBe(49);
+  await page.evaluate((root) => {
+    const fixture = window as Window & {
+      filepaceIconColor?: string;
+      filepaceEmit: (event: string, paths: string[]) => void;
+    };
+    fixture.filepaceIconColor = "#dc0000";
+    fixture.filepaceEmit("directory-changed", [root + "/photo.png"]);
+  }, home);
+  await expect.poll(redChannel).toBe(220);
+});
 
 test("starts in list view and keeps navigation and file actions in their existing menus", async ({ page }) => {
   await page.goto("/");

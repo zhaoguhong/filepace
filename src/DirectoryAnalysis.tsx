@@ -1,3 +1,4 @@
+import type { ChangeBookmark } from "./resultMutations";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -46,7 +47,7 @@ const snapshotLifetime = 5 * 60_000;
 type RecentScan = StorageSnapshot & {
   scannedAt: number;
   changed: boolean;
-  changeBaseline: number;
+  changeBaseline?: ChangeBookmark;
 };
 const normalized = (path: string) => {
   const value = path.replaceAll("\\", "/").replace(/\/+$/, "");
@@ -73,7 +74,7 @@ function ItemList({
   onCheckDuplicates,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
   visible,
   scope,
   changeBaseline,
@@ -86,7 +87,7 @@ function ItemList({
   onCheckDuplicates?: (path: string) => void;
   visible: boolean;
   scope: string;
-  changeBaseline?: number;
+  changeBaseline?: ChangeBookmark;
 }) {
   return (
     <section className="storage-card">
@@ -115,7 +116,7 @@ function ItemList({
           onBrowse={onBrowse}
           onFileAction={onFileAction}
           fileChanges={fileChanges}
-          fileChangeBatches={fileChangeBatches}
+          changeCursor={changeCursor}
           extra={
             folders
               ? (item) => (
@@ -159,7 +160,7 @@ export default function DirectoryAnalysis({
   onClose,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
   onDiagnosisStatus,
   onDiagnosisComplete,
   diagnosisOpen,
@@ -202,7 +203,8 @@ export default function DirectoryAnalysis({
   const counts =
     (scanPath.current === path ? scanProgress : null) ?? report?.counts;
   const busy = scanProgress !== null;
-  const observedSequence = useRef(fileChangeBatches?.at(-1)?.sequence ?? 0);
+  const observedChange = useRef<ChangeBookmark | undefined>(undefined);
+  if (!observedChange.current) observedChange.current = changeCursor?.retain();
   useEffect(() => {
     if (
       !visible ||
@@ -241,16 +243,14 @@ export default function DirectoryAnalysis({
     };
   }, [diagnosisOpen, path, visible, view, preservedScroll.ref]);
   useEffect(() => {
-    const batches =
-      fileChangeBatches?.filter(
-        (batch) => batch.sequence > observedSequence.current,
-      ) ?? [];
-    if (!batches.length) return;
-    observedSequence.current = batches.at(-1)!.sequence;
+    const read = observedChange.current?.readThrough(changeCursor);
+    if (!read?.batches.length) return;
+    const { batches, after } = read;
+    observedChange.current = after;
     setRecentScans((scans) =>
       scans.map((snapshot) =>
         batches.some((batch) =>
-          batch.changes.some(
+          batch.some(
             (change) =>
               overlaps(change.from, snapshot.scope) ||
               Boolean(change.to && overlaps(change.to, snapshot.scope)),
@@ -260,7 +260,7 @@ export default function DirectoryAnalysis({
           : snapshot,
       ),
     );
-  }, [fileChangeBatches]);
+  }, [changeCursor]);
 
   useEffect(() => {
     if (!visible) return;
@@ -337,7 +337,7 @@ export default function DirectoryAnalysis({
     scanPath.current = path;
     scanForDiagnosis.current = forDiagnosis;
     scanCancelled.current = false;
-    const startingSequence = observedSequence.current;
+    const startingChange = observedChange.current;
     setScanProgress(emptyCounts);
     setScanError("");
     setRecentScans((scans) =>
@@ -359,8 +359,8 @@ export default function DirectoryAnalysis({
         id,
         report: result,
         scannedAt,
-        changed: observedSequence.current !== startingSequence,
-        changeBaseline: startingSequence,
+        changed: observedChange.current !== startingChange,
+        changeBaseline: startingChange,
       };
       setNow(scannedAt);
       setRecentScans((scans) =>
@@ -764,7 +764,7 @@ export default function DirectoryAnalysis({
                       changeBaseline={scanResult?.changeBaseline}
                       onFileAction={onFileAction}
                       fileChanges={fileChanges}
-                      fileChangeBatches={fileChangeBatches}
+                      changeCursor={changeCursor}
                     />
                     <ItemList
                       key={`folders-${scanResult?.id}`}
@@ -779,7 +779,7 @@ export default function DirectoryAnalysis({
                       changeBaseline={scanResult?.changeBaseline}
                       onFileAction={onFileAction}
                       fileChanges={fileChanges}
-                      fileChangeBatches={fileChangeBatches}
+                      changeCursor={changeCursor}
                     />
                   </div>
                 </div>
@@ -790,7 +790,7 @@ export default function DirectoryAnalysis({
                   onBrowse={browseResult}
                   onFileAction={onFileAction}
                   fileChanges={fileChanges}
-                  fileChangeBatches={fileChangeBatches}
+                  changeCursor={changeCursor}
                   changeBaseline={scanResult?.changeBaseline}
                 />
                 <StorageComparison
@@ -822,7 +822,7 @@ export default function DirectoryAnalysis({
               onBrowse={browseResult}
               onFileAction={onFileAction}
               fileChanges={fileChanges}
-              fileChangeBatches={fileChangeBatches}
+              changeCursor={changeCursor}
               resultsVisible={visible && view === "diagnosis"}
               changeBaseline={scanResult?.changeBaseline}
               onDiagnosisStatus={onDiagnosisStatus}

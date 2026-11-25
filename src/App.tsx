@@ -1,4 +1,5 @@
 import FileIcon from "./FileIcon";
+import "./storage.css";
 import LocationSidebar from "./LocationSidebar";
 import { useSidebarLocations } from "./sidebarLocations";
 import { useSidebarLayout } from "./sidebarLayout";
@@ -11,8 +12,6 @@ import TaskPanel, { activeTask } from "./TaskPanel";
 import BrowseOptions from "./BrowseOptions";
 import ListHeader, { listColumnStyle } from "./ListHeader";
 import MenuAction from "./MenuAction";
-import StorageDashboard from "./StorageDashboard";
-import DirectoryAnalysis from "./DirectoryAnalysis";
 import type { DiagnosisStatus } from "./StorageDiagnosis";
 import DiagnosisActivity, { DiagnosisCompletion } from "./DiagnosisActivity";
 import { useDiagnosisNotifications } from "./diagnosisNotifications";
@@ -27,10 +26,9 @@ import CommandPalette, { type FileCommand } from "./CommandPalette";
 import FileOperationDialog, { type FileOperation } from "./FileOperationDialog";
 import ModalDialog from "./ModalDialog";
 import type { ResultActionRequest } from "./resultActions";
-import type { FileChange } from "./resultMutations";
+import { ChangeCursor, type FileChange } from "./resultMutations";
 import TextPreview from "./TextPreview";
 import WorkLayouts from "./WorkLayouts";
-import DuplicatePanel from "./DuplicatePanel";
 import type { DuplicateGuard } from "./duplicateResults";
 import {
   readSavedSearches,
@@ -42,6 +40,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useEffectEvent,
   useId,
   useLayoutEffect,
   useRef,
@@ -88,7 +87,9 @@ import {
 } from "./browsePane";
 import { isMac, useFileDrag } from "./fileDrag";
 import { useMarquee } from "./marquee";
-import { revealItem, visibleRange } from "./fileViewport";
+import { revealItem } from "./fileViewport";
+import VirtualFileList from "./VirtualFileList";
+import { ScrollPositions } from "./scrollPositions";
 import { describeFile } from "./fileTypes";
 import { useFilePreview } from "./filePreview";
 import { useFileActivity } from "./fileActivity";
@@ -102,13 +103,37 @@ import {
   makeTab,
   navigate,
   formatSize,
+  formatFileDate,
   entryGroup,
   type Entry,
+  type Listing,
   type Tab,
   type Place,
 } from "./model";
 import { cleanPane, restoreSession, type Session } from "./session";
 const PdfPreview = lazy(() => import("./PdfPreview"));
+const StorageDashboard = lazy(() => import("./StorageDashboard"));
+const DirectoryAnalysis = lazy(() => import("./DirectoryAnalysis"));
+const DuplicatePanel = lazy(() => import("./DuplicatePanel"));
+
+function StoragePage({
+  visible,
+  children,
+}: {
+  visible: boolean;
+  children: React.ReactNode;
+}) {
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (visible) setOpened(true);
+  }, [visible]);
+  if (!opened && !visible) return null;
+  return (
+    <Suspense fallback={visible ? <p role="status">正在打开…</p> : null}>
+      {children}
+    </Suspense>
+  );
+}
 type Menu = {
   x: number;
   y: number;
@@ -186,6 +211,9 @@ function Tool({
 export default function App() {
   const { preferences, change: changePreferences } = usePreferences();
   const updates = useUpdates(preferences.autoUpdate);
+  const [loadingPlaces, setLoadingPlaces] = useState<Promise<Place[]> | null>(
+    null,
+  );
   const [session, setSession] = useState<Session>({ tabs: [], active: "" }),
     [places, setPlaces] = useState<Place[]>([]),
     [bootError, setBootError] = useState(""),
@@ -265,10 +293,8 @@ export default function App() {
     search: SavedSearch;
     pane: PaneSide;
   } | null>(null);
-  const [fileChangeBatches, setFileChangeBatches] = useState<
-    { sequence: number; changes: FileChange[] }[]
-  >([]);
-  const mutationSequence = useRef(0);
+  const [changeCursor, setChangeCursor] = useState(() => new ChangeCursor());
+  const changeTail = useRef(changeCursor);
   const previewEntries = useRef<Entry[]>([]);
   const closed = useRef<Record<PaneSide, Tab[]>>({ left: [], right: [] }),
     pathRef = useRef<HTMLInputElement>(null),
@@ -279,22 +305,36 @@ export default function App() {
   const diagnosisNotifications = useDiagnosisNotifications(openDiagnosis);
   const split = Boolean(session.right);
   const focused = split ? (session.focused ?? "left") : "left";
+  const showingPanes = !storageVisible && !searchScope && !settingsSection;
+  const [positions] = useState(() => new ScrollPositions());
   const left = useBrowsePane(
     session,
     hidden,
+    positions,
     preferences.density === "compact",
+    showingPanes,
   );
   const right = useBrowsePane(
     session.right,
     hidden,
+    positions,
     preferences.density === "compact",
+    showingPanes,
   );
   const pane = focused === "left" ? left : right;
+  function rememberViewportPositions() {
+    if (!showingPanes) return;
+    // An action can follow a native scroll before the browser dispatches onScroll.
+    for (const view of [left, right]) {
+      const list = view.listRef.current;
+      if (view.tab && list && !view.restoringScroll.current)
+        positions.record(view.tab, list.scrollTop);
+    }
+  }
   const otherFolder = (focused === "left" ? right : left).listing?.path;
   const splitRatio = session.splitRatio ?? 0.5;
   const { tab, listing, entries, listRef } = pane;
-  const systemPlaces = places.filter((place) => place.kind === "favorite");
-  const locations = useSidebarLocations(systemPlaces);
+  const locations = useSidebarLocations(places, loadingPlaces);
   const sidebarLayout = useSidebarLayout();
   const sidebar = sidebarLayout.visible;
   const commonPlaces = locations.places;
@@ -304,7 +344,6 @@ export default function App() {
   stateRef.current = session;
   const selected = tab?.selected || [];
   const filesystemLocation = Boolean(tab && tab.path !== TRASH_PATH);
-  const showingPanes = !storageVisible && !searchScope && !settingsSection;
   const browsingFiles = filesystemLocation && showingPanes;
   const hasFiles = browsingFiles && selected.length > 0;
   const otherPaneUnavailable = !desktop
@@ -354,7 +393,7 @@ export default function App() {
     }
   }
   const marquee = useMarquee(fileDrag.suppressClick);
-  const { tasks, undo, refreshActivity } = useFileActivity();
+  const { tasks, undo, refreshActivity, activityStore } = useFileActivity();
   const previewPdf = desktop && Boolean(preview?.name.match(/\.pdf$/i));
   const previewOpen = Boolean(preview);
   useEffect(() => {
@@ -382,8 +421,8 @@ export default function App() {
       : undefined;
   function recordFileChanges(changes: FileChange[]) {
     if (!changes.length) return;
-    const sequence = ++mutationSequence.current;
-    setFileChangeBatches((batches) => [...batches, { sequence, changes }]);
+    changeTail.current = changeTail.current.append(changes);
+    setChangeCursor(changeTail.current);
   }
   useEffect(() => {
     if (!desktop) return;
@@ -434,10 +473,14 @@ export default function App() {
     }
   }
   function patch(value: Partial<Tab>, side = focused) {
+    if (value.scroll !== undefined && value.path === undefined) {
+      const list = (side === "left" ? left : right).listRef.current;
+      if (list) list.scrollTop = value.scroll;
+    }
     updatePane(side, (group) => ({
       ...group,
       tabs: group.tabs.map((t) =>
-        t.id === group.active ? { ...t, ...value } : t,
+        t.id === group.active ? { ...positions.captureTab(t), ...value } : t,
       ),
     }));
   }
@@ -453,7 +496,9 @@ export default function App() {
       tabs: group.tabs.map((t) =>
         t.id === group.active
           ? {
-              ...(t.path === path ? t : navigate(t, path)),
+              ...(t.path === path
+                ? positions.captureTab(t)
+                : navigate(positions.captureTab(t), path)),
               columns:
                 t.view === "columns"
                   ? (columns ?? travelColumns(t, path))
@@ -546,7 +591,7 @@ export default function App() {
     if (!current) return;
     const i = current.index + delta;
     if (i >= 0 && i < current.history.length) {
-      patch(travelTab(current, i), side);
+      patch(travelTab(positions.captureTab(current), i), side);
       target.listRef.current?.focus({ preventScroll: true });
     }
   }
@@ -567,7 +612,9 @@ export default function App() {
   }
   async function windowFor(t: Tab, move = false, side = focused) {
     try {
-      await call("new_window", { value: { tabs: [t], active: t.id } });
+      await call("new_window", {
+        value: { tabs: [positions.captureTab(t)], active: t.id },
+      });
       if (move) await closeTab(t.id, side);
       setMenu(null);
     } catch (e) {
@@ -580,11 +627,14 @@ export default function App() {
     const t = group?.tabs.find((t) => t.id === id);
     if (!group || !t) return;
     if (group.tabs.length === 1 && !current.right) {
-      if (desktop)
+      if (desktop) {
+        await saveWorkspace().catch((error) =>
+          setNotice("会话保存失败：" + String(error)),
+        );
         await getCurrentWindow()
           .close()
           .catch((error) => setNotice(String(error)));
-      else setNotice("桌面应用中会关闭窗口");
+      } else setNotice("桌面应用中会关闭窗口");
       return;
     }
     closed.current[side].push(t);
@@ -625,45 +675,74 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     (async () => {
+      let restored = false;
       try {
-        const ps = await call<Place[]>("places");
         const saved = await call<Session | null>("load_session");
         if (disposed) return;
+        if (saved?.tabs?.length) {
+          setSession(restoreSession(saved, "/", preferences.defaultView));
+          restored = true;
+        }
+        const request = call<Place[]>("places");
+        if (restored) setLoadingPlaces(request);
+        const ps = await request;
+        if (disposed) return;
+        setLoadingPlaces(null);
         setPlaces(ps);
-        setSession(
-          restoreSession(saved, ps[0]?.path || "/", preferences.defaultView),
-        );
+        if (!restored)
+          setSession(
+            restoreSession(saved, ps[0]?.path || "/", preferences.defaultView),
+          );
       } catch (e) {
-        if (!disposed) setBootError(String(e));
+        if (disposed) return;
+        setLoadingPlaces(null);
+        if (restored) setNotice("侧栏位置读取失败：" + String(e));
+        else setBootError(String(e));
       }
     })();
     return () => {
       disposed = true;
     };
   }, []);
-  useEffect(() => {
-    if (!session.tabs.length) return;
-    const timer = setTimeout(() => {
-      call("save_session", {
-        value: {
-          ...cleanPane(session),
-          right: session.right && cleanPane(session.right),
-          focused,
-          splitRatio,
-        },
-      }).catch((e) => setNotice("会话保存失败：" + String(e)));
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [session, focused]);
-  async function installUpdate() {
-    await call("save_session", {
+  function saveWorkspace() {
+    const snapshot = positions.captureSession(stateRef.current);
+    return call("save_session", {
       value: {
-        ...cleanPane(session),
-        right: session.right && cleanPane(session.right),
-        focused,
-        splitRatio,
+        ...cleanPane(snapshot),
+        right: snapshot.right && cleanPane(snapshot.right),
+        focused: snapshot.right ? snapshot.focused ?? "left" : "left",
+        splitRatio: snapshot.splitRatio ?? 0.5,
       },
     });
+  }
+  useEffect(() => {
+    if (!session.tabs.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      timer = undefined;
+      void saveWorkspace().catch((error) =>
+        setNotice("会话保存失败：" + String(error)),
+      );
+    };
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(flush, 300);
+    };
+    schedule();
+    const stop = positions.subscribe(schedule);
+    window.addEventListener("blur", flush);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      clearTimeout(timer);
+      stop();
+      window.removeEventListener("blur", flush);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [session, positions]);
+  async function installUpdate() {
+    await saveWorkspace();
     await updates.install();
   }
   const recoveryShown = useRef(false);
@@ -813,13 +892,28 @@ export default function App() {
       clearTimeout(timer);
     };
   }, [editingPath, address]);
+  const checkedSelection = useRef<Partial<Record<PaneSide, {
+    listing: Listing;
+    selected: string[];
+  }>>>({});
   useEffect(() => {
     for (const side of ["left", "right"] as const) {
       const { tab, listing, loading } = side === "left" ? left : right;
-      if (!listing || loading || !tab?.selected.length) continue;
-      const present = new Set(listing.entries.map((entry) => entry.path));
-      const selected = tab.selected.filter((path) => present.has(path));
-      if (selected.length !== tab.selected.length) patch({ selected }, side);
+      if (!listing || !tab?.selected.length) {
+        delete checkedSelection.current[side];
+        continue;
+      }
+      if (loading) continue;
+      const prior = checkedSelection.current[side];
+      if (prior?.listing === listing && prior.selected === tab.selected) continue;
+      checkedSelection.current[side] = { listing, selected: tab.selected };
+      const missing = new Set(tab.selected);
+      for (const entry of listing.entries) {
+        missing.delete(entry.path);
+        if (!missing.size) break;
+      }
+      if (missing.size)
+        patch({ selected: tab.selected.filter((path) => !missing.has(path)) }, side);
     }
   }, [left.listing, right.listing, left.loading, right.loading]);
   function editPath(side: PaneSide) {
@@ -1089,9 +1183,10 @@ export default function App() {
     if (!tab) return;
     const selected = tab.selected;
     const current = anchor.current?.tab === tab.id ? anchor.current : null;
-    const anchorIndex = entries.findIndex(
-      (item) => item.path === current?.path,
-    );
+    const anchorIndex =
+      e.shiftKey && current
+        ? entries.findIndex((item) => item.path === current.path)
+        : -1;
     if (e.shiftKey && current && anchorIndex >= 0) {
       const index = entries.findIndex((x) => x.path === entry.path);
       patch(
@@ -1187,8 +1282,8 @@ export default function App() {
     locations.add({ path, name });
     setMenu(null);
   }
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
+  const onKey = useEffectEvent(
+    (e: KeyboardEvent) => {
       if (
         e.defaultPrevented ||
         e.isComposing ||
@@ -1197,6 +1292,7 @@ export default function App() {
         marquee.frame
       )
         return;
+      rememberViewportPositions();
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       if (fileOperation || commandPalette || layoutsOpen || comparison) return;
@@ -1475,31 +1571,31 @@ export default function App() {
         const step =
           (horizontal ? 1 : gridColumns) *
           (key === "arrowdown" || key === "arrowright" ? 1 : -1);
-        const next =
-          entries[
-            Math.max(
-              0,
-              Math.min(entries.length - 1, index < 0 ? 0 : index + step),
-            )
-          ];
+        const nextIndex = Math.max(
+          0,
+          Math.min(entries.length - 1, index < 0 ? 0 : index + step),
+        );
+        const next = entries[nextIndex];
         if (next) {
           select(next, {
             shiftKey: e.shiftKey,
             metaKey: false,
             ctrlKey: false,
           });
-          const i = entries.indexOf(next);
-          if (listRef.current) revealItem(listRef.current, i, pane.layout);
+          if (listRef.current)
+            revealItem(listRef.current, nextIndex, pane.layout);
         }
       }
       if (key === "escape") {
         setMenu(null);
         setSelection([]);
       }
-    }
+    },
+  );
+  useEffect(() => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, []);
   if (!tab)
     return (
       <div className="boot">
@@ -1508,7 +1604,7 @@ export default function App() {
         <p>{bootError || "正在打开你的工作空间…"}</p>
       </div>
     );
-  const fileCommands: FileCommand[] = [
+  const paletteCommands = (): FileCommand[] => [
     {
       id: "search",
       aliases: ["查找", "search", "find"],
@@ -1743,19 +1839,6 @@ export default function App() {
         ? entries.filter((item) => selection.has(item.path))
         : [entry],
     });
-    const availableScroll = Math.max(
-      0,
-      Math.ceil(entries.length / layout.columns) * layout.step +
-        2 * layout.padding -
-        height,
-    );
-    const range = visibleRange(
-      entries.length,
-      Math.min(tab.scroll, availableScroll),
-      height,
-      layout,
-    );
-    const shown = entries.slice(range.start, range.end);
     const path = tab.path;
     const crumbs = path.split(/[\\/]/).filter(Boolean);
     const isWindows = path.includes("\\");
@@ -1880,11 +1963,7 @@ export default function App() {
           {tab.view === "list" && (
             <>
               <span className="file-date">
-                {new Date(entry.modified * 1000).toLocaleDateString("zh-CN", {
-                  year: "numeric",
-                  month: "2-digit",
-                  day: "2-digit",
-                })}
+                {formatFileDate(entry.modified)}
               </span>
               <span className="file-type" title={type.label}>
                 {type.label}
@@ -1898,17 +1977,26 @@ export default function App() {
       );
     }
     const fileArea = (
-      <div
+      <VirtualFileList
+        positions={positions}
+        tab={tab}
+        entries={entries}
+        height={height}
+        layout={layout}
+        renderRow={(entry, index) =>
+          renderFileRow(
+            entry,
+            listing?.path ?? tab.path,
+            tab.view === "columns" ? trail : undefined,
+            undefined,
+            index,
+          )
+        }
         className={`file-area ${tab.view === "columns" ? "column-list" : tab.view}${dropHint?.path === listing?.path && dropHint && !dropHint.folder ? " drop-target" : ""}`}
         ref={attachList}
         tabIndex={0}
         role="listbox"
         aria-multiselectable="true"
-        aria-activedescendant={
-          shown.some((entry) => entry.path === selected.at(-1))
-            ? `entry-${tab.id}-${encodeURIComponent(selected.at(-1)!)}`
-            : undefined
-        }
         aria-label="文件列表"
         data-pane={side}
         data-grid-size={
@@ -1928,8 +2016,8 @@ export default function App() {
             });
         }}
         onScroll={(e) => {
-          if (!restoringScroll.current)
-            patchPane({ scroll: e.currentTarget.scrollTop });
+          if (!restoringScroll.current && showingPanes)
+            positions.record(tab, e.currentTarget.scrollTop);
         }}
         onClick={(e) => {
           if (!(e.target as Element).closest("button, input"))
@@ -1996,34 +2084,8 @@ export default function App() {
               </button>
             )}
           </div>
-        ) : (
-          <>
-            <div role="presentation" style={{ height: range.above }} />
-            <div
-              role="presentation"
-              className={tab.view === "grid" ? "grid-items" : undefined}
-              style={
-                tab.view === "grid"
-                  ? {
-                      gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
-                    }
-                  : undefined
-              }
-            >
-              {shown.map((entry, index) =>
-                renderFileRow(
-                  entry,
-                  listing?.path ?? tab.path,
-                  tab.view === "columns" ? trail : undefined,
-                  undefined,
-                  range.start + index,
-                ),
-              )}
-            </div>
-            <div role="presentation" style={{ height: range.below }} />
-          </>
-        )}
-      </div>
+        ) : null}
+      </VirtualFileList>
     );
     return (
       <section
@@ -2423,6 +2485,7 @@ export default function App() {
         fileDrag.suppressClick.current = false;
       }}
       onClickCapture={(event) => {
+        rememberViewportPositions();
         if (!fileDrag.suppressClick.current) return;
         fileDrag.suppressClick.current = false;
         event.preventDefault();
@@ -2677,49 +2740,55 @@ export default function App() {
             )}
             {split && renderPane("right")}
           </div>
-          <StorageDashboard
-            visible={storagePage === "overview"}
-            onAnalyze={(path) => openStoragePage("analysis", path)}
-            onBrowse={(path) => go(path)}
-            onClose={() => setStoragePage("")}
-          />
-          <DirectoryAnalysis
-            visible={storagePage === "analysis"}
-            onDiagnosisStatus={handleDiagnosisStatus}
-            onDiagnosisComplete={handleDiagnosisComplete}
-            diagnosisOpen={diagnosisOpen}
-            currentPath={listing?.path ?? tab.path}
-            scope={storageScope}
-            places={[
-              ...places.filter((place) => place.kind === "disk"),
-              ...commonPlaces.map((place) => ({ ...place, kind: "favorite" })),
-            ]}
-            onChoose={setStorageScope}
-            onCheckDuplicates={
-              desktop ? (path) => openStoragePage("duplicates", path) : undefined
-            }
-            onBrowse={(path, selectedPath) => {
-              setAnalysisReturn(true);
-              setReturnContext("analysis");
-              go(path, focused, selectedPath);
-            }}
-            onFileAction={(request) => void resultAction(request)}
-            fileChangeBatches={fileChangeBatches}
-            onClose={() => setStoragePage("")}
-          />
-          <DuplicatePanel
-            path={duplicateScope || listing?.path || tab.path}
-            hidden={hidden}
-            visible={storagePage === "duplicates"}
-            onBrowse={(path, selectedPath) => {
-              setDuplicateReturn(true);
-              setReturnContext("duplicates");
-              go(path, focused, selectedPath);
-            }}
-            onClose={() => setStoragePage("")}
-            onFileAction={(request) => void resultAction(request)}
-            fileChangeBatches={fileChangeBatches}
-          />
+          <StoragePage visible={storagePage === "overview"}>
+            <StorageDashboard
+              visible={storagePage === "overview"}
+              onAnalyze={(path) => openStoragePage("analysis", path)}
+              onBrowse={(path) => go(path)}
+              onClose={() => setStoragePage("")}
+            />
+          </StoragePage>
+          <StoragePage visible={storagePage === "analysis"}>
+            <DirectoryAnalysis
+              visible={storagePage === "analysis"}
+              onDiagnosisStatus={handleDiagnosisStatus}
+              onDiagnosisComplete={handleDiagnosisComplete}
+              diagnosisOpen={diagnosisOpen}
+              currentPath={listing?.path ?? tab.path}
+              scope={storageScope}
+              places={[
+                ...places.filter((place) => place.kind === "disk"),
+                ...commonPlaces.map((place) => ({ ...place, kind: "favorite" })),
+              ]}
+              onChoose={setStorageScope}
+              onCheckDuplicates={
+                desktop ? (path) => openStoragePage("duplicates", path) : undefined
+              }
+              onBrowse={(path, selectedPath) => {
+                setAnalysisReturn(true);
+                setReturnContext("analysis");
+                go(path, focused, selectedPath);
+              }}
+              onFileAction={(request) => void resultAction(request)}
+              changeCursor={changeCursor}
+              onClose={() => setStoragePage("")}
+            />
+          </StoragePage>
+          <StoragePage visible={storagePage === "duplicates"}>
+            <DuplicatePanel
+              path={duplicateScope || listing?.path || tab.path}
+              hidden={hidden}
+              visible={storagePage === "duplicates"}
+              onBrowse={(path, selectedPath) => {
+                setDuplicateReturn(true);
+                setReturnContext("duplicates");
+                go(path, focused, selectedPath);
+              }}
+              onClose={() => setStoragePage("")}
+              onFileAction={(request) => void resultAction(request)}
+              changeCursor={changeCursor}
+            />
+          </StoragePage>
           {searchSessions.map((location) => (
             <SearchPanel
               key={`${location.pane}:${location.path}`}
@@ -2744,7 +2813,7 @@ export default function App() {
                 );
               }}
               onFileAction={(request) => void resultAction(request)}
-              fileChangeBatches={fileChangeBatches}
+              changeCursor={changeCursor}
               onClose={() => setSearchScope(null)}
             />
           ))}
@@ -3288,7 +3357,7 @@ export default function App() {
       )}
       {taskPanel && (
         <TaskPanel
-          tasks={tasks}
+          store={activityStore}
           onClose={() => setTaskPanel(false)}
           onBrowse={(path) => {
             setTaskPanel(false);
@@ -3303,13 +3372,13 @@ export default function App() {
       )}
       {commandPalette && (
         <CommandPalette
-          commands={fileCommands}
+          commands={paletteCommands()}
           onClose={() => setCommandPalette(false)}
         />
       )}
       {layoutsOpen && (
         <WorkLayouts
-          session={session}
+          session={positions.captureSession(session)}
           returnFocus={layoutsTrigger.current}
           active={!conflict && !closePrompt}
           onRestore={(next) => {
@@ -3603,7 +3672,7 @@ export default function App() {
                     </dl>
                   </>
                 ) : (
-                  <p>已选择 {conflict.sources.length} 个项目</p>
+                  <p>已选择 {conflict.sourceCount} 个项目</p>
                 )}
               </section>
             ))}

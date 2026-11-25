@@ -30,15 +30,41 @@ function normalize(path: string) {
     ? value.toLowerCase()
     : value;
 }
-export function duplicatePathsOverlap(a: string, b: string) {
-  const left = normalize(a);
-  const right = normalize(b);
-  return (
-    left === right ||
-    left.startsWith(right + "/") ||
-    right.startsWith(left + "/")
-  );
+function* ancestors(path: string) {
+  for (;;) {
+    yield path;
+    const separator = path.lastIndexOf("/");
+    if (separator < 0) return;
+    path = path.slice(0, separator);
+  }
 }
+
+export function changedDuplicateGroups(
+  groups: DuplicateGroup[],
+  paths: (string | null)[],
+) {
+  if (!paths.length || !groups.length) return [];
+  if (paths.includes(null)) return groups.map((group) => group.id);
+  const changed = new Set<string>();
+  const parents = new Set<string>();
+  for (const path of paths) {
+    if (path === null) continue;
+    const key = normalize(path);
+    changed.add(key);
+    for (const ancestor of ancestors(key)) parents.add(ancestor);
+  }
+  const overlaps = (file: Entry) => {
+    const key = normalize(file.path);
+    if (parents.has(key)) return true;
+    for (const ancestor of ancestors(key))
+      if (changed.has(ancestor)) return true;
+    return false;
+  };
+  return groups
+    .filter((group) => group.files.some(overlaps))
+    .map((group) => group.id);
+}
+
 export function duplicateParent(path: string) {
   if (/^[a-z]:[\\/][^\\/]+$/i.test(path)) return path.slice(0, 3);
   return path.replace(/[\\/][^\\/]+$/, "") || "/";

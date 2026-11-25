@@ -28,7 +28,7 @@ import {
   type ResultFile,
 } from "./resultActions";
 import "./results.css";
-import { mergeFileChanges } from "./resultMutations";
+import { mergeFileChanges, type ChangeBookmark } from "./resultMutations";
 import type { ResultMutations } from "./resultActions";
 
 const statusLabels = {
@@ -45,7 +45,7 @@ export default function ResultFiles({
   onBrowse,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
   extra,
   showToolbar = true,
   visible = true,
@@ -58,7 +58,7 @@ export default function ResultFiles({
   extra?: (item: ResultFile) => ReactNode;
   showToolbar?: boolean;
   visible?: boolean;
-  changeBaseline?: number;
+  changeBaseline?: ChangeBookmark;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [menu, setMenu] = useState<{
@@ -75,49 +75,38 @@ export default function ResultFiles({
   const [localChanges, setLocalChanges] = useState<ResultMutations>(() =>
     snapshotResultMutations(items),
   );
-  const trackedPaths = useRef(new Set(items.map((item) => item.entry.path)));
-  const baseline = useRef(
-    changeBaseline ?? fileChangeBatches?.at(-1)?.sequence ?? 0,
+  const [trackedPaths] = useState(
+    () => new Set(items.map((item) => item.entry.path)),
   );
-  const lastSequence = useRef(
-    changeBaseline ?? fileChangeBatches?.at(-1)?.sequence ?? 0,
-  );
+  const baseline = useRef(changeBaseline);
+  if (!baseline.current) baseline.current = changeCursor?.retain();
+  const lastChange = useRef(baseline.current);
   useEffect(() => {
-    const pending =
-      fileChangeBatches?.filter(
-        (batch) => batch.sequence > lastSequence.current,
-      ) ?? [];
-    const missing = items.filter(
-      (item) => !trackedPaths.current.has(item.entry.path),
-    );
+    const read = lastChange.current?.readThrough(changeCursor);
+    const pending = read?.batches ?? [];
+    const missing = items.filter((item) => !trackedPaths.has(item.entry.path));
     if (!pending.length && !missing.length) return;
-    if (pending.length) {
-      lastSequence.current = pending.at(-1)!.sequence;
+    if (read && pending.length) {
+      lastChange.current = read.after;
       setMenu(null);
     }
-    const historical =
-      fileChangeBatches?.filter((batch) => batch.sequence > baseline.current) ??
-      [];
-    for (const item of missing) trackedPaths.current.add(item.entry.path);
-    const tracked = [...trackedPaths.current];
+    const historical = missing.length
+      ? (baseline.current?.readThrough(changeCursor).batches ?? [])
+      : [];
+    for (const item of missing) trackedPaths.add(item.entry.path);
     setLocalChanges((current) => {
+      const updated = pending.reduce(
+        (changes, batch) => mergeFileChanges(changes, batch, "tracked"),
+        current,
+      );
+      if (!missing.length) return updated;
       const added = historical.reduce(
-        (changes, batch) => mergeFileChanges(changes, batch.changes),
+        (changes, batch) => mergeFileChanges(changes, batch, "tracked"),
         snapshotResultMutations(missing),
       );
-      const updated = {
-        ...pending.reduce(
-          (changes, batch) => mergeFileChanges(changes, batch.changes),
-          current,
-        ),
-      };
-      // Each key represents one file in this snapshot. Keep those identities
-      // separate from source-name aliases introduced by an unrelated operation.
-      for (const item of missing)
-        updated[item.entry.path] = added[item.entry.path];
-      return Object.fromEntries(tracked.map((path) => [path, updated[path]]));
+      return { ...updated, ...added };
     });
-  }, [fileChangeBatches, items]);
+  }, [changeCursor, items]);
   const mutationIndex = useMemo(
     () => indexResultMutations({ ...localChanges, ...fileChanges }),
     [fileChanges, localChanges],

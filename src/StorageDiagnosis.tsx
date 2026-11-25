@@ -1,3 +1,4 @@
+import type { ChangeBookmark } from "./resultMutations";
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Sparkles, Square } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -79,7 +80,7 @@ type DiagnosisRun = {
   scanId: string;
   phase: "preparing" | "analyzing";
   cancelled: boolean;
-  changeBaseline?: number;
+  changeBaseline?: ChangeBookmark;
 };
 export type DiagnosisStatus = {
   id: string;
@@ -95,7 +96,7 @@ type DiagnosisRecord = {
   result?: DiagnosisReport | null;
   error?: string;
   message?: string;
-  changeBaseline?: number;
+  changeBaseline?: ChangeBookmark;
 };
 const preferenceKey = "filepace-diagnosis";
 type Preferences = {
@@ -139,7 +140,7 @@ export default function StorageDiagnosis({
   onShowUsage,
   onFileAction,
   fileChanges,
-  fileChangeBatches,
+  changeCursor,
   resultsVisible = visible,
   changeBaseline,
   onDiagnosisStatus,
@@ -156,12 +157,12 @@ export default function StorageDiagnosis({
     onPrepare: (
       id: string,
       refresh: boolean,
-    ) => Promise<(StorageSnapshot & { changeBaseline?: number }) | null>;
+    ) => Promise<(StorageSnapshot & { changeBaseline?: ChangeBookmark }) | null>;
     onCancelScan: (id: string) => Promise<void>;
     onBrowse: (path: string, selected?: string) => void;
     onShowUsage: () => void;
     resultsVisible?: boolean;
-    changeBaseline?: number;
+    changeBaseline?: ChangeBookmark;
   }) {
   const [saved] = useState(preferences);
   const [agent, setAgent] = useState(saved.agent);
@@ -847,7 +848,7 @@ export default function StorageDiagnosis({
                     onBrowse={onBrowse}
                     onFileAction={onFileAction}
                     fileChanges={fileChanges}
-                    fileChangeBatches={fileChangeBatches}
+                    changeCursor={changeCursor}
                   />
                 )}
               </article>

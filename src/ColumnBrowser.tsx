@@ -18,7 +18,7 @@ import {
   basename,
   columnPaths,
   formatSize,
-  sortEntries,
+  sortedListing,
   type Entry,
   type Tab,
 } from "./model";
@@ -76,7 +76,7 @@ function Ancestor({
   const entries = useMemo(
     () =>
       listing
-        ? sortEntries(listing.entries, tab.sort, tab.descending, hidden)
+        ? sortedListing(listing, tab.sort, tab.descending, hidden)
         : [],
     [listing, tab.sort, tab.descending, hidden],
   );

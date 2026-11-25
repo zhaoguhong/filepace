@@ -1,4 +1,5 @@
 import { basename, type Entry } from "./model";
+import type { ChangeCursor } from "./resultMutations";
 import type { DuplicateGuard } from "./duplicateResults";
 
 export type ResultAction =
@@ -35,15 +36,11 @@ export type ResultMutation = {
   parent?: string;
 };
 export type ResultMutations = Record<string, ResultMutation>;
-export type ResultChangeBatch = {
-  sequence: number;
-  changes: { from: string; to?: string; kind: "move" | "rename" | "trash" }[];
-};
 export type ResultFile = { entry: Entry; parent: string; detail?: string };
 export type ResultActionProps = {
   onFileAction?: (request: ResultActionRequest) => void;
   fileChanges?: ResultMutations;
-  fileChangeBatches?: ResultChangeBatch[];
+  changeCursor?: ChangeCursor;
 };
 
 const normalize = (path: string) => {

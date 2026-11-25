@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { basename } from "./model";
+import { useEffect, useMemo, useState } from "react";
+import { basename, type Place } from "./model";
 import type { Shortcut } from "./preferences";
 import type { LocationDrop } from "./locationDrop";
 
@@ -140,11 +140,25 @@ function read(defaults: Shortcut[]): LocationGroup[] {
     return migrateLocations(defaults, {}, []);
   }
 }
-export function useSidebarLocations(defaults: Shortcut[]) {
-  const [, render] = useState(0);
-  const groups = read(defaults);
+const favoritePlaces = (places: Place[]) =>
+  places.filter((place) => place.kind === "favorite");
+
+export function useSidebarLocations(
+  placesFromSystem: Place[],
+  loadingPlaces: Promise<Place[]> | null,
+) {
+  const defaults = useMemo(
+    () => favoritePlaces(placesFromSystem),
+    [placesFromSystem],
+  );
+  const [revision, setRevision] = useState(0);
+  const groups = useMemo(() => read(defaults), [defaults, revision]);
+  const places = useMemo(
+    () => uniquePlaces(groups.flatMap((group) => group.places)),
+    [groups],
+  );
   useEffect(() => {
-    const sync = () => render((value) => value + 1);
+    const sync = () => setRevision((value) => value + 1);
     window.addEventListener("storage", sync);
     window.addEventListener(changed, sync);
     return () => {
@@ -158,9 +172,27 @@ export function useSidebarLocations(defaults: Shortcut[]) {
       window.dispatchEvent(new Event(changed));
     }
   }, [defaults.length]);
-  function change(edit: (groups: LocationGroup[]) => LocationGroup[]) {
-    localStorage.setItem(sidebarKey, JSON.stringify(edit(read(defaults))));
-    window.dispatchEvent(new Event(changed));
+  function change(
+    edit: (groups: LocationGroup[], available: Shortcut[]) => LocationGroup[],
+    needsDefaults = false,
+  ) {
+    const save = (available: Shortcut[]) => {
+      localStorage.setItem(
+        sidebarKey,
+        JSON.stringify(edit(read(available), available)),
+      );
+      window.dispatchEvent(new Event(changed));
+    };
+    // During legacy migration, an early edit must include the system defaults.
+    if (
+      loadingPlaces &&
+      (needsDefaults || localStorage.getItem(sidebarKey) === null)
+    ) {
+      void loadingPlaces.then(
+        (places) => save(favoritePlaces(places)),
+        () => save(defaults),
+      );
+    } else save(defaults);
   }
   function add(place: Shortcut, groupId?: string) {
     change((groups) => {
@@ -196,13 +228,13 @@ export function useSidebarLocations(defaults: Shortcut[]) {
     );
   }
   function restoreDefaults() {
-    change((groups) => {
+    change((groups, available) => {
       const existing = new Set(
         groups.flatMap((group) =>
           group.places.map((place) => pathKey(place.path)),
         ),
       );
-      const missing = defaults.filter(
+      const missing = available.filter(
         (place) => !existing.has(pathKey(place.path)),
       );
       const next = groups.length
@@ -217,11 +249,11 @@ export function useSidebarLocations(defaults: Shortcut[]) {
             }
           : group,
       );
-    });
+    }, true);
   }
   return {
     groups,
-    places: uniquePlaces(groups.flatMap((group) => group.places)),
+    places,
     change,
     add,
     insert,
